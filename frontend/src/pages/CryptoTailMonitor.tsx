@@ -33,7 +33,8 @@ import type {
   CryptoTailMonitorInitResponse,
   CryptoTailMonitorPushData,
   CryptoTailDecisionEventDto,
-  CryptoTailCalibrationResponse
+  CryptoTailCalibrationResponse,
+  CryptoTailRecommendSigmaScaleResponse
 } from '../types'
 
 const { Title, Text } = Typography
@@ -79,6 +80,9 @@ const CryptoTailMonitor: React.FC = () => {
   const [decisionEvents, setDecisionEvents] = useState<CryptoTailDecisionEventDto[]>([])
   const [calibration, setCalibration] = useState<CryptoTailCalibrationResponse | null>(null)
   const [exportingSnapshots, setExportingSnapshots] = useState(false)
+  // sigmaScale 校准推荐（监控页一键应用）
+  const [sigmaRec, setSigmaRec] = useState<CryptoTailRecommendSigmaScaleResponse | null>(null)
+  const [sigmaRecLoading, setSigmaRecLoading] = useState(false)
   const selectedStrategy = strategies.find(s => s.id === selectedStrategyId)
   const barrierEnabled = selectedStrategy?.barrierEnabled === true
 
@@ -112,6 +116,54 @@ const CryptoTailMonitor: React.FC = () => {
     } finally {
       setExportingSnapshots(false)
     }
+  }
+
+  // 按已结算样本推荐 sigmaScale（监控页）
+  const handleRecommendSigma = async () => {
+    if (!selectedStrategyId) return
+    setSigmaRecLoading(true)
+    try {
+      const res = await apiService.cryptoTailStrategy.recommendSigmaScale({ strategyId: selectedStrategyId })
+      if (res.data.code !== 0 || !res.data.data) {
+        message.error(res.data.msg || t('cryptoTailStrategy.form.sigmaRecommendFailed'))
+        return
+      }
+      const data = res.data.data
+      setSigmaRec(data)
+      if (!data.enough || !data.recommendedSigmaScale) {
+        message.warning(data.reason || t('cryptoTailStrategy.form.sigmaRecommendNotEnough'))
+      }
+    } catch {
+      message.error(t('cryptoTailStrategy.form.sigmaRecommendFailed'))
+    } finally {
+      setSigmaRecLoading(false)
+    }
+  }
+
+  // 一键应用推荐 sigmaScale：直接持久化到策略（onOk 返回 Promise，按钮自动显示 loading）
+  const handleApplySigma = () => {
+    if (!selectedStrategyId || !sigmaRec?.recommendedSigmaScale) return
+    const recommended = sigmaRec.recommendedSigmaScale
+    Modal.confirm({
+      title: t('cryptoTailStrategy.calibration.applySigmaConfirmTitle'),
+      content: t('cryptoTailStrategy.calibration.applySigmaConfirmContent', {
+        current: sigmaRec.currentSigmaScale,
+        recommended
+      }),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        const res = await apiService.cryptoTailStrategy.update({ strategyId: selectedStrategyId, sigmaScale: recommended })
+        if (res.data.code !== 0) {
+          message.error(res.data.msg || t('common.failed'))
+          throw new Error('apply sigma failed')
+        }
+        message.success(t('cryptoTailStrategy.calibration.applySigmaDone', { recommended }))
+        // 本地更新当前值显示（避免额外请求），并清空推荐态
+        setStrategies(prev => prev.map(s => (s.id === selectedStrategyId ? { ...s, sigmaScale: recommended } : s)))
+        setSigmaRec(null)
+      }
+    })
   }
 
   // 价格历史数据（用于分时图）
@@ -410,6 +462,7 @@ const CryptoTailMonitor: React.FC = () => {
 
   // 校准统计 + 放量闸状态：切换策略时拉取（仅障碍模式）；结算后随轮询刷新
   useEffect(() => {
+    setSigmaRec(null)
     if (!selectedStrategyId || !barrierEnabled) {
       setCalibration(null)
       return
@@ -1371,6 +1424,34 @@ const CryptoTailMonitor: React.FC = () => {
               {calibration.reason && (
                 <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{calibration.reason}</Text>
               )}
+              {/* sigmaScale 一键校准推荐 + 应用 */}
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+                <Space size={8} wrap>
+                  <Text strong>{t('cryptoTailStrategy.calibration.sigmaCurrent')}</Text>
+                  <Text>{selectedStrategy?.sigmaScale ?? '-'}</Text>
+                  <Button size="small" loading={sigmaRecLoading} onClick={handleRecommendSigma}>
+                    {t('cryptoTailStrategy.form.sigmaRecommendBtn')}
+                  </Button>
+                  <Tooltip title={t('cryptoTailStrategy.calibration.sigmaApplyHint')}>
+                    <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                  </Tooltip>
+                </Space>
+                {sigmaRec && sigmaRec.enough && sigmaRec.recommendedSigmaScale && (
+                  <Space size={8} wrap style={{ display: 'flex', marginTop: 8 }}>
+                    <Text type="secondary">
+                      {t('cryptoTailStrategy.calibration.sigmaRecResult', {
+                        recommended: sigmaRec.recommendedSigmaScale,
+                        before: sigmaRec.currentError != null ? (Number(sigmaRec.currentError) * 100).toFixed(2) : '-',
+                        after: sigmaRec.recommendedError != null ? (Number(sigmaRec.recommendedError) * 100).toFixed(2) : '-',
+                        count: sigmaRec.sampleCount
+                      })}
+                    </Text>
+                    <Button size="small" type="primary" onClick={handleApplySigma}>
+                      {t('cryptoTailStrategy.calibration.sigmaApplyBtn')}
+                    </Button>
+                  </Space>
+                )}
+              </div>
               <Table
                 rowKey="bucket"
                 size="small"

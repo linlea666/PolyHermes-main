@@ -1877,6 +1877,13 @@
       "modeProbe": "小额校准中 {{amount}} USDC",
       "modeFull": "已放量(正常下注)",
       "gateOff": "放量闸未开启",
+      "sigmaCurrent": "当前 σ 系数：",
+      "sigmaApplyHint": "基于本策略已结算样本最小化校准误差反推更优 σ 系数，应用后立即持久化到策略并对后续周期生效",
+      "sigmaApplyBtn": "一键应用",
+      "sigmaRecResult": "推荐 {{recommended}}（校准误差 {{before}}pp → {{after}}pp，样本 {{count}} 笔）",
+      "applySigmaConfirmTitle": "应用推荐 σ 系数",
+      "applySigmaConfirmContent": "将 σ 校准系数由 {{current}} 更新为 {{recommended}}，立即生效于后续周期。确认应用？",
+      "applySigmaDone": "已应用 σ 系数 {{recommended}}",
       "empty": "暂无已结算样本"
     },
     "decisionLog": {

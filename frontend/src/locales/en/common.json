@@ -1877,6 +1877,13 @@
       "modeProbe": "Probing {{amount}} USDC",
       "modeFull": "Scaled (full size)",
       "gateOff": "Gate off",
+      "sigmaCurrent": "Current σ factor:",
+      "sigmaApplyHint": "Derives a better σ factor by minimizing calibration error over this strategy's settled samples; applying persists it immediately and takes effect from the next period",
+      "sigmaApplyBtn": "Apply",
+      "sigmaRecResult": "Recommended {{recommended}} (calibration error {{before}}pp → {{after}}pp, {{count}} samples)",
+      "applySigmaConfirmTitle": "Apply Recommended σ Factor",
+      "applySigmaConfirmContent": "Update σ calibration factor from {{current}} to {{recommended}}, effective from the next period. Apply?",
+      "applySigmaDone": "Applied σ factor {{recommended}}",
       "empty": "No settled samples yet"
     },
     "decisionLog": {
