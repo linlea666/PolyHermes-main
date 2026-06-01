@@ -88,6 +88,17 @@ class ApiHealthCheckService(
         }
     }
 
+    /**
+     * 获取 ChainlinkDataStreamsService（通过 ApplicationContext 避免循环依赖）
+     */
+    private fun getChainlinkDataStreamsService(): com.wrbug.polymarketbot.service.chainlink.ChainlinkDataStreamsService? {
+        return try {
+            applicationContext?.getBean(com.wrbug.polymarketbot.service.chainlink.ChainlinkDataStreamsService::class.java)
+        } catch (e: BeansException) {
+            null
+        }
+    }
+
     private val logger = LoggerFactory.getLogger(ApiHealthCheckService::class.java)
 
     /**
@@ -109,7 +120,8 @@ class ApiHealthCheckService(
                 async { checkPolymarketActivityWebSocket() },
                 async { checkUnifiedOnChainWebSocket() },
                 async { checkBuilderRelayerApi() },
-                async { checkGitHubApi() }
+                async { checkGitHubApi() },
+                async { checkChainlinkDataStreams() }
             )
 
             jobs.awaitAll().forEach { result ->
@@ -419,6 +431,46 @@ class ApiHealthCheckService(
                 url = rpcNodeService.getWsUrl(),
                 status = "error",
                 message = "检查失败：${e.message}"
+            )
+        }
+    }
+
+    /**
+     * 检查 Chainlink Data Streams 价源（crypto-tail 障碍模式专用）。
+     * 未配置 → skipped；已配置但取价失败 → error。
+     */
+    private suspend fun checkChainlinkDataStreams(): ApiHealthCheckDto = withContext(Dispatchers.IO) {
+        val url = "https://api.dataengine.chain.link"
+        val service = getChainlinkDataStreamsService()
+            ?: return@withContext ApiHealthCheckDto(
+                name = "Chainlink Data Streams",
+                url = url,
+                status = "skipped",
+                message = "服务未就绪"
+            )
+        return@withContext try {
+            val startTime = System.currentTimeMillis()
+            val (configured, ok, message) = service.healthCheck()
+            val responseTime = System.currentTimeMillis() - startTime
+            val status = when {
+                !configured -> "skipped"
+                ok -> "success"
+                else -> "error"
+            }
+            ApiHealthCheckDto(
+                name = "Chainlink Data Streams",
+                url = url,
+                status = status,
+                message = message,
+                responseTime = if (configured) responseTime else null
+            )
+        } catch (e: Exception) {
+            logger.warn("检查 Chainlink Data Streams 失败", e)
+            ApiHealthCheckDto(
+                name = "Chainlink Data Streams",
+                url = url,
+                status = "error",
+                message = e.message ?: "检查失败"
             )
         }
     }

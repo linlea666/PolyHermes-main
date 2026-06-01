@@ -62,6 +62,20 @@ data class SystemConfigUpdateRequest(
 )
 
 /**
+ * Chainlink Data Streams 配置更新请求（crypto-tail 障碍模式价源）。
+ * 字段为 null 表示不变；空串表示清空该项。
+ */
+data class ChainlinkConfigUpdateRequest(
+    val apiKey: String? = null,
+    val apiSecret: String? = null,
+    val restBase: String? = null,
+    val feedBtc: String? = null,
+    val feedEth: String? = null,
+    val feedSol: String? = null,
+    val feedXrp: String? = null
+)
+
+/**
  * 系统配置响应
  */
 data class SystemConfigDto(
@@ -71,7 +85,16 @@ data class SystemConfigDto(
     val builderApiKeyDisplay: String? = null,  // Builder API Key 显示值（完整，用于前端展示）
     val builderSecretDisplay: String? = null,  // Builder Secret 显示值（完整，用于前端展示）
     val builderPassphraseDisplay: String? = null,  // Builder Passphrase 显示值（完整，用于前端展示）
-    val autoRedeemEnabled: Boolean = true  // 自动赎回（系统级别配置，默认开启）
+    val autoRedeemEnabled: Boolean = true,  // 自动赎回（系统级别配置，默认开启）
+    // Chainlink Data Streams（障碍模式价源）
+    val chainlinkApiKeyConfigured: Boolean = false,
+    val chainlinkApiSecretConfigured: Boolean = false,
+    val chainlinkApiKeyDisplay: String? = null,
+    val chainlinkRestBase: String? = null,
+    val chainlinkFeedBtc: String? = null,
+    val chainlinkFeedEth: String? = null,
+    val chainlinkFeedSol: String? = null,
+    val chainlinkFeedXrp: String? = null
 )
 
 /**

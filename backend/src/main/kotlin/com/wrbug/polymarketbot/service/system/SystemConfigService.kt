@@ -25,6 +25,15 @@ class SystemConfigService(
         const val CONFIG_KEY_BUILDER_SECRET = "builder.secret"
         const val CONFIG_KEY_BUILDER_PASSPHRASE = "builder.passphrase"
         const val CONFIG_KEY_AUTO_REDEEM = "auto_redeem"
+
+        // Chainlink Data Streams（crypto-tail 障碍模式价源，与 Polymarket 结算源一致）
+        const val CONFIG_KEY_CHAINLINK_DS_API_KEY = "chainlink.ds.api_key"        // 加密存储
+        const val CONFIG_KEY_CHAINLINK_DS_API_SECRET = "chainlink.ds.api_secret"  // 加密存储
+        const val CONFIG_KEY_CHAINLINK_DS_REST_BASE = "chainlink.ds.rest_base"    // 明文，可选覆盖
+        const val CONFIG_KEY_CHAINLINK_DS_FEED_BTC = "chainlink.ds.feed.btc"      // 明文 feedID
+        const val CONFIG_KEY_CHAINLINK_DS_FEED_ETH = "chainlink.ds.feed.eth"
+        const val CONFIG_KEY_CHAINLINK_DS_FEED_SOL = "chainlink.ds.feed.sol"
+        const val CONFIG_KEY_CHAINLINK_DS_FEED_XRP = "chainlink.ds.feed.xrp"
     }
 
     /**
@@ -61,6 +70,10 @@ class SystemConfigService(
             }
         }
 
+        val clApiKey = getConfigValue(CONFIG_KEY_CHAINLINK_DS_API_KEY)
+        val clApiSecret = getConfigValue(CONFIG_KEY_CHAINLINK_DS_API_SECRET)
+        val clApiKeyDisplay = clApiKey?.let { try { cryptoUtils.decrypt(it) } catch (e: Exception) { null } }
+
         return SystemConfigDto(
             builderApiKeyConfigured = builderApiKey != null,
             builderSecretConfigured = builderSecret != null,
@@ -68,8 +81,58 @@ class SystemConfigService(
             builderApiKeyDisplay = builderApiKeyDisplay,
             builderSecretDisplay = builderSecretDisplay,
             builderPassphraseDisplay = builderPassphraseDisplay,
-            autoRedeemEnabled = autoRedeem
+            autoRedeemEnabled = autoRedeem,
+            chainlinkApiKeyConfigured = clApiKey != null,
+            chainlinkApiSecretConfigured = clApiSecret != null,
+            chainlinkApiKeyDisplay = clApiKeyDisplay,
+            chainlinkRestBase = getConfigValue(CONFIG_KEY_CHAINLINK_DS_REST_BASE),
+            chainlinkFeedBtc = getConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_BTC),
+            chainlinkFeedEth = getConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_ETH),
+            chainlinkFeedSol = getConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_SOL),
+            chainlinkFeedXrp = getConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_XRP)
         )
+    }
+
+    /**
+     * 更新 Chainlink Data Streams 配置（api key/secret 加密，feedID/restBase 明文）。
+     * 仅当请求字段非 null 时更新；空串表示清空该项。
+     */
+    @Transactional
+    fun updateChainlinkConfig(request: ChainlinkConfigUpdateRequest): Result<SystemConfigDto> {
+        return try {
+            request.apiKey?.let {
+                updateConfigValue(CONFIG_KEY_CHAINLINK_DS_API_KEY, if (it.isNotBlank()) cryptoUtils.encrypt(it) else null)
+            }
+            request.apiSecret?.let {
+                updateConfigValue(CONFIG_KEY_CHAINLINK_DS_API_SECRET, if (it.isNotBlank()) cryptoUtils.encrypt(it) else null)
+            }
+            request.restBase?.let { updateConfigValue(CONFIG_KEY_CHAINLINK_DS_REST_BASE, it.ifBlank { null }) }
+            request.feedBtc?.let { updateConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_BTC, it.ifBlank { null }) }
+            request.feedEth?.let { updateConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_ETH, it.ifBlank { null }) }
+            request.feedSol?.let { updateConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_SOL, it.ifBlank { null }) }
+            request.feedXrp?.let { updateConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_XRP, it.ifBlank { null }) }
+            Result.success(getSystemConfig())
+        } catch (e: Exception) {
+            logger.error("更新 Chainlink Data Streams 配置失败", e)
+            Result.failure(e)
+        }
+    }
+
+    /** Chainlink Data Streams 凭证（解密），未配置返回 null */
+    fun getChainlinkApiKey(): String? = getConfigValue(CONFIG_KEY_CHAINLINK_DS_API_KEY)?.let { cryptoUtils.decrypt(it) }
+    fun getChainlinkApiSecret(): String? = getConfigValue(CONFIG_KEY_CHAINLINK_DS_API_SECRET)?.let { cryptoUtils.decrypt(it) }
+    fun getChainlinkRestBase(): String? = getConfigValue(CONFIG_KEY_CHAINLINK_DS_REST_BASE)?.takeIf { it.isNotBlank() }
+
+    /** 按市场 slug base（btc-updown/eth-updown/sol-updown/xrp-updown）取对应 feedID，未配置返回 null */
+    fun getChainlinkFeedId(slugBase: String): String? {
+        val key = when (slugBase.lowercase()) {
+            "btc-updown" -> CONFIG_KEY_CHAINLINK_DS_FEED_BTC
+            "eth-updown" -> CONFIG_KEY_CHAINLINK_DS_FEED_ETH
+            "sol-updown" -> CONFIG_KEY_CHAINLINK_DS_FEED_SOL
+            "xrp-updown" -> CONFIG_KEY_CHAINLINK_DS_FEED_XRP
+            else -> return null
+        }
+        return getConfigValue(key)?.takeIf { it.isNotBlank() }
     }
 
     /**
@@ -207,6 +270,13 @@ class SystemConfigService(
                     CONFIG_KEY_BUILDER_SECRET -> "Builder Secret（用于 Gasless 交易）"
                     CONFIG_KEY_BUILDER_PASSPHRASE -> "Builder Passphrase（用于 Gasless 交易）"
                     CONFIG_KEY_AUTO_REDEEM -> "自动赎回（系统级别配置，默认开启）"
+                    CONFIG_KEY_CHAINLINK_DS_API_KEY -> "Chainlink Data Streams API Key（障碍模式价源）"
+                    CONFIG_KEY_CHAINLINK_DS_API_SECRET -> "Chainlink Data Streams API Secret（障碍模式价源）"
+                    CONFIG_KEY_CHAINLINK_DS_REST_BASE -> "Chainlink Data Streams REST 基址（可选覆盖）"
+                    CONFIG_KEY_CHAINLINK_DS_FEED_BTC -> "Chainlink BTC/USD feedID"
+                    CONFIG_KEY_CHAINLINK_DS_FEED_ETH -> "Chainlink ETH/USD feedID"
+                    CONFIG_KEY_CHAINLINK_DS_FEED_SOL -> "Chainlink SOL/USD feedID"
+                    CONFIG_KEY_CHAINLINK_DS_FEED_XRP -> "Chainlink XRP/USD feedID"
                     else -> null
                 }
             )

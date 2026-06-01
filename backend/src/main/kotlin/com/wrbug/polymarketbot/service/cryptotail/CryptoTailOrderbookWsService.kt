@@ -43,7 +43,8 @@ class CryptoTailOrderbookWsService(
     private val executionService: CryptoTailStrategyExecutionService,
     private val retrofitFactory: RetrofitFactory,
     private val binanceKlineAutoSpreadService: BinanceKlineAutoSpreadService,
-    private val binanceKlineService: BinanceKlineService
+    private val binanceKlineService: BinanceKlineService,
+    private val periodPriceProvider: PeriodPriceProvider
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailOrderbookWsService::class.java)
@@ -53,6 +54,9 @@ class CryptoTailOrderbookWsService(
 
     /** tokenId -> list of (strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex) */
     private val tokenToEntries = AtomicReference<Map<String, List<WsBookEntry>>>(emptyMap())
+
+    /** assetId -> 最近一次 bestAsk（最低卖价），障碍模式 EV 闸的有效成本来源；price_change 缺 best_ask 时回退此缓存 */
+    private val bestAskCache = java.util.concurrent.ConcurrentHashMap<String, BigDecimal>()
 
     private var webSocket: WebSocket? = null
     private val wsUrl = PolymarketConstants.RTDS_WS_URL + "/ws/market"
@@ -174,7 +178,18 @@ class CryptoTailOrderbookWsService(
                     val p = (level.get("price") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: continue
                     if (bestBid == null || p.gt(bestBid)) bestBid = p
                 }
-                if (bestBid != null) onBestBid(assetId, bestBid)
+                // asks 取最低卖价作为 bestAsk（用于障碍模式 EV 闸的有效成本）
+                val asks = json.get("asks") as? com.google.gson.JsonArray
+                var bestAsk: BigDecimal? = null
+                if (asks != null) {
+                    for (i in 0 until asks.size()) {
+                        val level = asks.get(i) as? com.google.gson.JsonObject ?: continue
+                        val p = (level.get("price") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: continue
+                        if (bestAsk == null || p < bestAsk) bestAsk = p
+                    }
+                }
+                if (bestAsk != null) bestAskCache[assetId] = bestAsk
+                if (bestBid != null) onBestBid(assetId, bestBid, bestAsk ?: bestAskCache[assetId])
             }
 
             "price_change" -> {
@@ -184,13 +199,16 @@ class CryptoTailOrderbookWsService(
                     val assetId = (pc.get("asset_id") as? com.google.gson.JsonPrimitive)?.asString ?: continue
                     val bestBidStr = (pc.get("best_bid") as? com.google.gson.JsonPrimitive)?.asString
                     val bestBid = bestBidStr?.toSafeBigDecimal()
-                    if (bestBid != null) onBestBid(assetId, bestBid)
+                    val bestAskStr = (pc.get("best_ask") as? com.google.gson.JsonPrimitive)?.asString
+                    val bestAsk = bestAskStr?.toSafeBigDecimal()
+                    if (bestAsk != null) bestAskCache[assetId] = bestAsk
+                    if (bestBid != null) onBestBid(assetId, bestBid, bestAsk ?: bestAskCache[assetId])
                 }
             }
         }
     }
 
-    private fun onBestBid(tokenId: String, bestBid: BigDecimal) {
+    private fun onBestBid(tokenId: String, bestBid: BigDecimal, bestAsk: BigDecimal? = null) {
         if (closedForNoStrategies.get()) return
         val entries = tokenToEntries.get()[tokenId]
         if (entries == null) return
@@ -207,7 +225,8 @@ class CryptoTailOrderbookWsService(
                         marketTitle = e.marketTitle,
                         tokenIds = e.tokenIds,
                         outcomeIndex = e.outcomeIndex,
-                        bestBid = bestBid
+                        bestBid = bestBid,
+                        bestAsk = bestAsk
                     )
                 } catch (ex: Exception) {
                     logger.error("WS 触发下单异常: strategyId=${e.strategy.id}, ${ex.message}", ex)
@@ -317,11 +336,21 @@ class CryptoTailOrderbookWsService(
      */
     private fun precomputeAutoSpreadForCurrentPeriods(newMap: Map<String, List<WsBookEntry>>) {
         val autoPeriods = newMap.values.asSequence().flatten()
-            .filter { it.strategy.spreadMode == SpreadMode.AUTO }
+            .filter { it.strategy.spreadMode == SpreadMode.AUTO || it.strategy.barrierEnabled }
             .distinctBy { "${it.strategy.marketSlugPrefix}-${it.strategy.intervalSeconds}-${it.periodStartUnix}" }
             .map { Triple(it.strategy.marketSlugPrefix, it.strategy.intervalSeconds, it.periodStartUnix) }
             .toList()
         if (autoPeriods.isEmpty()) return
+        // 障碍模式：周期开始预热 Chainlink 价源（期初/当前/σ），让 WS 热路径命中缓存，避免首个 tick 阻塞拉取
+        val barrierPeriods = newMap.values.asSequence().flatten()
+            .filter { it.strategy.barrierEnabled }
+            .distinctBy { "${it.strategy.marketSlugPrefix}-${it.strategy.intervalSeconds}-${it.periodStartUnix}" }
+            .map {
+                Triple(it.strategy.marketSlugPrefix, it.strategy.intervalSeconds, it.periodStartUnix) to
+                    Triple(it.strategy.sigmaScale, it.strategy.sigmaMethod, it.strategy.ewmaLambda)
+            }
+            .toList()
+
         val job = scope.launch {
             for ((marketPrefix, intervalSeconds, periodStartUnix) in autoPeriods) {
                 try {
@@ -334,6 +363,18 @@ class CryptoTailOrderbookWsService(
                     }
                 } catch (e: Exception) {
                     logger.warn("周期开始预计算 AUTO 价差失败: market=$marketPrefix interval=$intervalSeconds periodStartUnix=$periodStartUnix ${e.message}")
+                }
+            }
+            for ((triple, sigmaCfg) in barrierPeriods) {
+                val (marketPrefix, intervalSeconds, periodStartUnix) = triple
+                val (sigmaScale, sigmaMethod, ewmaLambda) = sigmaCfg
+                if (!periodPriceProvider.isAvailable(marketPrefix)) continue
+                try {
+                    periodPriceProvider.getCurrentOpenClose(marketPrefix, intervalSeconds, periodStartUnix)
+                    periodPriceProvider.getSigmaPerSqrtS(marketPrefix, intervalSeconds, periodStartUnix, 0, sigmaScale, sigmaMethod, ewmaLambda)
+                    logger.info("障碍模式周期开始预热 Chainlink 价源: market=$marketPrefix interval=${intervalSeconds}s periodStartUnix=$periodStartUnix")
+                } catch (e: Exception) {
+                    logger.warn("障碍模式预热 Chainlink 失败: market=$marketPrefix interval=$intervalSeconds periodStartUnix=$periodStartUnix ${e.message}")
                 }
             }
         }

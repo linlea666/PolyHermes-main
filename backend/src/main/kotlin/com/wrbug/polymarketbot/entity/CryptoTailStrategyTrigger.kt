@@ -32,6 +32,22 @@ data class CryptoTailStrategyTrigger(
     @Column(name = "amount_usdc", nullable = false, precision = 20, scale = 8)
     val amountUsdc: BigDecimal = BigDecimal.ZERO,
 
+    /** 实际成交份额（shares），来自下单响应 takingAmount；null=未知/未成交 */
+    @Column(name = "filled_size", precision = 20, scale = 8)
+    val filledSize: BigDecimal? = null,
+
+    /** 实际成交金额（USDC），来自下单响应 makingAmount；null=未知/未成交 */
+    @Column(name = "filled_amount", precision = 20, scale = 8)
+    val filledAmount: BigDecimal? = null,
+
+    /** 订单类型：FAK / GTC_POST_ONLY 等 */
+    @Column(name = "order_type", length = 20)
+    val orderType: String? = null,
+
+    /** 进场 outcome 对应的 tokenId(assetId)，maker 生命周期对账/回退 FAK 时复用，避免依赖内存上下文 */
+    @Column(name = "token_id", length = 128)
+    val tokenId: String? = null,
+
     @Column(name = "order_id", length = 128)
     val orderId: String? = null,
 

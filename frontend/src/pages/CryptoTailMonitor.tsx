@@ -15,21 +15,25 @@ import {
   Tooltip,
   Modal,
   InputNumber,
-  message
+  message,
+  Table,
+  Tag
 } from 'antd'
 import { Popup as AntdMobilePopup } from 'antd-mobile'
-import { ClockCircleOutlined, SyncOutlined, InfoCircleOutlined, ShoppingCartOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, SyncOutlined, InfoCircleOutlined, ShoppingCartOutlined, DownloadOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useMediaQuery } from 'react-responsive'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 import { apiService } from '../services/api'
 import { useWebSocketSubscription } from '../hooks/useWebSocket'
-import { formatNumber } from '../utils'
+import { formatNumber, formatUSDC } from '../utils'
 import type {
   CryptoTailStrategyDto,
   CryptoTailMonitorInitResponse,
-  CryptoTailMonitorPushData
+  CryptoTailMonitorPushData,
+  CryptoTailDecisionEventDto,
+  CryptoTailCalibrationResponse
 } from '../types'
 
 const { Title, Text } = Typography
@@ -37,6 +41,12 @@ const { Title, Text } = Typography
 // localStorage keys
 const PERIOD_SWITCH_MODE_KEY = 'cryptoTailMonitor_periodSwitchMode'
 const SELECTED_STRATEGY_ID_KEY = 'cryptoTailMonitor_selectedStrategyId'
+
+/** 决策事件行键：优先用持久化 id，WS 推送未落库时（id=0）回退为复合键 */
+const decisionRowKey = (e: CryptoTailDecisionEventDto): string =>
+  e.id && e.id > 0
+    ? `id-${e.id}`
+    : `${e.correlationId}-${e.eventType}-${e.gateName ?? ''}-${e.createdAt}`
 
 /** 分时图数据点：时间戳、BTC 价格 USDC、市场 Up/Down 价格 0-1 */
 interface PriceDataPoint {
@@ -64,6 +74,45 @@ const CryptoTailMonitor: React.FC = () => {
   const [initData, setInitData] = useState<CryptoTailMonitorInitResponse | null>(null)
   const [pushData, setPushData] = useState<CryptoTailMonitorPushData | null>(null)
   const [initLoading, setInitLoading] = useState(false)
+
+  // 实时决策时间线（仅障碍模式策略有数据）
+  const [decisionEvents, setDecisionEvents] = useState<CryptoTailDecisionEventDto[]>([])
+  const [calibration, setCalibration] = useState<CryptoTailCalibrationResponse | null>(null)
+  const [exportingSnapshots, setExportingSnapshots] = useState(false)
+  const selectedStrategy = strategies.find(s => s.id === selectedStrategyId)
+  const barrierEnabled = selectedStrategy?.barrierEnabled === true
+
+  // 导出单笔成交分析快照 CSV（用于离线回测/复盘）
+  const handleExportSnapshots = async () => {
+    if (!selectedStrategyId) return
+    try {
+      setExportingSnapshots(true)
+      const res = await apiService.cryptoTailStrategy.tradeSnapshotExport({ strategyId: selectedStrategyId })
+      if (res.data.code === 0 && res.data.data) {
+        const { filename, csv, total } = res.data.data
+        if (total === 0) {
+          message.info(t('cryptoTailStrategy.decisionLog.exportEmpty'))
+          return
+        }
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename || 'crypto_tail_snapshot.csv'
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+        message.success(t('cryptoTailStrategy.decisionLog.exportSuccess', { count: total }))
+      } else {
+        message.error(res.data.msg || t('cryptoTailStrategy.decisionLog.exportFailed'))
+      }
+    } catch {
+      message.error(t('cryptoTailStrategy.decisionLog.exportFailed'))
+    } finally {
+      setExportingSnapshots(false)
+    }
+  }
 
   // 价格历史数据（用于分时图）
   const [priceHistory, setPriceHistory] = useState<PriceDataPoint[]>([])
@@ -340,6 +389,60 @@ const CryptoTailMonitor: React.FC = () => {
 
   const channel = selectedStrategyId ? `crypto_tail_monitor_${selectedStrategyId}` : ''
   useWebSocketSubscription(channel, handlePushData)
+
+  // 决策时间线：切换策略时拉取最近历史（仅障碍模式）
+  useEffect(() => {
+    if (!selectedStrategyId || !barrierEnabled) {
+      setDecisionEvents([])
+      return
+    }
+    let cancelled = false
+    apiService.cryptoTailStrategy.decisionLog({ strategyId: selectedStrategyId, page: 1, pageSize: 50 })
+      .then(res => {
+        if (cancelled) return
+        if (res.data.code === 0 && res.data.data) {
+          setDecisionEvents(res.data.data.list ?? [])
+        }
+      })
+      .catch(() => { /* 决策日志拉取失败不影响监控 */ })
+    return () => { cancelled = true }
+  }, [selectedStrategyId, barrierEnabled])
+
+  // 校准统计 + 放量闸状态：切换策略时拉取（仅障碍模式）；结算后随轮询刷新
+  useEffect(() => {
+    if (!selectedStrategyId || !barrierEnabled) {
+      setCalibration(null)
+      return
+    }
+    let cancelled = false
+    const fetchCalibration = () => {
+      apiService.cryptoTailStrategy.calibration({ strategyId: selectedStrategyId })
+        .then(res => {
+          if (cancelled) return
+          if (res.data.code === 0 && res.data.data) {
+            setCalibration(res.data.data)
+          }
+        })
+        .catch(() => { /* 校准统计拉取失败不影响监控 */ })
+    }
+    fetchCalibration()
+    const timer = window.setInterval(fetchCalibration, 30000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [selectedStrategyId, barrierEnabled])
+
+  // 决策时间线：实时增量订阅，前插去重，最多保留 100 条
+  // WS 推送的事件在异步落库前 id 可能为 0，故用复合键去重，避免漏显或 key 冲突
+  const handleDecisionPush = useCallback((data: CryptoTailDecisionEventDto) => {
+    if (data.strategyId !== selectedStrategyId) return
+    setDecisionEvents(prev => {
+      const key = decisionRowKey(data)
+      if (prev.some(e => decisionRowKey(e) === key)) return prev
+      return [data, ...prev].slice(0, 100)
+    })
+  }, [selectedStrategyId])
+
+  const decisionChannel = selectedStrategyId && barrierEnabled ? `crypto_tail_decision_${selectedStrategyId}` : ''
+  useWebSocketSubscription(decisionChannel, handleDecisionPush)
 
   // 图表容器仅在 initData 存在时渲染，故在更新图表时懒初始化
   useEffect(() => {
@@ -1213,6 +1316,194 @@ const CryptoTailMonitor: React.FC = () => {
               </Row>
             </Card>
           ) : null}
+
+          {/* 校准统计 + 放量闸（仅障碍模式） */}
+          {barrierEnabled && calibration && (
+            <Card
+              title={t('cryptoTailStrategy.calibration.title')}
+              style={{ marginTop: 16 }}
+              extra={
+                calibration.gateEnabled ? (
+                  <Tag color={calibration.scalingMode === 'PROBE' ? 'orange' : 'green'}>
+                    {calibration.scalingMode === 'PROBE'
+                      ? t('cryptoTailStrategy.calibration.modeProbe', { amount: formatUSDC(calibration.probeAmountUsdc) })
+                      : t('cryptoTailStrategy.calibration.modeFull')}
+                  </Tag>
+                ) : (
+                  <Tag>{t('cryptoTailStrategy.calibration.gateOff')}</Tag>
+                )
+              }
+            >
+              <Row gutter={[16, 16]}>
+                <Col xs={12} sm={8} md={4}>
+                  <Statistic title={t('cryptoTailStrategy.calibration.sampleCount')} value={calibration.sampleCount} />
+                </Col>
+                <Col xs={12} sm={8} md={4}>
+                  <Statistic
+                    title={t('cryptoTailStrategy.calibration.winRate')}
+                    value={calibration.winRate != null ? `${(Number(calibration.winRate) * 100).toFixed(1)}%` : '-'}
+                  />
+                </Col>
+                <Col xs={12} sm={8} md={4}>
+                  <Statistic
+                    title={t('cryptoTailStrategy.calibration.calibrationError')}
+                    value={calibration.calibrationError != null ? (Number(calibration.calibrationError) * 100).toFixed(2) : '-'}
+                    suffix={calibration.calibrationError != null ? 'pp' : ''}
+                  />
+                </Col>
+                <Col xs={12} sm={8} md={4}>
+                  <Statistic
+                    title={t('cryptoTailStrategy.calibration.totalNetPnl')}
+                    value={formatUSDC(calibration.totalNetPnl)}
+                    suffix="USDC"
+                    valueStyle={{ color: Number(calibration.totalNetPnl) >= 0 ? '#3f8600' : '#cf1322' }}
+                  />
+                </Col>
+                <Col xs={12} sm={8} md={4}>
+                  <Statistic
+                    title={t('cryptoTailStrategy.calibration.avgNetPnl')}
+                    value={calibration.avgNetPnl != null ? formatUSDC(calibration.avgNetPnl) : '-'}
+                    suffix={calibration.avgNetPnl != null ? 'USDC' : ''}
+                    valueStyle={{ color: Number(calibration.avgNetPnl ?? 0) >= 0 ? '#3f8600' : '#cf1322' }}
+                  />
+                </Col>
+              </Row>
+              {calibration.reason && (
+                <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{calibration.reason}</Text>
+              )}
+              <Table
+                rowKey="bucket"
+                size="small"
+                style={{ marginTop: 12 }}
+                pagination={false}
+                dataSource={calibration.bins}
+                scroll={{ x: 'max-content' }}
+                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('cryptoTailStrategy.calibration.empty')} /> }}
+                columns={[
+                  {
+                    title: t('cryptoTailStrategy.calibration.binRange'),
+                    key: 'range',
+                    render: (_: unknown, r: import('../types').CryptoTailCalibrationBin) =>
+                      `${(Number(r.rangeLow) * 100).toFixed(0)}%~${(Number(r.rangeHigh) * 100).toFixed(0)}%`
+                  },
+                  {
+                    title: t('cryptoTailStrategy.calibration.sampleCount'),
+                    dataIndex: 'sampleCount',
+                    key: 'sampleCount'
+                  },
+                  {
+                    title: t('cryptoTailStrategy.calibration.predictedProb'),
+                    key: 'predictedProb',
+                    render: (_: unknown, r: import('../types').CryptoTailCalibrationBin) => `${(Number(r.predictedProb) * 100).toFixed(1)}%`
+                  },
+                  {
+                    title: t('cryptoTailStrategy.calibration.actualWinRate'),
+                    key: 'actualWinRate',
+                    render: (_: unknown, r: import('../types').CryptoTailCalibrationBin) => `${(Number(r.actualWinRate) * 100).toFixed(1)}%`
+                  },
+                  {
+                    title: t('cryptoTailStrategy.calibration.netPnl'),
+                    key: 'netPnl',
+                    render: (_: unknown, r: import('../types').CryptoTailCalibrationBin) => (
+                      <Text style={{ color: Number(r.netPnl) >= 0 ? '#3f8600' : '#cf1322' }}>{formatUSDC(r.netPnl)}</Text>
+                    )
+                  }
+                ]}
+              />
+            </Card>
+          )}
+
+          {/* 实时决策时间线（仅障碍模式） */}
+          {barrierEnabled && (
+            <Card
+              title={t('cryptoTailStrategy.decisionLog.title')}
+              style={{ marginTop: 16 }}
+              extra={
+                <Button
+                  icon={<DownloadOutlined />}
+                  size="small"
+                  loading={exportingSnapshots}
+                  onClick={handleExportSnapshots}
+                >
+                  {t('cryptoTailStrategy.decisionLog.exportCsv')}
+                </Button>
+              }
+            >
+              <Table
+                rowKey={decisionRowKey}
+                size="small"
+                dataSource={decisionEvents}
+                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('cryptoTailStrategy.decisionLog.empty')} /> }}
+                columns={[
+                  {
+                    title: t('cryptoTailStrategy.decisionLog.time'),
+                    dataIndex: 'createdAt',
+                    key: 'createdAt',
+                    width: 172,
+                    render: (ts: number) => <Text>{new Date(ts).toLocaleString()}</Text>
+                  },
+                  {
+                    title: t('cryptoTailStrategy.decisionLog.eventType'),
+                    dataIndex: 'eventType',
+                    key: 'eventType',
+                    width: 110,
+                    render: (v: string) => {
+                      const label = t(`cryptoTailStrategy.decisionLog.eventType_${v}`, { defaultValue: v })
+                      const color = v === 'SETTLED' ? 'purple' : v === 'GATE_PASSED' || v === 'ORDER_RESULT' ? 'green' : v === 'GATE_FAILED' ? 'volcano' : 'blue'
+                      return <Tag color={color}>{label}</Tag>
+                    }
+                  },
+                  {
+                    title: t('cryptoTailStrategy.decisionLog.gate'),
+                    dataIndex: 'gateName',
+                    key: 'gateName',
+                    width: 110,
+                    render: (v: string | null | undefined) => v ? <Text code>{v}</Text> : <Text type="secondary">-</Text>
+                  },
+                  {
+                    title: t('cryptoTailStrategy.decisionLog.result'),
+                    dataIndex: 'passed',
+                    key: 'passed',
+                    width: 80,
+                    align: 'center',
+                    render: (v: boolean | null | undefined) =>
+                      v == null ? <Text type="secondary">-</Text>
+                        : v ? <Tag color="green">{t('cryptoTailStrategy.decisionLog.passed')}</Tag>
+                          : <Tag color="red">{t('cryptoTailStrategy.decisionLog.failed')}</Tag>
+                  },
+                  {
+                    title: t('cryptoTailStrategy.decisionLog.direction'),
+                    dataIndex: 'outcomeIndex',
+                    key: 'outcomeIndex',
+                    width: 70,
+                    align: 'center',
+                    render: (i: number | null | undefined) =>
+                      i == null ? <Text type="secondary">-</Text>
+                        : i === 0 ? <Tag color="green">{t('cryptoTailStrategy.triggerRecords.up')}</Tag>
+                          : <Tag color="volcano">{t('cryptoTailStrategy.triggerRecords.down')}</Tag>
+                  },
+                  {
+                    title: t('cryptoTailStrategy.decisionLog.reason'),
+                    dataIndex: 'reason',
+                    key: 'reason',
+                    ellipsis: true,
+                    render: (v: string | null | undefined, r: CryptoTailDecisionEventDto) => {
+                      const text = v ?? '-'
+                      return r.payloadJson ? (
+                        <Tooltip title={<pre style={{ margin: 0, whiteSpace: 'pre-wrap', maxWidth: 360 }}>{r.payloadJson}</pre>}>
+                          <Text ellipsis style={{ maxWidth: 260 }}>{text}</Text>
+                        </Tooltip>
+                      ) : (
+                        <Text type={text === '-' ? 'secondary' : undefined}>{text}</Text>
+                      )
+                    }
+                  }
+                ]}
+                pagination={{ pageSize: 10, size: 'small', showSizeChanger: false }}
+                scroll={{ x: 640 }}
+              />
+            </Card>
+          )}
 
           {/* 策略信息 */}
           <Card title={t('cryptoTailMonitor.strategyInfo.title')} style={{ marginTop: 16 }}>

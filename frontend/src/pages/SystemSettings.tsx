@@ -5,7 +5,7 @@ import { SaveOutlined, CheckCircleOutlined, ReloadOutlined, GlobalOutlined, Noti
 import { apiService } from '../services/api'
 import { useMediaQuery } from 'react-responsive'
 import { useTranslation } from 'react-i18next'
-import type { SystemConfig, BuilderApiKeyUpdateRequest } from '../types'
+import type { SystemConfig, BuilderApiKeyUpdateRequest, ChainlinkConfigUpdateRequest } from '../types'
 import SystemUpdate from './SystemUpdate'
 
 const { Title, Text, Paragraph } = Typography
@@ -45,6 +45,10 @@ const SystemSettings: React.FC = () => {
   const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null)
   const [relayerLoading, setRelayerLoading] = useState(false)
   const [autoRedeemLoading, setAutoRedeemLoading] = useState(false)
+
+  // Chainlink Data Streams 配置（crypto-tail 障碍模式价源）
+  const [chainlinkForm] = Form.useForm()
+  const [chainlinkLoading, setChainlinkLoading] = useState(false)
 
   // 第四部分：代理设置
   const [proxyForm] = Form.useForm()
@@ -111,9 +115,47 @@ const SystemSettings: React.FC = () => {
         autoRedeemForm.setFieldsValue({
           autoRedeemEnabled: config.autoRedeemEnabled
         })
+        chainlinkForm.setFieldsValue({
+          apiKey: config.chainlinkApiKeyDisplay || '',
+          apiSecret: '',
+          restBase: config.chainlinkRestBase || '',
+          feedBtc: config.chainlinkFeedBtc || '',
+          feedEth: config.chainlinkFeedEth || '',
+          feedSol: config.chainlinkFeedSol || '',
+          feedXrp: config.chainlinkFeedXrp || '',
+        })
       }
     } catch (error: any) {
       console.error('获取系统配置失败:', error)
+    }
+  }
+
+  const handleChainlinkSubmit = async (values: ChainlinkConfigUpdateRequest) => {
+    setChainlinkLoading(true)
+    try {
+      // 全部字段都下发（空串=清空，null=不变）；apiSecret 留空表示不修改
+      const updateData: ChainlinkConfigUpdateRequest = {
+        apiKey: values.apiKey ?? '',
+        restBase: values.restBase ?? '',
+        feedBtc: values.feedBtc ?? '',
+        feedEth: values.feedEth ?? '',
+        feedSol: values.feedSol ?? '',
+        feedXrp: values.feedXrp ?? '',
+      }
+      if (values.apiSecret && values.apiSecret.trim()) {
+        updateData.apiSecret = values.apiSecret.trim()
+      }
+      const response = await apiService.systemConfig.updateChainlinkConfig(updateData)
+      if (response.data.code === 0) {
+        message.success(t('chainlinkConfig.saveSuccess'))
+        fetchSystemConfig()
+      } else {
+        message.error(response.data.msg || t('chainlinkConfig.saveFailed'))
+      }
+    } catch (error: any) {
+      message.error(error.message || t('chainlinkConfig.saveFailed'))
+    } finally {
+      setChainlinkLoading(false)
     }
   }
 
@@ -478,6 +520,79 @@ const SystemSettings: React.FC = () => {
             </Form.Item>
           </Form>
         </div>
+      </Card>
+
+      {/* Chainlink Data Streams 配置（crypto-tail 障碍模式价源） */}
+      <Card
+        title={
+          <Space>
+            <KeyOutlined />
+            <span>{t('chainlinkConfig.title')}</span>
+          </Space>
+        }
+        style={{ marginBottom: '16px' }}
+      >
+        <Alert
+          message={t('chainlinkConfig.alertTitle')}
+          description={
+            <div>
+              <Paragraph style={{ marginBottom: '8px' }}>
+                {t('chainlinkConfig.description')}
+              </Paragraph>
+              <Paragraph style={{ marginBottom: 0 }}>
+                <Space>
+                  <a href="https://docs.chain.link/data-streams/crypto-streams" target="_blank" rel="noopener noreferrer">
+                    <LinkOutlined /> {t('chainlinkConfig.feedDocs')}
+                  </a>
+                </Space>
+              </Paragraph>
+            </div>
+          }
+          type="info"
+          showIcon
+          style={{ marginBottom: '16px' }}
+        />
+        <Form
+          form={chainlinkForm}
+          layout="vertical"
+          onFinish={handleChainlinkSubmit}
+          size={isMobile ? 'middle' : 'large'}
+        >
+          <Form.Item label={t('chainlinkConfig.apiKey')} name="apiKey">
+            <Input placeholder={t('chainlinkConfig.apiKeyPlaceholder')} style={{ fontFamily: 'monospace' }} />
+          </Form.Item>
+          <Form.Item
+            label={t('chainlinkConfig.apiSecret')}
+            name="apiSecret"
+            help={systemConfig?.chainlinkApiSecretConfigured ? t('chainlinkConfig.apiSecretHelp') : undefined}
+          >
+            <Input.Password
+              placeholder={systemConfig?.chainlinkApiSecretConfigured ? t('chainlinkConfig.apiSecretHelp') : t('chainlinkConfig.apiSecretPlaceholder')}
+              style={{ fontFamily: 'monospace' }}
+              iconRender={(visible) => (visible ? <span>👁️</span> : <span>👁️‍🗨️</span>)}
+            />
+          </Form.Item>
+          <Form.Item label={t('chainlinkConfig.feedBtc')} name="feedBtc">
+            <Input placeholder="0x..." style={{ fontFamily: 'monospace' }} />
+          </Form.Item>
+          <Form.Item label={t('chainlinkConfig.feedEth')} name="feedEth">
+            <Input placeholder="0x..." style={{ fontFamily: 'monospace' }} />
+          </Form.Item>
+          <Form.Item label={t('chainlinkConfig.feedSol')} name="feedSol">
+            <Input placeholder="0x..." style={{ fontFamily: 'monospace' }} />
+          </Form.Item>
+          <Form.Item label={t('chainlinkConfig.feedXrp')} name="feedXrp">
+            <Input placeholder="0x..." style={{ fontFamily: 'monospace' }} />
+          </Form.Item>
+          <Form.Item label={t('chainlinkConfig.restBase')} name="restBase" help={t('chainlinkConfig.restBaseHelp')}>
+            <Input placeholder="https://api.dataengine.chain.link" style={{ fontFamily: 'monospace' }} />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={chainlinkLoading}>
+              {t('common.save') || '保存配置'}
+            </Button>
+          </Form.Item>
+        </Form>
       </Card>
 
       {/* 第四部分：代理设置 */}

@@ -2,15 +2,19 @@ package com.wrbug.polymarketbot.service.cryptotail
 
 import com.wrbug.polymarketbot.api.GammaEventBySlugResponse
 import com.wrbug.polymarketbot.api.PolymarketDataApi
+import com.wrbug.polymarketbot.entity.CryptoTailDecisionEvent
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.entity.CryptoTailStrategyTrigger
 import com.wrbug.polymarketbot.repository.AccountRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
+import com.wrbug.polymarketbot.service.binance.BinanceKlineAutoSpreadService
+import com.wrbug.polymarketbot.service.binance.BinanceKlineService
 import com.wrbug.polymarketbot.service.common.BlockchainService
 import com.wrbug.polymarketbot.util.RetrofitFactory
 import com.wrbug.polymarketbot.util.gt
 import com.wrbug.polymarketbot.util.multi
+import com.wrbug.polymarketbot.util.toJson
 import com.wrbug.polymarketbot.util.toSafeBigDecimal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,7 +41,11 @@ class CryptoTailSettlementService(
     private val strategyRepository: CryptoTailStrategyRepository,
     private val accountRepository: AccountRepository,
     private val retrofitFactory: RetrofitFactory,
-    private val blockchainService: BlockchainService
+    private val blockchainService: BlockchainService,
+    private val decisionRecorder: CryptoTailDecisionRecorder,
+    private val binanceKlineService: BinanceKlineService,
+    private val binanceKlineAutoSpreadService: BinanceKlineAutoSpreadService,
+    private val periodPriceProvider: PeriodPriceProvider
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailSettlementService::class.java)
@@ -109,24 +117,32 @@ class CryptoTailSettlementService(
         if (trigger.resolved) return false
         val strategy = strategyRepository.findById(trigger.strategyId).orElse(null) ?: return false
         val conditionId = resolveConditionId(strategy, trigger) ?: return false
-        val fill = fetchActivityFill(trigger, strategy, conditionId)
-        val (newTriggerPrice, newAmountUsdc) = if (fill != null && fill.price.gt(BigDecimal.ZERO) && fill.size.gt(BigDecimal.ZERO)) {
-            val amountUsdc = fill.usdcSize?.takeIf { it.gt(BigDecimal.ZERO) }
-                ?: fill.price.multi(fill.size).setScale(pnlScale, RoundingMode.HALF_UP)
-            Pair(fill.price, amountUsdc)
-        } else {
-            Pair(trigger.triggerPrice, trigger.amountUsdc)
+        // 成交量/成本优先用下单响应的真实成交（最权威、即时、不依赖 Activity WS）；其次 Activity；都无则回退
+        val activityFill = fetchActivityFill(trigger, strategy, conditionId)
+        val fs = trigger.filledSize
+        val fa = trigger.filledAmount
+        val resolved: ResolvedFill? = when {
+            fs != null && fa != null && fs.gt(BigDecimal.ZERO) && fa.gt(BigDecimal.ZERO) ->
+                ResolvedFill(fs, fa, fa.divide(fs, pnlScale, RoundingMode.HALF_UP), "ORDER_RESPONSE")
+            activityFill != null && activityFill.price.gt(BigDecimal.ZERO) && activityFill.size.gt(BigDecimal.ZERO) -> {
+                val cost = activityFill.usdcSize?.takeIf { it.gt(BigDecimal.ZERO) }
+                    ?: activityFill.price.multi(activityFill.size).setScale(pnlScale, RoundingMode.HALF_UP)
+                ResolvedFill(activityFill.size, cost, activityFill.price, "ACTIVITY_API")
+            }
+            else -> null
         }
+        val newTriggerPrice = resolved?.price ?: trigger.triggerPrice
+        val newAmountUsdc = resolved?.cost ?: trigger.amountUsdc
 
         val (_, payouts) = blockchainService.getCondition(conditionId).getOrNull() ?: run {
-            if (fill != null) {
+            if (resolved != null) {
                 val updated = trigger.copy(triggerPrice = newTriggerPrice, amountUsdc = newAmountUsdc)
                 triggerRepository.save(updated)
             }
             return false
         }
         if (payouts.isEmpty()) {
-            if (fill != null) {
+            if (resolved != null) {
                 val updated = trigger.copy(triggerPrice = newTriggerPrice, amountUsdc = newAmountUsdc)
                 triggerRepository.save(updated)
             }
@@ -136,12 +152,16 @@ class CryptoTailSettlementService(
         if (winnerIndex < 0) return false
 
         val won = trigger.outcomeIndex == winnerIndex
-        val pnl = if (fill != null && fill.price.gt(BigDecimal.ZERO) && fill.size.gt(BigDecimal.ZERO)) {
-            if (won) newAmountUsdc.let { fill.size.subtract(it).setScale(pnlScale, RoundingMode.HALF_UP) }
-            else newAmountUsdc.negate().setScale(pnlScale, RoundingMode.HALF_UP)
+        // 归因以实际 payout 为准并净额化(C-5)：
+        //  毛盈亏：胜=份额×$1−成本(份额−成本)；负=−成本
+        //  净额化：扣 gas（每笔 gasCostUsdc）；taker 单扣手续费(成本×takerFeeBps/10000)，maker 单加返佣(成本×makerRebateBps/10000)
+        val grossPnl = if (resolved != null) {
+            (if (won) resolved.size.subtract(resolved.cost) else resolved.cost.negate()).setScale(pnlScale, RoundingMode.HALF_UP)
         } else {
             computePnlFallback(trigger.amountUsdc, won)
         }
+        val feeAdj = if (resolved != null) feeAdjustment(strategy, trigger, resolved.cost) else BigDecimal.ZERO
+        val pnl = grossPnl.add(feeAdj).setScale(pnlScale, RoundingMode.HALF_UP)
         val now = System.currentTimeMillis()
 
         val updated = trigger.copy(
@@ -155,7 +175,61 @@ class CryptoTailSettlementService(
         )
         triggerRepository.save(updated)
         logger.debug("加密价差策略结算已更新: triggerId=${trigger.id}, winnerOutcomeIndex=$winnerIndex, won=$won, pnl=$pnl")
+
+        // 障碍模式：记录结算结果到全链路决策日志（链路终点），并携带最终 K 线用于反转判定与复盘
+        if (strategy.barrierEnabled) {
+            val finalOc = getFinalOpenClose(strategy, trigger.periodStartUnix)
+            val settleSource = resolved?.source ?: "FALLBACK"
+            val payload = mutableMapOf<String, Any?>(
+                "won" to won,
+                "winnerOutcomeIndex" to winnerIndex,
+                "outcomeIndex" to trigger.outcomeIndex,
+                "realizedPnl" to pnl.toPlainString(),
+                "grossPnl" to grossPnl.toPlainString(),
+                "feeAdjustment" to feeAdj.toPlainString(),
+                "orderType" to (trigger.orderType ?: ""),
+                "amountUsdc" to newAmountUsdc.toPlainString(),
+                "fillPrice" to newTriggerPrice.toPlainString(),
+                "fillSize" to (resolved?.size?.toPlainString() ?: ""),
+                "settleTs" to now.toString(),
+                "settleSource" to settleSource
+            )
+            if (finalOc != null) {
+                val (fOpen, fClose) = finalOc
+                payload["finalOpen"] = fOpen.toPlainString()
+                payload["finalClose"] = fClose.toPlainString()
+                payload["finalGap"] = fClose.subtract(fOpen).toPlainString()
+                payload["finalPriceSource"] = if (strategy.barrierEnabled) "CHAINLINK" else "BINANCE"
+            }
+            decisionRecorder.record(
+                CryptoTailDecisionEvent(
+                    strategyId = trigger.strategyId,
+                    periodStartUnix = trigger.periodStartUnix,
+                    correlationId = "${trigger.strategyId}-${trigger.periodStartUnix}",
+                    eventType = "SETTLED",
+                    gateName = null,
+                    passed = won,
+                    reason = if (won) "结算获胜" else "结算失败",
+                    payloadJson = payload.toJson(),
+                    outcomeIndex = trigger.outcomeIndex,
+                    triggerId = trigger.id
+                )
+            )
+        }
         return true
+    }
+
+    /**
+     * 取结算周期的最终 (open, close)。
+     * 障碍模式用 Chainlink（与 Polymarket 结算源一致，按精确时间戳取窗口期初/期末），不可用则返回 null（不造假、不回退币安）。
+     * 非障碍模式沿用币安进程内缓存/REST 兜底（旧逻辑不变）。
+     */
+    private fun getFinalOpenClose(strategy: CryptoTailStrategy, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? {
+        if (strategy.barrierEnabled) {
+            return periodPriceProvider.getFinalOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
+        }
+        return binanceKlineService.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
+            ?: binanceKlineAutoSpreadService.fetchPeriodOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
     }
 
     private suspend fun resolveConditionId(strategy: CryptoTailStrategy, trigger: CryptoTailStrategyTrigger): String? {
@@ -189,6 +263,14 @@ class CryptoTailSettlementService(
         val price: BigDecimal,
         val size: BigDecimal,
         val usdcSize: BigDecimal?
+    )
+
+    /** 统一后的成交结论：份额、成本(USDC)、均价、来源（ORDER_RESPONSE 最权威 > ACTIVITY_API） */
+    private data class ResolvedFill(
+        val size: BigDecimal,
+        val cost: BigDecimal,
+        val price: BigDecimal,
+        val source: String
     )
 
     /**
@@ -274,6 +356,22 @@ class CryptoTailSettlementService(
         } else {
             amountUsdc.negate()
         }
+    }
+
+    /**
+     * 净额化费用调整（与 EV 闸口径一致，C-5）：
+     *  - maker 单(GTC_POST_ONLY)：+返佣 cost×makerRebateBps/10000
+     *  - taker 单(FAK/其它)：−手续费 cost×takerFeeBps/10000
+     *  - 统一再扣每笔 gas（gasCostUsdc）
+     */
+    private fun feeAdjustment(strategy: CryptoTailStrategy, trigger: CryptoTailStrategyTrigger, cost: BigDecimal): BigDecimal {
+        val isMaker = (trigger.orderType ?: "").uppercase().startsWith("GTC")
+        val feeOrRebate = if (isMaker) {
+            cost.multiply(BigDecimal(strategy.makerRebateBps)).divide(BigDecimal(10000), pnlScale, RoundingMode.HALF_UP)
+        } else {
+            cost.multiply(BigDecimal(strategy.takerFeeBps)).divide(BigDecimal(10000), pnlScale, RoundingMode.HALF_UP).negate()
+        }
+        return feeOrRebate.subtract(strategy.gasCostUsdc)
     }
 
     @PreDestroy

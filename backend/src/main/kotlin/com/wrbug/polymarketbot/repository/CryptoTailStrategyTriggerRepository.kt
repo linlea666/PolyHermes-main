@@ -26,6 +26,9 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
     /** 根据订单 ID 查询加密价差策略触发记录 */
     fun findByOrderId(orderId: String): CryptoTailStrategyTrigger?
 
+    /** maker 挂单生命周期对账：扫描 status=pending 且 orderId 非空的触发记录，按创建时间正序 */
+    fun findByStatusAndOrderIdIsNotNullOrderByCreatedAtAsc(status: String): List<CryptoTailStrategyTrigger>
+
     /** 轮询发 TG：status=success、orderId 非空、未发过通知，按创建时间正序 */
     fun findByStatusAndOrderIdIsNotNullAndNotificationSentFalseOrderByCreatedAtAsc(status: String): List<CryptoTailStrategyTrigger>
 
@@ -36,6 +39,13 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
     /** 策略已结算订单笔数（用于胜率分母） */
     @Query("SELECT COUNT(t) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true")
     fun countResolvedByStrategyId(@Param("strategyId") strategyId: Long): Long
+
+    /** 风控-日亏闸：指定结算时间点之后已结算订单的已实现盈亏之和（settledAt 为毫秒时间戳） */
+    @Query("SELECT COALESCE(SUM(t.realizedPnl), 0) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true AND t.settledAt >= :settledAtAfter")
+    fun sumRealizedPnlByStrategyIdAndSettledAtAfter(@Param("strategyId") strategyId: Long, @Param("settledAtAfter") settledAtAfter: Long): BigDecimal?
+
+    /** 风控-并发敞口闸：已成功下单但未结算的笔数 */
+    fun countByStrategyIdAndStatusAndResolvedFalse(strategyId: Long, status: String): Long
 
     /** 策略已结算中赢的笔数（outcome_index = winner_outcome_index） */
     @Query("SELECT COUNT(t) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true AND t.outcomeIndex = t.winnerOutcomeIndex")

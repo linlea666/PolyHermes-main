@@ -549,6 +549,15 @@ export const apiService = {
       spreadValue?: string | null
       spreadDirection?: string
       enabled?: boolean
+      barrierEnabled?: boolean
+      entryProb?: string
+      entryEdge?: string
+      maxEntryPrice?: string
+      costBuffer?: string
+      barrierMinMarketProb?: string
+      sigmaScale?: string
+      dailyLossLimitUsdc?: string | null
+      maxConcurrentPositions?: number | null
     }) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/create', data),
     update: (data: {
@@ -564,6 +573,15 @@ export const apiService = {
       spreadValue?: string | null
       spreadDirection?: string
       enabled?: boolean
+      barrierEnabled?: boolean
+      entryProb?: string
+      entryEdge?: string
+      maxEntryPrice?: string
+      costBuffer?: string
+      barrierMinMarketProb?: string
+      sigmaScale?: string
+      dailyLossLimitUsdc?: string | null
+      maxConcurrentPositions?: number | null
     }) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/update', data),
     delete: (data: { strategyId: number }) =>
@@ -579,6 +597,14 @@ export const apiService = {
       apiClient.post<ApiResponse<{ list: import('../types').CryptoTailStrategyTriggerDto[]; total: number }>>('/crypto-tail-strategy/triggers', data),
     pnlCurve: (data: import('../types').CryptoTailPnlCurveRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailPnlCurveResponse>>('/crypto-tail-strategy/pnl-curve', data),
+    calibration: (data: import('../types').CryptoTailCalibrationRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailCalibrationResponse>>('/crypto-tail-strategy/calibration', data),
+    decisionLog: (data: import('../types').CryptoTailDecisionLogListRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogListResponse>>('/crypto-tail-strategy/decision-log/list', data),
+    tradeSnapshotList: (data: import('../types').CryptoTailTradeSnapshotListRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailTradeSnapshotListResponse>>('/crypto-tail-strategy/decision/snapshot/list', data),
+    tradeSnapshotExport: (data: import('../types').CryptoTailTradeSnapshotExportRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailTradeSnapshotExportResponse>>('/crypto-tail-strategy/decision/snapshot/export', data),
     marketOptions: () =>
       apiClient.post<ApiResponse<import('../types').CryptoTailMarketOptionDto[]>>('/crypto-tail-strategy/market-options', {}),
     autoMinSpread: (data: { intervalSeconds: number }) =>
@@ -846,6 +872,12 @@ export const apiService = {
      */
     updateBuilderApiKey: (data: import('../types').BuilderApiKeyUpdateRequest) =>
       apiClient.post<ApiResponse<import('../types').SystemConfig>>('/system/config/builder-api-key/update', data),
+
+    /**
+     * 更新 Chainlink Data Streams 配置（crypto-tail 障碍模式价源）
+     */
+    updateChainlinkConfig: (data: import('../types').ChainlinkConfigUpdateRequest) =>
+      apiClient.post<ApiResponse<import('../types').SystemConfig>>('/system/config/chainlink/update', data),
     
     /**
      * 检查 Builder API Key 是否已配置

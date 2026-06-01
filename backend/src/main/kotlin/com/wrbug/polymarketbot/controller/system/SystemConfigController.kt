@@ -112,6 +112,26 @@ class SystemConfigController(
     }
     
     /**
+     * 更新 Chainlink Data Streams 配置（crypto-tail 障碍模式价源）
+     */
+    @PostMapping("/chainlink/update")
+    fun updateChainlinkConfig(@RequestBody request: ChainlinkConfigUpdateRequest): ResponseEntity<ApiResponse<SystemConfigDto>> {
+        return try {
+            val result = systemConfigService.updateChainlinkConfig(request)
+            result.fold(
+                onSuccess = { config -> ResponseEntity.ok(ApiResponse.success(config)) },
+                onFailure = { e ->
+                    logger.error("更新 Chainlink 配置失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_ERROR, "更新 Chainlink 配置失败: ${e.message}", messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("更新 Chainlink 配置异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_ERROR, "更新 Chainlink 配置失败: ${e.message}", messageSource))
+        }
+    }
+
+    /**
      * 获取自动赎回状态
      */
     @PostMapping("/auto-redeem/status")

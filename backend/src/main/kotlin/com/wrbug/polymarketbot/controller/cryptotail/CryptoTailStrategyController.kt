@@ -17,6 +17,14 @@ import com.wrbug.polymarketbot.dto.CryptoTailManualOrderRequest
 import com.wrbug.polymarketbot.dto.CryptoTailManualOrderResponse
 import com.wrbug.polymarketbot.dto.CryptoTailPnlCurveRequest
 import com.wrbug.polymarketbot.dto.CryptoTailPnlCurveResponse
+import com.wrbug.polymarketbot.dto.CryptoTailCalibrationRequest
+import com.wrbug.polymarketbot.dto.CryptoTailCalibrationResponse
+import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogListRequest
+import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogListResponse
+import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotListRequest
+import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotListResponse
+import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotExportRequest
+import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotExportResponse
 import com.wrbug.polymarketbot.enums.ErrorCode
 import com.wrbug.polymarketbot.service.binance.BinanceKlineAutoSpreadService
 import com.wrbug.polymarketbot.service.cryptotail.CryptoTailStrategyService
@@ -73,6 +81,7 @@ class CryptoTailStrategyController(
                         ErrorCode.CRYPTO_TAIL_STRATEGY_WINDOW_EXCEED.messageKey -> ErrorCode.CRYPTO_TAIL_STRATEGY_WINDOW_EXCEED
                         ErrorCode.CRYPTO_TAIL_STRATEGY_INTERVAL_INVALID.messageKey -> ErrorCode.CRYPTO_TAIL_STRATEGY_INTERVAL_INVALID
                         ErrorCode.CRYPTO_TAIL_STRATEGY_AMOUNT_MODE_INVALID.messageKey -> ErrorCode.CRYPTO_TAIL_STRATEGY_AMOUNT_MODE_INVALID
+                        ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey -> ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID
                         else -> ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_CREATE_FAILED
                     }
                     ResponseEntity.ok(ApiResponse.error(code, messageSource = messageSource))
@@ -100,6 +109,7 @@ class CryptoTailStrategyController(
                         ErrorCode.CRYPTO_TAIL_STRATEGY_WINDOW_INVALID.messageKey -> ErrorCode.CRYPTO_TAIL_STRATEGY_WINDOW_INVALID
                         ErrorCode.CRYPTO_TAIL_STRATEGY_WINDOW_EXCEED.messageKey -> ErrorCode.CRYPTO_TAIL_STRATEGY_WINDOW_EXCEED
                         ErrorCode.CRYPTO_TAIL_STRATEGY_AMOUNT_MODE_INVALID.messageKey -> ErrorCode.CRYPTO_TAIL_STRATEGY_AMOUNT_MODE_INVALID
+                        ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey -> ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID
                         else -> ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_UPDATE_FAILED
                     }
                     ResponseEntity.ok(ApiResponse.error(code, messageSource = messageSource))
@@ -152,6 +162,26 @@ class CryptoTailStrategyController(
         }
     }
 
+    @PostMapping("/calibration")
+    fun getCalibration(@RequestBody request: CryptoTailCalibrationRequest): ResponseEntity<ApiResponse<CryptoTailCalibrationResponse>> {
+        return try {
+            if (request.strategyId <= 0) {
+                return ResponseEntity.ok(ApiResponse.error(ErrorCode.CRYPTO_TAIL_STRATEGY_NOT_FOUND, messageSource = messageSource))
+            }
+            val result = cryptoTailStrategyService.getCalibration(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("查询校准统计失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("查询校准统计异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
     @PostMapping("/triggers")
     fun getTriggerRecords(@RequestBody request: CryptoTailStrategyTriggerListRequest): ResponseEntity<ApiResponse<CryptoTailStrategyTriggerListResponse>> {
         return try {
@@ -168,6 +198,66 @@ class CryptoTailStrategyController(
             )
         } catch (e: Exception) {
             logger.error("查询触发记录异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
+    @PostMapping("/decision-log/list")
+    fun getDecisionLog(@RequestBody request: CryptoTailDecisionLogListRequest): ResponseEntity<ApiResponse<CryptoTailDecisionLogListResponse>> {
+        return try {
+            if (request.strategyId <= 0) {
+                return ResponseEntity.ok(ApiResponse.error(ErrorCode.CRYPTO_TAIL_STRATEGY_NOT_FOUND, messageSource = messageSource))
+            }
+            val result = cryptoTailStrategyService.getDecisionLog(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("查询决策日志失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("查询决策日志异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
+    @PostMapping("/decision/snapshot/list")
+    fun getTradeSnapshots(@RequestBody request: CryptoTailTradeSnapshotListRequest): ResponseEntity<ApiResponse<CryptoTailTradeSnapshotListResponse>> {
+        return try {
+            if (request.strategyId <= 0) {
+                return ResponseEntity.ok(ApiResponse.error(ErrorCode.CRYPTO_TAIL_STRATEGY_NOT_FOUND, messageSource = messageSource))
+            }
+            val result = cryptoTailStrategyService.getTradeSnapshots(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("查询单笔成交快照失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("查询单笔成交快照异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
+    @PostMapping("/decision/snapshot/export")
+    fun exportTradeSnapshots(@RequestBody request: CryptoTailTradeSnapshotExportRequest): ResponseEntity<ApiResponse<CryptoTailTradeSnapshotExportResponse>> {
+        return try {
+            if (request.strategyId <= 0) {
+                return ResponseEntity.ok(ApiResponse.error(ErrorCode.CRYPTO_TAIL_STRATEGY_NOT_FOUND, messageSource = messageSource))
+            }
+            val result = cryptoTailStrategyService.exportTradeSnapshots(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("导出单笔成交快照失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("导出单笔成交快照异常: ${e.message}", e)
             ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
         }
     }

@@ -71,6 +71,27 @@ class BinanceKlineAutoSpreadService(
         return if (outcomeIndex == 0) up else down
     }
 
+    /**
+     * 障碍（终值概率）模型用：返回每 √秒 的波动率 σ_per_√s = baseSpread(outcome) * sigmaScale / √interval。
+     * 复用与 AUTO 价差相同的 IQR 基准缓存；baseSpread 为该方向 |close-open| 的 IQR 均值（平均绝对位移），
+     * sigmaScale 默认 √(π/2)≈1.2533 将平均绝对位移修正为标准差。
+     * @return null 表示基准价差不可用（无历史样本/不支持的市场），调用方应跳过
+     */
+    fun getSigmaPerSqrtS(
+        marketSlugPrefix: String,
+        intervalSeconds: Int,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        sigmaScale: BigDecimal
+    ): BigDecimal? {
+        if (intervalSeconds <= 0 || sigmaScale <= BigDecimal.ZERO) return null
+        val baseSpread = getAutoMinSpreadBase(marketSlugPrefix, intervalSeconds, periodStartUnix, outcomeIndex) ?: return null
+        if (baseSpread <= BigDecimal.ZERO) return null
+        val sqrtInterval = BigDecimal(Math.sqrt(intervalSeconds.toDouble()))
+        if (sqrtInterval <= BigDecimal.ZERO) return null
+        return baseSpread.multiply(sigmaScale).divide(sqrtInterval, 18, RoundingMode.HALF_UP)
+    }
+
     /** 计算并缓存 100% 基准价差（IQR 平均，不乘系数）。预加载与触发时共用此缓存。 */
     fun computeAndCache(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? {
         cleanExpiredCache()
@@ -101,16 +122,63 @@ class BinanceKlineAutoSpreadService(
         return baseUp to baseDown
     }
 
-    private fun fetchKlines(symbol: String, interval: String, limit: Int, endTime: Long? = null): List<List<Any>>? {
+    /** 一根 K 线的 OHLC（供 Garman-Klass 波动率估计用） */
+    data class Ohlc(
+        val open: BigDecimal,
+        val high: BigDecimal,
+        val low: BigDecimal,
+        val close: BigDecimal
+    )
+
+    /**
+     * Garman-Klass σ 估计用：拉取 endExclusiveUnix（秒）之前最近 limit 根已收盘 K 线的 OHLC，按时间升序返回。
+     * 仅作为「波动幅度代理」，与障碍模型的价格水平(Chainlink)解耦；不可用返回 null。
+     */
+    fun fetchRecentOhlc(marketSlugPrefix: String, intervalSeconds: Int, limit: Int, endExclusiveUnix: Long): List<Ohlc>? {
+        val symbol = getSymbol(marketSlugPrefix) ?: return null
+        val intervalStr = if (intervalSeconds == 300) "5m" else "15m"
+        val klines = fetchKlines(symbol, intervalStr, limit, endTime = endExclusiveUnix * 1000L) ?: return null
+        val result = ArrayList<Ohlc>(klines.size)
+        for (k in klines) {
+            if (k.size < 5) continue
+            val o = k.getOrNull(1)?.toString()?.toSafeBigDecimal() ?: continue
+            val h = k.getOrNull(2)?.toString()?.toSafeBigDecimal() ?: continue
+            val l = k.getOrNull(3)?.toString()?.toSafeBigDecimal() ?: continue
+            val c = k.getOrNull(4)?.toString()?.toSafeBigDecimal() ?: continue
+            if (o > BigDecimal.ZERO && h > BigDecimal.ZERO && l > BigDecimal.ZERO && c > BigDecimal.ZERO) {
+                result.add(Ohlc(o, h, l, c))
+            }
+        }
+        return result
+    }
+
+    private fun fetchKlines(symbol: String, interval: String, limit: Int, startTime: Long? = null, endTime: Long? = null): List<List<Any>>? {
         return try {
             val api = retrofitFactory.createBinanceApi()
-            val call = api.getKlines(symbol = symbol, interval = interval, limit = limit, endTime = endTime)
+            val call = api.getKlines(symbol = symbol, interval = interval, limit = limit, startTime = startTime, endTime = endTime)
             val response = call.execute()
             if (response.isSuccessful && response.body() != null) response.body() else null
         } catch (e: Exception) {
             logger.warn("拉取币安 K 线失败: ${e.message}")
             null
         }
+    }
+
+    /**
+     * 结算复盘用：按 periodStartUnix 通过 REST 拉取该周期的最终 (open, close)。
+     * 用于结算时进程内存缓存缺失（如重启）时兜底判定「是否反转」。返回 null 表示不可用。
+     */
+    fun fetchPeriodOpenClose(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? {
+        val symbol = getSymbol(marketSlugPrefix) ?: return null
+        val intervalStr = if (intervalSeconds == 300) "5m" else "15m"
+        val startMs = periodStartUnix * 1000L
+        val klines = fetchKlines(symbol, intervalStr, 1, startTime = startMs) ?: return null
+        val k = klines.firstOrNull() ?: return null
+        if (k.size < 5) return null
+        val openP = k.getOrNull(1)?.toString()?.toSafeBigDecimal() ?: return null
+        val closeP = k.getOrNull(4)?.toString()?.toSafeBigDecimal() ?: return null
+        if (openP <= BigDecimal.ZERO || closeP <= BigDecimal.ZERO) return null
+        return openP to closeP
     }
 
     /**

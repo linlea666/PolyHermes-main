@@ -30,7 +30,7 @@ import { useTranslation } from 'react-i18next'
 import { useMediaQuery } from 'react-responsive'
 import { apiService } from '../services/api'
 import { useAccountStore } from '../store/accountStore'
-import type { CryptoTailStrategyDto, CryptoTailStrategyTriggerDto, CryptoTailMarketOptionDto, CryptoTailPnlCurveResponse } from '../types'
+import type { CryptoTailStrategyDto, CryptoTailStrategyTriggerDto, CryptoTailMarketOptionDto, CryptoTailPnlCurveResponse, CryptoTailDecisionEventDto } from '../types'
 import { formatUSDC, formatNumber } from '../utils'
 import { getVersionInfo } from '../utils/version'
 import CryptoTailPnlCurveModal from './CryptoTailPnlCurveModal'
@@ -50,13 +50,18 @@ const CryptoTailStrategyList: React.FC = () => {
   const [marketOptions, setMarketOptions] = useState<CryptoTailMarketOptionDto[]>([])
   const [triggersModalOpen, setTriggersModalOpen] = useState(false)
   const [triggersStrategyId, setTriggersStrategyId] = useState<number | null>(null)
-  const [triggerTab, setTriggerTab] = useState<'success' | 'fail'>('success')
+  const [triggerTab, setTriggerTab] = useState<'success' | 'fail' | 'decision'>('success')
   const [triggerDateRange, setTriggerDateRange] = useState<[Dayjs | null, Dayjs | null]>([null, null])
   const [triggerPage, setTriggerPage] = useState(1)
   const [triggerPageSize, setTriggerPageSize] = useState(20)
   const [triggers, setTriggers] = useState<CryptoTailStrategyTriggerDto[]>([])
   const [triggersTotal, setTriggersTotal] = useState(0)
   const [triggersLoading, setTriggersLoading] = useState(false)
+  const [decisionEvents, setDecisionEvents] = useState<CryptoTailDecisionEventDto[]>([])
+  const [decisionTotal, setDecisionTotal] = useState(0)
+  const [decisionLoading, setDecisionLoading] = useState(false)
+  const [decisionPage, setDecisionPage] = useState(1)
+  const [decisionPageSize, setDecisionPageSize] = useState(20)
   const [form] = Form.useForm()
 
   const [pnlCurveModalOpen, setPnlCurveModalOpen] = useState(false)
@@ -160,7 +165,29 @@ const CryptoTailStrategyList: React.FC = () => {
       spreadMode: 'AUTO',
       spreadDirection: 'MIN',
       windowStartMinutes: 0,
-      windowStartSeconds: 0
+      windowStartSeconds: 0,
+      barrierEnabled: false,
+      entryProb: '0.95',
+      entryEdge: '0.02',
+      maxEntryPrice: '0.99',
+      costBuffer: '0.02',
+      barrierMinMarketProb: '0',
+      sigmaScale: '1.2533',
+      dailyLossLimitUsdc: undefined,
+      maxConcurrentPositions: undefined,
+      takerFeeBps: 0,
+      makerRebateBps: 0,
+      gasCostUsdc: '0',
+      entryOrderType: 'FAK',
+      makerPriceOffset: '0',
+      makerCancelBeforeSettleSeconds: 5,
+      makerFallbackTaker: false,
+      calibrationGateEnabled: false,
+      probeAmountUsdc: '1',
+      calibrationMinSamples: 30,
+      calibrationMaxError: '0.10',
+      sigmaMethod: 'MAD',
+      ewmaLambda: '0.94'
     })
     setFormModalOpen(true)
   }
@@ -182,7 +209,29 @@ const CryptoTailStrategyList: React.FC = () => {
       spreadMode: record.spreadMode ?? 'AUTO',
       spreadValue: record.spreadValue ?? undefined,
       spreadDirection: record.spreadDirection ?? 'MIN',
-      enabled: record.enabled
+      enabled: record.enabled,
+      barrierEnabled: record.barrierEnabled ?? false,
+      entryProb: record.entryProb ?? '0.95',
+      entryEdge: record.entryEdge ?? '0.02',
+      maxEntryPrice: record.maxEntryPrice ?? '0.99',
+      costBuffer: record.costBuffer ?? '0.02',
+      barrierMinMarketProb: record.barrierMinMarketProb ?? '0',
+      sigmaScale: record.sigmaScale ?? '1.2533',
+      dailyLossLimitUsdc: record.dailyLossLimitUsdc ?? undefined,
+      maxConcurrentPositions: record.maxConcurrentPositions ?? undefined,
+      takerFeeBps: record.takerFeeBps ?? 0,
+      makerRebateBps: record.makerRebateBps ?? 0,
+      gasCostUsdc: record.gasCostUsdc ?? '0',
+      entryOrderType: record.entryOrderType ?? 'FAK',
+      makerPriceOffset: record.makerPriceOffset ?? '0',
+      makerCancelBeforeSettleSeconds: record.makerCancelBeforeSettleSeconds ?? 5,
+      makerFallbackTaker: record.makerFallbackTaker ?? false,
+      calibrationGateEnabled: record.calibrationGateEnabled ?? false,
+      probeAmountUsdc: record.probeAmountUsdc ?? '1',
+      calibrationMinSamples: record.calibrationMinSamples ?? 30,
+      calibrationMaxError: record.calibrationMaxError ?? '0.10',
+      sigmaMethod: record.sigmaMethod ?? 'MAD',
+      ewmaLambda: record.ewmaLambda ?? '0.94'
     })
     setFormModalOpen(true)
   }
@@ -203,6 +252,32 @@ const CryptoTailStrategyList: React.FC = () => {
         message.error(t('cryptoTailStrategy.form.timeWindowExceed'))
         return
       }
+      const barrierOn = v.barrierEnabled === true
+      // 障碍模式：旧价格区间/价差闸不生效，统一存默认值；改由障碍闸把关
+      const barrierParams = {
+        barrierEnabled: barrierOn,
+        entryProb: v.entryProb != null ? String(v.entryProb) : undefined,
+        entryEdge: v.entryEdge != null ? String(v.entryEdge) : undefined,
+        maxEntryPrice: v.maxEntryPrice != null ? String(v.maxEntryPrice) : undefined,
+        costBuffer: v.costBuffer != null ? String(v.costBuffer) : undefined,
+        barrierMinMarketProb: v.barrierMinMarketProb != null ? String(v.barrierMinMarketProb) : undefined,
+        sigmaScale: v.sigmaScale != null ? String(v.sigmaScale) : undefined,
+        dailyLossLimitUsdc: v.dailyLossLimitUsdc != null && v.dailyLossLimitUsdc !== '' ? String(v.dailyLossLimitUsdc) : null,
+        maxConcurrentPositions: v.maxConcurrentPositions != null ? Number(v.maxConcurrentPositions) : null,
+        takerFeeBps: v.takerFeeBps != null ? Number(v.takerFeeBps) : undefined,
+        makerRebateBps: v.makerRebateBps != null ? Number(v.makerRebateBps) : undefined,
+        gasCostUsdc: v.gasCostUsdc != null ? String(v.gasCostUsdc) : undefined,
+        entryOrderType: v.entryOrderType != null ? String(v.entryOrderType) : undefined,
+        makerPriceOffset: v.makerPriceOffset != null ? String(v.makerPriceOffset) : undefined,
+        makerCancelBeforeSettleSeconds: v.makerCancelBeforeSettleSeconds != null ? Number(v.makerCancelBeforeSettleSeconds) : undefined,
+        makerFallbackTaker: v.makerFallbackTaker === true,
+        calibrationGateEnabled: v.calibrationGateEnabled === true,
+        probeAmountUsdc: v.probeAmountUsdc != null ? String(v.probeAmountUsdc) : undefined,
+        calibrationMinSamples: v.calibrationMinSamples != null ? Number(v.calibrationMinSamples) : undefined,
+        calibrationMaxError: v.calibrationMaxError != null ? String(v.calibrationMaxError) : undefined,
+        sigmaMethod: v.sigmaMethod != null ? String(v.sigmaMethod) : undefined,
+        ewmaLambda: v.ewmaLambda != null ? String(v.ewmaLambda) : undefined
+      }
       const payload = {
         accountId: v.accountId as number,
         name: v.name as string | undefined,
@@ -210,14 +285,15 @@ const CryptoTailStrategyList: React.FC = () => {
         intervalSeconds: interval,
         windowStartSeconds,
         windowEndSeconds,
-        minPrice: String(v.minPrice ?? 0),
-        maxPrice: v.maxPrice != null ? String(v.maxPrice) : undefined,
+        minPrice: barrierOn ? '0' : String(v.minPrice ?? 0),
+        maxPrice: barrierOn ? '1' : (v.maxPrice != null ? String(v.maxPrice) : undefined),
         amountMode: v.amountMode as string,
         amountValue: String(v.amountValue ?? 0),
-        spreadMode: (v.spreadMode as string) || 'AUTO',
-        spreadValue: v.spreadMode === 'FIXED' && v.spreadValue != null ? String(v.spreadValue) : (v.spreadMode === 'AUTO' && v.spreadValue != null ? String(v.spreadValue) : undefined),
-        spreadDirection: v.spreadDirection as string || 'MIN',
-        enabled: v.enabled !== false
+        spreadMode: barrierOn ? 'NONE' : ((v.spreadMode as string) || 'AUTO'),
+        spreadValue: barrierOn ? undefined : (v.spreadMode === 'FIXED' && v.spreadValue != null ? String(v.spreadValue) : (v.spreadMode === 'AUTO' && v.spreadValue != null ? String(v.spreadValue) : undefined)),
+        spreadDirection: barrierOn ? 'MIN' : (v.spreadDirection as string || 'MIN'),
+        enabled: v.enabled !== false,
+        ...barrierParams
       }
       if (editingId) {
         const res = await apiService.cryptoTailStrategy.update({
@@ -232,7 +308,8 @@ const CryptoTailStrategyList: React.FC = () => {
           spreadMode: payload.spreadMode,
           spreadValue: payload.spreadValue,
           spreadDirection: payload.spreadDirection,
-          enabled: payload.enabled
+          enabled: payload.enabled,
+          ...barrierParams
         })
         if (res.data.code === 0) {
           message.success(t('common.success'))
@@ -326,6 +403,33 @@ const CryptoTailStrategyList: React.FC = () => {
     }
   }
 
+  const loadDecisionLog = async (
+    strategyId: number,
+    opts?: { page?: number; pageSize?: number; dateRange?: [Dayjs | null, Dayjs | null] }
+  ) => {
+    const page = opts?.page ?? decisionPage
+    const pageSize = opts?.pageSize ?? decisionPageSize
+    const range = opts?.dateRange ?? triggerDateRange
+    const startDate = range[0] != null ? range[0].startOf('day').valueOf() : undefined
+    const endDate = range[1] != null ? range[1].endOf('day').valueOf() : undefined
+    setDecisionLoading(true)
+    try {
+      const res = await apiService.cryptoTailStrategy.decisionLog({
+        strategyId,
+        page,
+        pageSize,
+        startDate,
+        endDate
+      })
+      if (res.data.code === 0 && res.data.data) {
+        setDecisionEvents(res.data.data.list ?? [])
+        setDecisionTotal(res.data.data.total ?? 0)
+      }
+    } finally {
+      setDecisionLoading(false)
+    }
+  }
+
   const openTriggers = async (strategyId: number) => {
     setTriggersStrategyId(strategyId)
     setTriggerTab('success')
@@ -392,11 +496,16 @@ const CryptoTailStrategyList: React.FC = () => {
   }, [pnlCurveModalOpen, pnlCurveStrategyId, pnlCurvePreset, pnlCurveCustomRange])
 
   const onTriggerTabChange = (key: string) => {
-    const next = key === 'success' ? 'success' : 'fail'
+    const next = key === 'success' ? 'success' : key === 'decision' ? 'decision' : 'fail'
     setTriggerTab(next)
-    setTriggers([])
-    setTriggerPage(1)
-    if (triggersStrategyId != null) {
+    if (triggersStrategyId == null) return
+    if (next === 'decision') {
+      setDecisionEvents([])
+      setDecisionPage(1)
+      loadDecisionLog(triggersStrategyId, { page: 1 })
+    } else {
+      setTriggers([])
+      setTriggerPage(1)
       loadTriggerRecords(triggersStrategyId, next, { page: 1 })
     }
   }
@@ -404,8 +513,12 @@ const CryptoTailStrategyList: React.FC = () => {
   const onTriggerDateRangeChange = (dates: [Dayjs | null, Dayjs | null] | null) => {
     const next = dates ?? [null, null]
     setTriggerDateRange(next)
-    setTriggerPage(1)
-    if (triggersStrategyId != null) {
+    if (triggersStrategyId == null) return
+    if (triggerTab === 'decision') {
+      setDecisionPage(1)
+      loadDecisionLog(triggersStrategyId, { page: 1, dateRange: next })
+    } else {
+      setTriggerPage(1)
       loadTriggerRecords(triggersStrategyId, triggerTab, { page: 1, dateRange: next })
     }
   }
@@ -414,7 +527,15 @@ const CryptoTailStrategyList: React.FC = () => {
     setTriggerPage(page)
     setTriggerPageSize(pageSize)
     if (triggersStrategyId != null) {
-      loadTriggerRecords(triggersStrategyId, triggerTab, { page, pageSize })
+      loadTriggerRecords(triggersStrategyId, triggerTab === 'decision' ? 'success' : triggerTab, { page, pageSize })
+    }
+  }
+
+  const onDecisionPageChange = (page: number, pageSize: number) => {
+    setDecisionPage(page)
+    setDecisionPageSize(pageSize)
+    if (triggersStrategyId != null) {
+      loadDecisionLog(triggersStrategyId, { page, pageSize })
     }
   }
 
@@ -636,6 +757,10 @@ const CryptoTailStrategyList: React.FC = () => {
   ]
 
   const selectedMarket = Form.useWatch('marketSlugPrefix', form)
+  const barrierEnabled = Form.useWatch('barrierEnabled', form)
+  const entryOrderType = Form.useWatch('entryOrderType', form)
+  const calibrationGateEnabled = Form.useWatch('calibrationGateEnabled', form)
+  const sigmaMethod = Form.useWatch('sigmaMethod', form)
   const intervalSeconds = marketOptions.find((m) => m.slug === selectedMarket)?.intervalSeconds ?? 300
   const maxMinutes = Math.floor(intervalSeconds / 60)
 
@@ -943,12 +1068,30 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
             </>
           )}
-          <Form.Item name="minPrice" label={t('cryptoTailStrategy.form.minPrice')} rules={[{ required: true }]}>
-            <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+          <Form.Item
+            name="barrierEnabled"
+            valuePropName="checked"
+            label={
+              <Space size={4}>
+                <span>{t('cryptoTailStrategy.form.barrierEnabled')}</span>
+                <Tooltip title={t('cryptoTailStrategy.form.barrierEnabledTip')}>
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                </Tooltip>
+              </Space>
+            }
+          >
+            <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
           </Form.Item>
-          <Form.Item name="maxPrice" label={t('cryptoTailStrategy.form.maxPrice')}>
-            <InputNumber min={0} max={1} step={0.01} placeholder={t('cryptoTailStrategy.form.maxPricePlaceholder')} style={{ width: '100%' }} stringMode />
-          </Form.Item>
+          {!barrierEnabled && (
+            <>
+              <Form.Item name="minPrice" label={t('cryptoTailStrategy.form.minPrice')} rules={[{ required: true }]}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="maxPrice" label={t('cryptoTailStrategy.form.maxPrice')}>
+                <InputNumber min={0} max={1} step={0.01} placeholder={t('cryptoTailStrategy.form.maxPricePlaceholder')} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+            </>
+          )}
           <Form.Item name="amountMode" label={t('cryptoTailStrategy.form.amountMode')} rules={[{ required: true }]}>
             <Radio.Group>
               <Radio value="RATIO">{t('cryptoTailStrategy.list.ratio')}</Radio>
@@ -971,61 +1114,414 @@ const CryptoTailStrategyList: React.FC = () => {
               )
             }
           </Form.Item>
-          <Form.Item
-            name="spreadMode"
-            label={
-              <Space size={4}>
-                <span>{t('cryptoTailStrategy.form.spreadMode')}</span>
-                <Tooltip title={t('cryptoTailStrategy.form.spreadModeTip')}>
-                  <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                </Tooltip>
-              </Space>
-            }
-          >
-            <Radio.Group>
-              <Radio value="AUTO">{t('cryptoTailStrategy.form.spreadModeAuto')}</Radio>
-              <Radio value="FIXED">{t('cryptoTailStrategy.form.spreadModeFixed')}</Radio>
-              <Radio value="NONE">{t('cryptoTailStrategy.form.spreadModeNone')}</Radio>
-            </Radio.Group>
-          </Form.Item>
-          <Form.Item
-            noStyle
-            shouldUpdate={(prev, curr) => prev.spreadMode !== curr.spreadMode}
-          >
-            {({ getFieldValue }) =>
-              getFieldValue('spreadMode') === 'FIXED' ? (
+          {!barrierEnabled && (
+            <>
+              <Form.Item
+                name="spreadMode"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.spreadMode')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.spreadModeTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Radio.Group>
+                  <Radio value="AUTO">{t('cryptoTailStrategy.form.spreadModeAuto')}</Radio>
+                  <Radio value="FIXED">{t('cryptoTailStrategy.form.spreadModeFixed')}</Radio>
+                  <Radio value="NONE">{t('cryptoTailStrategy.form.spreadModeNone')}</Radio>
+                </Radio.Group>
+              </Form.Item>
+              <Form.Item
+                noStyle
+                shouldUpdate={(prev, curr) => prev.spreadMode !== curr.spreadMode}
+              >
+                {({ getFieldValue }) =>
+                  getFieldValue('spreadMode') === 'FIXED' ? (
+                    <Form.Item
+                      name="spreadValue"
+                      label={t('cryptoTailStrategy.form.spreadValue')}
+                      rules={[{ required: true }]}
+                    >
+                      <InputNumber
+                        min={0}
+                        step={1}
+                        placeholder={t('cryptoTailStrategy.form.spreadValuePlaceholder')}
+                        style={{ width: '100%' }}
+                        stringMode
+                      />
+                    </Form.Item>
+                  ) : null
+                }
+              </Form.Item>
+              <Form.Item
+                name="spreadDirection"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.spreadDirection')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.spreadDirectionTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Radio.Group>
+                  <Radio value="MIN">{t('cryptoTailStrategy.form.spreadDirectionMin')}</Radio>
+                  <Radio value="MAX">{t('cryptoTailStrategy.form.spreadDirectionMax')}</Radio>
+                </Radio.Group>
+              </Form.Item>
+            </>
+          )}
+          {barrierEnabled && (
+            <>
+              <Alert type="info" showIcon style={{ marginBottom: 16 }} message={t('cryptoTailStrategy.form.barrierInfo')} />
+              <Form.Item
+                name="entryProb"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.entryProb')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.entryProbTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+                rules={[{ required: true }]}
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="entryEdge"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.entryEdge')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.entryEdgeTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+                rules={[{ required: true }]}
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="barrierMinMarketProb"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.barrierMinMarketProb')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.barrierMinMarketProbTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="maxEntryPrice"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.maxEntryPrice')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.maxEntryPriceTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+                rules={[{ required: true }]}
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="costBuffer"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.costBuffer')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.costBufferTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="sigmaScale"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.sigmaScale')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.sigmaScaleTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="sigmaMethod"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.sigmaMethod')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.sigmaMethodTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Select
+                  options={[
+                    { value: 'MAD', label: t('cryptoTailStrategy.form.sigmaMethodMad') },
+                    { value: 'EWMA', label: t('cryptoTailStrategy.form.sigmaMethodEwma') },
+                    { value: 'GARMAN_KLASS', label: t('cryptoTailStrategy.form.sigmaMethodGk') }
+                  ]}
+                />
+              </Form.Item>
+              {sigmaMethod === 'EWMA' && (
                 <Form.Item
-                  name="spreadValue"
-                  label={t('cryptoTailStrategy.form.spreadValue')}
-                  rules={[{ required: true }]}
+                  name="ewmaLambda"
+                  label={
+                    <Space size={4}>
+                      <span>{t('cryptoTailStrategy.form.ewmaLambda')}</span>
+                      <Tooltip title={t('cryptoTailStrategy.form.ewmaLambdaTip')}>
+                        <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[
+                    {
+                      validator: (_, value) => {
+                        if (value == null || value === '') return Promise.resolve()
+                        const n = Number(value)
+                        if (Number.isNaN(n) || n <= 0 || n >= 1) {
+                          return Promise.reject(new Error(t('cryptoTailStrategy.form.ewmaLambdaTip')))
+                        }
+                        return Promise.resolve()
+                      }
+                    }
+                  ]}
                 >
-                  <InputNumber
-                    min={0}
-                    step={1}
-                    placeholder={t('cryptoTailStrategy.form.spreadValuePlaceholder')}
-                    style={{ width: '100%' }}
-                    stringMode
-                  />
+                  <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
                 </Form.Item>
-              ) : null
-            }
-          </Form.Item>
-          <Form.Item
-            name="spreadDirection"
-            label={
-              <Space size={4}>
-                <span>{t('cryptoTailStrategy.form.spreadDirection')}</span>
-                <Tooltip title={t('cryptoTailStrategy.form.spreadDirectionTip')}>
-                  <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                </Tooltip>
-              </Space>
-            }
-          >
-            <Radio.Group>
-              <Radio value="MIN">{t('cryptoTailStrategy.form.spreadDirectionMin')}</Radio>
-              <Radio value="MAX">{t('cryptoTailStrategy.form.spreadDirectionMax')}</Radio>
-            </Radio.Group>
-          </Form.Item>
+              )}
+              <Form.Item
+                name="dailyLossLimitUsdc"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.dailyLossLimitUsdc')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.dailyLossLimitUsdcTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} step={1} placeholder={t('cryptoTailStrategy.form.optionalPlaceholder')} style={{ width: '100%' }} addonBefore="$" stringMode />
+              </Form.Item>
+              <Form.Item
+                name="maxConcurrentPositions"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.maxConcurrentPositions')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.maxConcurrentPositionsTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} step={1} precision={0} placeholder={t('cryptoTailStrategy.form.optionalPlaceholder')} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item
+                name="takerFeeBps"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.takerFeeBps')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.takerFeeBpsTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter="bps" />
+              </Form.Item>
+              <Form.Item
+                name="makerRebateBps"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.makerRebateBps')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.makerRebateBpsTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter="bps" />
+              </Form.Item>
+              <Form.Item
+                name="gasCostUsdc"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.gasCostUsdc')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.gasCostUsdcTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} step={0.01} style={{ width: '100%' }} addonBefore="$" stringMode />
+              </Form.Item>
+              <Form.Item
+                name="entryOrderType"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.entryOrderType')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.entryOrderTypeTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Select
+                  options={[
+                    { value: 'FAK', label: t('cryptoTailStrategy.form.entryOrderTypeFak') },
+                    { value: 'MAKER', label: t('cryptoTailStrategy.form.entryOrderTypeMaker') }
+                  ]}
+                />
+              </Form.Item>
+              {entryOrderType === 'MAKER' && (
+                <>
+                  <Form.Item
+                    name="makerPriceOffset"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.makerPriceOffset')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.makerPriceOffsetTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                    rules={[
+                      {
+                        validator: (_, value) => {
+                          if (value == null || value === '') return Promise.resolve()
+                          const n = Number(value)
+                          if (Number.isNaN(n) || n <= -1 || n >= 1) {
+                            return Promise.reject(new Error(t('cryptoTailStrategy.form.makerPriceOffsetTip')))
+                          }
+                          return Promise.resolve()
+                        }
+                      }
+                    ]}
+                  >
+                    <InputNumber min={-1} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                  <Form.Item
+                    name="makerCancelBeforeSettleSeconds"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.makerCancelBeforeSettleSeconds')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.makerCancelBeforeSettleSecondsTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                  >
+                    <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+                  </Form.Item>
+                  <Form.Item
+                    name="makerFallbackTaker"
+                    valuePropName="checked"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.makerFallbackTaker')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.makerFallbackTakerTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                  >
+                    <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
+                  </Form.Item>
+                </>
+              )}
+              <Form.Item
+                name="calibrationGateEnabled"
+                valuePropName="checked"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.calibrationGateEnabled')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.calibrationGateEnabledTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
+              </Form.Item>
+              {calibrationGateEnabled && (
+                <>
+                  <Form.Item
+                    name="probeAmountUsdc"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.probeAmountUsdc')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.probeAmountUsdcTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                    rules={[
+                      {
+                        validator: (_, value) => {
+                          if (value == null || value === '') return Promise.resolve()
+                          if (Number(value) < 1) return Promise.reject(new Error(t('cryptoTailStrategy.form.probeAmountUsdcTip')))
+                          return Promise.resolve()
+                        }
+                      }
+                    ]}
+                  >
+                    <InputNumber min={1} step={1} style={{ width: '100%' }} addonBefore="$" stringMode />
+                  </Form.Item>
+                  <Form.Item
+                    name="calibrationMinSamples"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.calibrationMinSamples')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.calibrationMinSamplesTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                  >
+                    <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="calibrationMaxError"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.calibrationMaxError')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.calibrationMaxErrorTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                    rules={[
+                      {
+                        validator: (_, value) => {
+                          if (value == null || value === '') return Promise.resolve()
+                          const n = Number(value)
+                          if (Number.isNaN(n) || n <= 0 || n >= 1) {
+                            return Promise.reject(new Error(t('cryptoTailStrategy.form.calibrationMaxErrorTip')))
+                          }
+                          return Promise.resolve()
+                        }
+                      }
+                    ]}
+                  >
+                    <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                </>
+              )}
+            </>
+          )}
           <Form.Item name="enabled" valuePropName="checked">
             <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
           </Form.Item>
@@ -1214,6 +1710,99 @@ const CryptoTailStrategyList: React.FC = () => {
                       onChange: onTriggerPageChange
                     }}
                     scroll={{ x: 540 }}
+                  />
+                </Spin>
+              )
+            },
+            {
+              key: 'decision',
+              label: t('cryptoTailStrategy.decisionLog.tab'),
+              children: (
+                <Spin spinning={decisionLoading}>
+                  <Table
+                    rowKey="id"
+                    size="small"
+                    dataSource={triggerTab === 'decision' ? decisionEvents : []}
+                    locale={{
+                      emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('cryptoTailStrategy.decisionLog.empty')} />
+                    }}
+                    columns={[
+                      {
+                        title: t('cryptoTailStrategy.decisionLog.time'),
+                        dataIndex: 'createdAt',
+                        key: 'createdAt',
+                        width: 172,
+                        render: (ts: number) => <Typography.Text>{new Date(ts).toLocaleString()}</Typography.Text>
+                      },
+                      {
+                        title: t('cryptoTailStrategy.decisionLog.eventType'),
+                        dataIndex: 'eventType',
+                        key: 'eventType',
+                        width: 110,
+                        render: (v: string) => {
+                          const label = t(`cryptoTailStrategy.decisionLog.eventType_${v}`, { defaultValue: v })
+                          return <Tag color={v === 'SETTLED' ? 'purple' : v === 'GATE_PASSED' || v === 'ORDER_RESULT' ? 'green' : v === 'GATE_FAILED' ? 'volcano' : 'blue'}>{label}</Tag>
+                        }
+                      },
+                      {
+                        title: t('cryptoTailStrategy.decisionLog.gate'),
+                        dataIndex: 'gateName',
+                        key: 'gateName',
+                        width: 110,
+                        render: (v: string | null | undefined) => v ? <Typography.Text code>{v}</Typography.Text> : <Typography.Text type="secondary">-</Typography.Text>
+                      },
+                      {
+                        title: t('cryptoTailStrategy.decisionLog.result'),
+                        dataIndex: 'passed',
+                        key: 'passed',
+                        width: 80,
+                        align: 'center',
+                        render: (v: boolean | null | undefined) =>
+                          v == null ? <Typography.Text type="secondary">-</Typography.Text>
+                            : v ? <Tag color="green">{t('cryptoTailStrategy.decisionLog.passed')}</Tag>
+                              : <Tag color="red">{t('cryptoTailStrategy.decisionLog.failed')}</Tag>
+                      },
+                      {
+                        title: t('cryptoTailStrategy.decisionLog.direction'),
+                        dataIndex: 'outcomeIndex',
+                        key: 'outcomeIndex',
+                        width: 70,
+                        align: 'center',
+                        render: (i: number | null | undefined) =>
+                          i == null ? <Typography.Text type="secondary">-</Typography.Text>
+                            : i === 0 ? <Tag color="green">{t('cryptoTailStrategy.triggerRecords.up')}</Tag>
+                              : <Tag color="volcano">{t('cryptoTailStrategy.triggerRecords.down')}</Tag>
+                      },
+                      {
+                        title: t('cryptoTailStrategy.decisionLog.reason'),
+                        dataIndex: 'reason',
+                        key: 'reason',
+                        ellipsis: true,
+                        render: (v: string | null | undefined, r: CryptoTailDecisionEventDto) => {
+                          const text = v ?? '-'
+                          const snapshot = r.payloadJson
+                          const content = (
+                            <Typography.Text ellipsis style={{ maxWidth: 260 }}>{text}</Typography.Text>
+                          )
+                          return snapshot ? (
+                            <Tooltip title={<pre style={{ margin: 0, whiteSpace: 'pre-wrap', maxWidth: 360 }}>{snapshot}</pre>}>
+                              {content}
+                            </Tooltip>
+                          ) : (
+                            <Typography.Text type={text === '-' ? 'secondary' : undefined}>{text}</Typography.Text>
+                          )
+                        }
+                      }
+                    ]}
+                    pagination={{
+                      current: decisionPage,
+                      pageSize: decisionPageSize,
+                      total: decisionTotal,
+                      showSizeChanger: true,
+                      showTotal: (total) => t('cryptoTailStrategy.triggerRecords.totalCount').replace('{count}', String(total)),
+                      onChange: onDecisionPageChange
+                    }}
+                    scroll={{ x: 640 }}
                   />
                 </Spin>
               )

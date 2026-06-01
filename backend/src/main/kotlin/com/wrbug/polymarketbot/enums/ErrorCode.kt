@@ -176,6 +176,7 @@ enum class ErrorCode(
     CRYPTO_TAIL_STRATEGY_WINDOW_EXCEED(4712, "时间区间不能超过周期长度", "error.crypto_tail_strategy_window_exceed"),
     CRYPTO_TAIL_STRATEGY_INTERVAL_INVALID(4713, "周期仅支持 300 或 900 秒", "error.crypto_tail_strategy_interval_invalid"),
     CRYPTO_TAIL_STRATEGY_AMOUNT_MODE_INVALID(4714, "投入方式仅支持 RATIO 或 FIXED", "error.crypto_tail_strategy_amount_mode_invalid"),
+    CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID(4715, "障碍模式参数不合法", "error.crypto_tail_strategy_barrier_param_invalid"),
 
     // 统计相关 (4801-4899)
     STATISTICS_FETCH_FAILED(4801, "获取统计信息失败", "error.statistics_fetch_failed"),

@@ -1300,6 +1300,15 @@ export interface SystemConfig {
   builderSecretDisplay?: string  // Builder Secret 显示值（完整）
   builderPassphraseDisplay?: string  // Builder Passphrase 显示值（完整）
   autoRedeemEnabled: boolean  // 自动赎回（系统级别配置，默认开启）
+  // Chainlink Data Streams（crypto-tail 障碍模式价源）
+  chainlinkApiKeyConfigured?: boolean
+  chainlinkApiSecretConfigured?: boolean
+  chainlinkApiKeyDisplay?: string
+  chainlinkRestBase?: string
+  chainlinkFeedBtc?: string
+  chainlinkFeedEth?: string
+  chainlinkFeedSol?: string
+  chainlinkFeedXrp?: string
 }
 
 /**
@@ -1309,6 +1318,19 @@ export interface BuilderApiKeyUpdateRequest {
   builderApiKey?: string
   builderSecret?: string
   builderPassphrase?: string
+}
+
+/**
+ * Chainlink Data Streams 配置更新请求
+ */
+export interface ChainlinkConfigUpdateRequest {
+  apiKey?: string
+  apiSecret?: string
+  restBase?: string
+  feedBtc?: string
+  feedEth?: string
+  feedSol?: string
+  feedXrp?: string
 }
 
 export interface NotificationConfigUpdateRequest {
@@ -1422,6 +1444,50 @@ export interface CryptoTailStrategyDto {
   /** 价差方向: MIN=最小价差（价差>=配置值触发）, MAX=最大价差（价差<=配置值触发） */
   spreadDirection?: string
   enabled: boolean
+  /** 障碍（终值概率）模式开关 */
+  barrierEnabled?: boolean
+  /** 进场胜率阈值 0~1 */
+  entryProb?: string
+  /** 扣费 EV 边际阈值 */
+  entryEdge?: string
+  /** 障碍模式最高买入限价 0~1 */
+  maxEntryPrice?: string
+  /** bestAsk 缺失成本缓冲 */
+  costBuffer?: string
+  /** 市场隐含概率下限 0~1，0=关 */
+  barrierMinMarketProb?: string
+  /** σ 校准系数 */
+  sigmaScale?: string
+  /** 当日已实现亏损熔断阈值 USDC，空=关 */
+  dailyLossLimitUsdc?: string | null
+  /** 最大并发未结算敞口笔数，空=关 */
+  maxConcurrentPositions?: number | null
+  /** taker 手续费(基点bps) */
+  takerFeeBps?: number
+  /** maker 返佣(基点bps) */
+  makerRebateBps?: number
+  /** 单笔 gas 成本 USDC */
+  gasCostUsdc?: string
+  /** 进场订单类型: FAK吃单 / MAKER挂单 */
+  entryOrderType?: string
+  /** maker 挂单相对 bestBid 价格偏移(可负) */
+  makerPriceOffset?: string
+  /** maker 距结算多少秒未成交触发撤单决策 */
+  makerCancelBeforeSettleSeconds?: number
+  /** maker 到期未成交是否回退 FAK */
+  makerFallbackTaker?: boolean
+  /** 放量闸开关 */
+  calibrationGateEnabled?: boolean
+  /** 校准期小额 USDC */
+  probeAmountUsdc?: string
+  /** 放量达标最少样本数 */
+  calibrationMinSamples?: number
+  /** 放量达标最大校准误差 */
+  calibrationMaxError?: string
+  /** σ 估计方法: MAD/EWMA/GARMAN_KLASS */
+  sigmaMethod?: string
+  /** EWMA 衰减系数 λ */
+  ewmaLambda?: string
   lastTriggerAt?: number
   /** 已实现总收益 USDC */
   totalRealizedPnl?: string
@@ -1431,6 +1497,126 @@ export interface CryptoTailStrategyDto {
   winRate?: string
   createdAt: number
   updatedAt: number
+}
+
+/** 全链路决策日志事件 */
+export interface CryptoTailDecisionEventDto {
+  id: number
+  strategyId: number
+  periodStartUnix: number
+  correlationId: string
+  /** EVAL_STARTED/GATE_PASSED/GATE_FAILED/ORDER_SUBMITTED/ORDER_RESULT/SETTLED */
+  eventType: string
+  /** 闸名: PRICE_RANGE/TIME_WINDOW/SPREAD/DIRECTION/PWIN/MARKET_PROB/EV/RISK_DAILY_LOSS/RISK_CONCURRENCY/ALL */
+  gateName?: string | null
+  passed?: boolean | null
+  reason?: string | null
+  /** 决策快照 JSON 字符串 */
+  payloadJson?: string | null
+  outcomeIndex?: number | null
+  triggerId?: number | null
+  createdAt: number
+}
+
+/** 决策日志查询请求 */
+export interface CryptoTailDecisionLogListRequest {
+  strategyId: number
+  page?: number
+  pageSize?: number
+  startDate?: number
+  endDate?: number
+}
+
+/** 决策日志查询响应 */
+export interface CryptoTailDecisionLogListResponse {
+  list: CryptoTailDecisionEventDto[]
+  total: number
+}
+
+/** 单笔成交全链路分析快照（数值以字符串返回） */
+export interface CryptoTailTradeSnapshotDto {
+  id: number
+  strategyId: number
+  triggerId?: number | null
+  periodStartUnix: number
+  marketSlug?: string | null
+  conditionId?: string | null
+  outcomeIndex?: number | null
+  intervalSeconds: number
+  openPrice?: string | null
+  entryMarkPrice?: string | null
+  entryGap?: string | null
+  sigmaPerSqrtS?: string | null
+  pWin?: string | null
+  safeRatio?: string | null
+  modelSide?: number | null
+  remainingSecondsAtEntry?: number | null
+  bestBid?: string | null
+  bestAsk?: string | null
+  midPrice?: string | null
+  effectiveCost?: string | null
+  entryEdge?: string | null
+  entryProbThreshold?: string | null
+  entryEdgeThreshold?: string | null
+  barrierMinMarketProb?: string | null
+  sigmaScale?: string | null
+  maxEntryPrice?: string | null
+  costBuffer?: string | null
+  orderType?: string | null
+  targetPrice?: string | null
+  requestedAmount?: string | null
+  submitTs?: number | null
+  fillStatus?: string | null
+  fillPrice?: string | null
+  fillSize?: string | null
+  fillAmount?: string | null
+  slippage?: string | null
+  orderId?: string | null
+  execError?: string | null
+  settled: boolean
+  winnerOutcomeIndex?: number | null
+  won?: boolean | null
+  realizedPnl?: string | null
+  settleTs?: number | null
+  holdSeconds?: number | null
+  finalOpen?: string | null
+  finalClose?: string | null
+  finalGap?: string | null
+  reversed?: boolean | null
+  settleSource?: string | null
+  lossReason?: string | null
+  pwinBucket?: number | null
+  createdAt: number
+  updatedAt: number
+}
+
+/** 单笔成交快照查询请求 */
+export interface CryptoTailTradeSnapshotListRequest {
+  strategyId: number
+  page?: number
+  pageSize?: number
+  startDate?: number | null
+  endDate?: number | null
+}
+
+/** 单笔成交快照查询响应 */
+export interface CryptoTailTradeSnapshotListResponse {
+  list: CryptoTailTradeSnapshotDto[]
+  total: number
+}
+
+/** 单笔成交快照导出请求 */
+export interface CryptoTailTradeSnapshotExportRequest {
+  strategyId: number
+  startDate?: number | null
+  endDate?: number | null
+}
+
+/** 单笔成交快照 CSV 导出响应 */
+export interface CryptoTailTradeSnapshotExportResponse {
+  filename: string
+  csv: string
+  total: number
 }
 
 /** 自动最小价差计算响应 */
@@ -1450,6 +1636,12 @@ export interface CryptoTailStrategyTriggerDto {
   outcomeIndex: number
   triggerPrice: string
   amountUsdc: string
+  /** 实际成交份额(shares)，未成交为空 */
+  filledSize?: string
+  /** 实际成交金额 USDC，未成交为空 */
+  filledAmount?: string
+  /** 订单类型: FAK / GTC_POST_ONLY 等 */
+  orderType?: string
   orderId?: string
   status: string
   failReason?: string
@@ -1466,6 +1658,41 @@ export interface CryptoTailPnlCurveRequest {
   strategyId: number
   startDate?: number
   endDate?: number
+}
+
+/** 校准请求 */
+export interface CryptoTailCalibrationRequest {
+  strategyId: number
+}
+
+/** 可靠性分箱单元 */
+export interface CryptoTailCalibrationBin {
+  bucket: number
+  rangeLow: string
+  rangeHigh: string
+  sampleCount: number
+  predictedProb: string
+  actualWinRate: string
+  netPnl: string
+}
+
+/** 校准统计响应 */
+export interface CryptoTailCalibrationResponse {
+  strategyId: number
+  sampleCount: number
+  winRate?: string | null
+  calibrationError?: string | null
+  totalNetPnl: string
+  avgNetPnl?: string | null
+  gateEnabled: boolean
+  qualified: boolean
+  /** PROBE 小额 / FULL 正常 */
+  scalingMode: string
+  probeAmountUsdc: string
+  minSamples: number
+  maxError: string
+  reason?: string | null
+  bins: CryptoTailCalibrationBin[]
 }
 
 /** 收益曲线单点 */

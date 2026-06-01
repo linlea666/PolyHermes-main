@@ -1,5 +1,6 @@
 package com.wrbug.polymarketbot.service.common
 
+import com.wrbug.polymarketbot.dto.CryptoTailDecisionEventDto
 import com.wrbug.polymarketbot.dto.CryptoTailMonitorPushData
 import com.wrbug.polymarketbot.dto.OrderPushMessage
 import com.wrbug.polymarketbot.dto.PositionPushMessage
@@ -140,6 +141,9 @@ class WebSocketSubscriptionService(
                     sendSubscribeAck(sessionId, channel, false, "无效的策略ID")
                 }
             }
+            channel.startsWith("crypto_tail_decision_") -> {
+                // 加密价差策略决策日志频道：被动推送，订阅记录已建立，推送由决策事件触发，无需启动额外服务
+            }
             else -> {
                 logger.warn("未知的频道: $channel")
                 sendSubscribeAck(sessionId, channel, false, "未知的频道")
@@ -212,6 +216,26 @@ class WebSocketSubscriptionService(
         }
     }
     
+    /**
+     * 推送加密价差策略决策日志（由决策事件异步监听器调用）。
+     */
+    fun pushDecisionEvent(strategyId: Long, data: CryptoTailDecisionEventDto) {
+        val channel = "crypto_tail_decision_$strategyId"
+        val sessionIds = channelSubscriptions[channel] ?: return
+        for (sessionId in sessionIds) {
+            val callback = sessionCallbacks[sessionId]
+            if (callback != null) {
+                val message = WsMessage(
+                    type = WebSocketMessageType.DATA.value,
+                    channel = channel,
+                    payload = data,
+                    timestamp = System.currentTimeMillis()
+                )
+                callback(message)
+            }
+        }
+    }
+
     /**
      * 推送数据到指定会话
      */

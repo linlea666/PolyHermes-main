@@ -3,11 +3,14 @@ package com.wrbug.polymarketbot.service.cryptotail
 import com.wrbug.polymarketbot.dto.*
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.entity.CryptoTailStrategyTrigger
+import com.wrbug.polymarketbot.entity.CryptoTailTradeSnapshot
 import com.wrbug.polymarketbot.enums.ErrorCode
 import com.wrbug.polymarketbot.enums.SpreadMode
 import com.wrbug.polymarketbot.enums.SpreadDirection
+import com.wrbug.polymarketbot.repository.CryptoTailDecisionEventRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
+import com.wrbug.polymarketbot.repository.CryptoTailTradeSnapshotRepository
 import com.wrbug.polymarketbot.event.CryptoTailStrategyChangedEvent
 import com.wrbug.polymarketbot.util.gt
 import com.wrbug.polymarketbot.util.toSafeBigDecimal
@@ -25,6 +28,9 @@ import java.time.format.DateTimeFormatter
 class CryptoTailStrategyService(
     private val strategyRepository: CryptoTailStrategyRepository,
     private val triggerRepository: CryptoTailStrategyTriggerRepository,
+    private val decisionEventRepository: CryptoTailDecisionEventRepository,
+    private val tradeSnapshotRepository: CryptoTailTradeSnapshotRepository,
+    private val calibrationService: CryptoTailCalibrationService,
     private val eventPublisher: ApplicationEventPublisher
 ) {
 
@@ -83,6 +89,32 @@ class CryptoTailStrategyService(
             val nameToSave = request.name?.takeIf { it.isNotBlank() }
                 ?: generateStrategyName(request.marketSlugPrefix.trim())
 
+            // 障碍模式参数（缺省即默认，barrierEnabled=false 时不影响旧行为）
+            val entryProb = request.entryProb?.toSafeBigDecimal() ?: BigDecimal("0.95")
+            val entryEdge = request.entryEdge?.toSafeBigDecimal() ?: BigDecimal("0.02")
+            val maxEntryPrice = request.maxEntryPrice?.toSafeBigDecimal() ?: BigDecimal("0.99")
+            val costBuffer = request.costBuffer?.toSafeBigDecimal() ?: BigDecimal("0.02")
+            val barrierMinMarketProb = request.barrierMinMarketProb?.toSafeBigDecimal() ?: BigDecimal.ZERO
+            val sigmaScale = request.sigmaScale?.toSafeBigDecimal() ?: BigDecimal("1.2533")
+            val dailyLossLimitUsdc = request.dailyLossLimitUsdc?.toSafeBigDecimal()
+            val maxConcurrentPositions = request.maxConcurrentPositions
+            val takerFeeBps = request.takerFeeBps ?: 0
+            val makerRebateBps = request.makerRebateBps ?: 0
+            val gasCostUsdc = request.gasCostUsdc?.toSafeBigDecimal() ?: BigDecimal.ZERO
+            val entryOrderType = (request.entryOrderType ?: "FAK").trim().uppercase()
+            val makerPriceOffset = request.makerPriceOffset?.toSafeBigDecimal() ?: BigDecimal.ZERO
+            val makerCancelBeforeSettleSeconds = request.makerCancelBeforeSettleSeconds ?: 5
+            val makerFallbackTaker = request.makerFallbackTaker ?: false
+            val calibrationGateEnabled = request.calibrationGateEnabled ?: false
+            val probeAmountUsdc = request.probeAmountUsdc?.toSafeBigDecimal() ?: BigDecimal.ONE
+            val calibrationMinSamples = request.calibrationMinSamples ?: 30
+            val calibrationMaxError = request.calibrationMaxError?.toSafeBigDecimal() ?: BigDecimal("0.10")
+            val sigmaMethod = (request.sigmaMethod ?: "MAD").trim().uppercase()
+            val ewmaLambda = request.ewmaLambda?.toSafeBigDecimal() ?: BigDecimal("0.94")
+            if (request.barrierEnabled && !isBarrierParamsValid(entryProb, entryEdge, maxEntryPrice, costBuffer, barrierMinMarketProb, sigmaScale, dailyLossLimitUsdc, maxConcurrentPositions, takerFeeBps, makerRebateBps, gasCostUsdc, entryOrderType, makerPriceOffset, makerCancelBeforeSettleSeconds, interval, probeAmountUsdc, calibrationMinSamples, calibrationMaxError, sigmaMethod, ewmaLambda)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
+            }
+
             val entity = CryptoTailStrategy(
                 accountId = request.accountId,
                 name = nameToSave,
@@ -97,7 +129,29 @@ class CryptoTailStrategyService(
                 spreadMode = spreadMode,
                 spreadValue = spreadValue,
                 spreadDirection = spreadDirection,
-                enabled = request.enabled
+                enabled = request.enabled,
+                barrierEnabled = request.barrierEnabled,
+                entryProb = entryProb,
+                entryEdge = entryEdge,
+                maxEntryPrice = maxEntryPrice,
+                costBuffer = costBuffer,
+                barrierMinMarketProb = barrierMinMarketProb,
+                sigmaScale = sigmaScale,
+                dailyLossLimitUsdc = dailyLossLimitUsdc,
+                maxConcurrentPositions = maxConcurrentPositions,
+                takerFeeBps = takerFeeBps,
+                makerRebateBps = makerRebateBps,
+                gasCostUsdc = gasCostUsdc,
+                entryOrderType = entryOrderType,
+                makerPriceOffset = makerPriceOffset,
+                makerCancelBeforeSettleSeconds = makerCancelBeforeSettleSeconds,
+                makerFallbackTaker = makerFallbackTaker,
+                calibrationGateEnabled = calibrationGateEnabled,
+                probeAmountUsdc = probeAmountUsdc,
+                calibrationMinSamples = calibrationMinSamples,
+                calibrationMaxError = calibrationMaxError,
+                sigmaMethod = sigmaMethod,
+                ewmaLambda = ewmaLambda
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -154,6 +208,32 @@ class CryptoTailStrategyService(
                 existing.spreadDirection
             }
 
+            val newBarrierEnabled = request.barrierEnabled ?: existing.barrierEnabled
+            val newEntryProb = request.entryProb?.toSafeBigDecimal() ?: existing.entryProb
+            val newEntryEdge = request.entryEdge?.toSafeBigDecimal() ?: existing.entryEdge
+            val newMaxEntryPrice = request.maxEntryPrice?.toSafeBigDecimal() ?: existing.maxEntryPrice
+            val newCostBuffer = request.costBuffer?.toSafeBigDecimal() ?: existing.costBuffer
+            val newBarrierMinMarketProb = request.barrierMinMarketProb?.toSafeBigDecimal() ?: existing.barrierMinMarketProb
+            val newSigmaScale = request.sigmaScale?.toSafeBigDecimal() ?: existing.sigmaScale
+            val newDailyLossLimitUsdc = request.dailyLossLimitUsdc?.toSafeBigDecimal() ?: existing.dailyLossLimitUsdc
+            val newMaxConcurrentPositions = request.maxConcurrentPositions ?: existing.maxConcurrentPositions
+            val newTakerFeeBps = request.takerFeeBps ?: existing.takerFeeBps
+            val newMakerRebateBps = request.makerRebateBps ?: existing.makerRebateBps
+            val newGasCostUsdc = request.gasCostUsdc?.toSafeBigDecimal() ?: existing.gasCostUsdc
+            val newEntryOrderType = (request.entryOrderType?.trim()?.uppercase()) ?: existing.entryOrderType
+            val newMakerPriceOffset = request.makerPriceOffset?.toSafeBigDecimal() ?: existing.makerPriceOffset
+            val newMakerCancelBeforeSettleSeconds = request.makerCancelBeforeSettleSeconds ?: existing.makerCancelBeforeSettleSeconds
+            val newMakerFallbackTaker = request.makerFallbackTaker ?: existing.makerFallbackTaker
+            val newCalibrationGateEnabled = request.calibrationGateEnabled ?: existing.calibrationGateEnabled
+            val newProbeAmountUsdc = request.probeAmountUsdc?.toSafeBigDecimal() ?: existing.probeAmountUsdc
+            val newCalibrationMinSamples = request.calibrationMinSamples ?: existing.calibrationMinSamples
+            val newCalibrationMaxError = request.calibrationMaxError?.toSafeBigDecimal() ?: existing.calibrationMaxError
+            val newSigmaMethod = (request.sigmaMethod?.trim()?.uppercase()) ?: existing.sigmaMethod
+            val newEwmaLambda = request.ewmaLambda?.toSafeBigDecimal() ?: existing.ewmaLambda
+            if (newBarrierEnabled && !isBarrierParamsValid(newEntryProb, newEntryEdge, newMaxEntryPrice, newCostBuffer, newBarrierMinMarketProb, newSigmaScale, newDailyLossLimitUsdc, newMaxConcurrentPositions, newTakerFeeBps, newMakerRebateBps, newGasCostUsdc, newEntryOrderType, newMakerPriceOffset, newMakerCancelBeforeSettleSeconds, existing.intervalSeconds, newProbeAmountUsdc, newCalibrationMinSamples, newCalibrationMaxError, newSigmaMethod, newEwmaLambda)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
+            }
+
             val updated = existing.copy(
                 name = nameToSave,
                 windowStartSeconds = request.windowStartSeconds ?: existing.windowStartSeconds,
@@ -166,6 +246,28 @@ class CryptoTailStrategyService(
                 spreadValue = newSpreadValue,
                 spreadDirection = newSpreadDirection,
                 enabled = request.enabled ?: existing.enabled,
+                barrierEnabled = newBarrierEnabled,
+                entryProb = newEntryProb,
+                entryEdge = newEntryEdge,
+                maxEntryPrice = newMaxEntryPrice,
+                costBuffer = newCostBuffer,
+                barrierMinMarketProb = newBarrierMinMarketProb,
+                sigmaScale = newSigmaScale,
+                dailyLossLimitUsdc = newDailyLossLimitUsdc,
+                maxConcurrentPositions = newMaxConcurrentPositions,
+                takerFeeBps = newTakerFeeBps,
+                makerRebateBps = newMakerRebateBps,
+                gasCostUsdc = newGasCostUsdc,
+                entryOrderType = newEntryOrderType,
+                makerPriceOffset = newMakerPriceOffset,
+                makerCancelBeforeSettleSeconds = newMakerCancelBeforeSettleSeconds,
+                makerFallbackTaker = newMakerFallbackTaker,
+                calibrationGateEnabled = newCalibrationGateEnabled,
+                probeAmountUsdc = newProbeAmountUsdc,
+                calibrationMinSamples = newCalibrationMinSamples,
+                calibrationMaxError = newCalibrationMaxError,
+                sigmaMethod = newSigmaMethod,
+                ewmaLambda = newEwmaLambda,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -316,6 +418,232 @@ class CryptoTailStrategyService(
 
     fun getStrategy(strategyId: Long): CryptoTailStrategy? = strategyRepository.findById(strategyId).orElse(null)
 
+    /** 查询全链路决策日志（分页，按时间倒序） */
+    fun getDecisionLog(request: CryptoTailDecisionLogListRequest): Result<CryptoTailDecisionLogListResponse> {
+        return try {
+            val page = PageRequest.of((request.page - 1).coerceAtLeast(0), request.pageSize.coerceIn(1, 100))
+            val useTimeRange = request.startDate != null || request.endDate != null
+            val pageResult = if (useTimeRange) {
+                decisionEventRepository.findAllByStrategyIdAndCreatedAtBetweenOrderByCreatedAtDesc(
+                    request.strategyId, request.startDate ?: 0L, request.endDate ?: Long.MAX_VALUE, page
+                )
+            } else {
+                decisionEventRepository.findAllByStrategyIdOrderByCreatedAtDesc(request.strategyId, page)
+            }
+            Result.success(
+                CryptoTailDecisionLogListResponse(
+                    list = pageResult.content.map { it.toDto() },
+                    total = pageResult.totalElements
+                )
+            )
+        } catch (e: Exception) {
+            logger.error("查询决策日志失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /** 单笔成交分析快照分页查询 */
+    fun getTradeSnapshots(request: CryptoTailTradeSnapshotListRequest): Result<CryptoTailTradeSnapshotListResponse> {
+        return try {
+            val page = PageRequest.of((request.page - 1).coerceAtLeast(0), request.pageSize.coerceIn(1, 100))
+            val useTimeRange = request.startDate != null || request.endDate != null
+            val pageResult = if (useTimeRange) {
+                tradeSnapshotRepository.findAllByStrategyIdAndSubmitTsBetweenOrderByPeriodStartUnixDesc(
+                    request.strategyId, request.startDate ?: 0L, request.endDate ?: Long.MAX_VALUE, page
+                )
+            } else {
+                tradeSnapshotRepository.findAllByStrategyIdOrderByPeriodStartUnixDesc(request.strategyId, page)
+            }
+            Result.success(
+                CryptoTailTradeSnapshotListResponse(
+                    list = pageResult.content.map { it.toDto() },
+                    total = pageResult.totalElements
+                )
+            )
+        } catch (e: Exception) {
+            logger.error("查询单笔成交快照失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /** 校准统计 + 放量闸状态查询（监控页展示） */
+    fun getCalibration(request: CryptoTailCalibrationRequest): Result<CryptoTailCalibrationResponse> {
+        return try {
+            val strategy = strategyRepository.findById(request.strategyId).orElse(null)
+                ?: return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_NOT_FOUND.messageKey))
+            Result.success(calibrationService.getCalibration(strategy))
+        } catch (e: Exception) {
+            logger.error("查询校准统计失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /** 单笔成交分析快照 CSV 导出（按时间范围取全部，升序便于回测时间序列） */
+    fun exportTradeSnapshots(request: CryptoTailTradeSnapshotExportRequest): Result<CryptoTailTradeSnapshotExportResponse> {
+        return try {
+            val useTimeRange = request.startDate != null || request.endDate != null
+            val rows = if (useTimeRange) {
+                tradeSnapshotRepository.findAllByStrategyIdAndSubmitTsBetweenOrderByPeriodStartUnixAsc(
+                    request.strategyId, request.startDate ?: 0L, request.endDate ?: Long.MAX_VALUE
+                )
+            } else {
+                tradeSnapshotRepository.findAllByStrategyIdOrderByPeriodStartUnixAsc(request.strategyId)
+            }
+            val csv = buildSnapshotCsv(rows.map { it.toDto() })
+            val filename = "crypto_tail_snapshot_${request.strategyId}_${System.currentTimeMillis()}.csv"
+            Result.success(CryptoTailTradeSnapshotExportResponse(filename = filename, csv = csv, total = rows.size))
+        } catch (e: Exception) {
+            logger.error("导出单笔成交快照失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    private fun buildSnapshotCsv(rows: List<CryptoTailTradeSnapshotDto>): String {
+        val headers = listOf(
+            "id", "strategyId", "triggerId", "periodStartUnix", "marketSlug", "conditionId", "outcomeIndex", "intervalSeconds",
+            "openPrice", "entryMarkPrice", "entryGap", "sigmaPerSqrtS", "pWin", "safeRatio", "modelSide", "remainingSecondsAtEntry",
+            "bestBid", "bestAsk", "midPrice", "effectiveCost", "entryEdge",
+            "entryProbThreshold", "entryEdgeThreshold", "barrierMinMarketProb", "sigmaScale", "maxEntryPrice", "costBuffer",
+            "orderType", "targetPrice", "requestedAmount", "submitTs",
+            "fillStatus", "fillPrice", "fillSize", "fillAmount", "slippage", "orderId", "execError",
+            "settled", "winnerOutcomeIndex", "won", "realizedPnl", "settleTs", "holdSeconds",
+            "finalOpen", "finalClose", "finalGap", "reversed", "settleSource", "lossReason", "pwinBucket", "createdAt", "updatedAt"
+        )
+        val sb = StringBuilder()
+        sb.append(headers.joinToString(",")).append("\n")
+        for (r in rows) {
+            val cells = listOf(
+                r.id, r.strategyId, r.triggerId, r.periodStartUnix, r.marketSlug, r.conditionId, r.outcomeIndex, r.intervalSeconds,
+                r.openPrice, r.entryMarkPrice, r.entryGap, r.sigmaPerSqrtS, r.pWin, r.safeRatio, r.modelSide, r.remainingSecondsAtEntry,
+                r.bestBid, r.bestAsk, r.midPrice, r.effectiveCost, r.entryEdge,
+                r.entryProbThreshold, r.entryEdgeThreshold, r.barrierMinMarketProb, r.sigmaScale, r.maxEntryPrice, r.costBuffer,
+                r.orderType, r.targetPrice, r.requestedAmount, r.submitTs,
+                r.fillStatus, r.fillPrice, r.fillSize, r.fillAmount, r.slippage, r.orderId, r.execError,
+                r.settled, r.winnerOutcomeIndex, r.won, r.realizedPnl, r.settleTs, r.holdSeconds,
+                r.finalOpen, r.finalClose, r.finalGap, r.reversed, r.settleSource, r.lossReason, r.pwinBucket, r.createdAt, r.updatedAt
+            )
+            sb.append(cells.joinToString(",") { csvCell(it) }).append("\n")
+        }
+        return sb.toString()
+    }
+
+    /** CSV 单元格转义：含逗号/引号/换行时用双引号包裹并转义内部引号 */
+    private fun csvCell(value: Any?): String {
+        val s = value?.toString() ?: ""
+        return if (s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')) {
+            "\"" + s.replace("\"", "\"\"") + "\""
+        } else s
+    }
+
+    private fun CryptoTailTradeSnapshot.toDto(): CryptoTailTradeSnapshotDto = CryptoTailTradeSnapshotDto(
+        id = id ?: 0L,
+        strategyId = strategyId,
+        triggerId = triggerId,
+        periodStartUnix = periodStartUnix,
+        marketSlug = marketSlug,
+        conditionId = conditionId,
+        outcomeIndex = outcomeIndex,
+        intervalSeconds = intervalSeconds,
+        openPrice = openPrice?.toPlainString(),
+        entryMarkPrice = entryMarkPrice?.toPlainString(),
+        entryGap = entryGap?.toPlainString(),
+        sigmaPerSqrtS = sigmaPerSqrtS?.toPlainString(),
+        pWin = pWin?.toPlainString(),
+        safeRatio = safeRatio?.toPlainString(),
+        modelSide = modelSide,
+        remainingSecondsAtEntry = remainingSecondsAtEntry,
+        bestBid = bestBid?.toPlainString(),
+        bestAsk = bestAsk?.toPlainString(),
+        midPrice = midPrice?.toPlainString(),
+        effectiveCost = effectiveCost?.toPlainString(),
+        entryEdge = entryEdge?.toPlainString(),
+        entryProbThreshold = entryProbThreshold?.toPlainString(),
+        entryEdgeThreshold = entryEdgeThreshold?.toPlainString(),
+        barrierMinMarketProb = barrierMinMarketProb?.toPlainString(),
+        sigmaScale = sigmaScale?.toPlainString(),
+        maxEntryPrice = maxEntryPrice?.toPlainString(),
+        costBuffer = costBuffer?.toPlainString(),
+        orderType = orderType,
+        targetPrice = targetPrice?.toPlainString(),
+        requestedAmount = requestedAmount?.toPlainString(),
+        submitTs = submitTs,
+        fillStatus = fillStatus,
+        fillPrice = fillPrice?.toPlainString(),
+        fillSize = fillSize?.toPlainString(),
+        fillAmount = fillAmount?.toPlainString(),
+        slippage = slippage?.toPlainString(),
+        orderId = orderId,
+        execError = execError,
+        settled = settled,
+        winnerOutcomeIndex = winnerOutcomeIndex,
+        won = won,
+        realizedPnl = realizedPnl?.toPlainString(),
+        settleTs = settleTs,
+        holdSeconds = holdSeconds,
+        finalOpen = finalOpen?.toPlainString(),
+        finalClose = finalClose?.toPlainString(),
+        finalGap = finalGap?.toPlainString(),
+        reversed = reversed,
+        settleSource = settleSource,
+        lossReason = lossReason,
+        pwinBucket = pwinBucket,
+        createdAt = createdAt,
+        updatedAt = updatedAt
+    )
+
+    /** 障碍模式参数合法性校验（仅 barrierEnabled=true 时强制） */
+    private fun isBarrierParamsValid(
+        entryProb: BigDecimal,
+        entryEdge: BigDecimal,
+        maxEntryPrice: BigDecimal,
+        costBuffer: BigDecimal,
+        barrierMinMarketProb: BigDecimal,
+        sigmaScale: BigDecimal,
+        dailyLossLimitUsdc: BigDecimal?,
+        maxConcurrentPositions: Int?,
+        takerFeeBps: Int,
+        makerRebateBps: Int,
+        gasCostUsdc: BigDecimal,
+        entryOrderType: String,
+        makerPriceOffset: BigDecimal,
+        makerCancelBeforeSettleSeconds: Int,
+        intervalSeconds: Int,
+        probeAmountUsdc: BigDecimal,
+        calibrationMinSamples: Int,
+        calibrationMaxError: BigDecimal,
+        sigmaMethod: String,
+        ewmaLambda: BigDecimal
+    ): Boolean {
+        val one = BigDecimal.ONE
+        val zero = BigDecimal.ZERO
+        if (entryProb <= zero || entryProb > one) return false
+        if (entryEdge < zero || entryEdge >= one) return false
+        if (maxEntryPrice <= zero || maxEntryPrice > one) return false
+        if (costBuffer < zero || costBuffer >= one) return false
+        if (barrierMinMarketProb < zero || barrierMinMarketProb > one) return false
+        if (sigmaScale <= zero) return false
+        if (dailyLossLimitUsdc != null && dailyLossLimitUsdc < zero) return false
+        if (maxConcurrentPositions != null && maxConcurrentPositions < 0) return false
+        // 费用/返佣基点合理上限 10000bps(=100%)，gas 非负
+        if (takerFeeBps < 0 || takerFeeBps > 10000) return false
+        if (makerRebateBps < 0 || makerRebateBps > 10000) return false
+        if (gasCostUsdc < zero) return false
+        // 进场订单类型仅 FAK / MAKER
+        if (entryOrderType != "FAK" && entryOrderType != "MAKER") return false
+        // maker 价格偏移须在 (-1,1) 区间，避免越界
+        if (makerPriceOffset <= one.negate() || makerPriceOffset >= one) return false
+        // maker 撤单提前秒数须在 [0, interval) 内，至少留出成交窗口
+        if (makerCancelBeforeSettleSeconds < 0 || makerCancelBeforeSettleSeconds >= intervalSeconds) return false
+        // 放量闸：小额须 >= 1 USDC（平台最小下单额），样本数 >= 1，校准误差 (0,1)
+        if (probeAmountUsdc < BigDecimal.ONE) return false
+        if (calibrationMinSamples < 1) return false
+        if (calibrationMaxError <= zero || calibrationMaxError >= one) return false
+        // σ 估计方法仅 MAD / EWMA / GARMAN_KLASS；EWMA 衰减系数须在 (0,1)
+        if (sigmaMethod != "MAD" && sigmaMethod != "EWMA" && sigmaMethod != "GARMAN_KLASS") return false
+        if (ewmaLambda <= zero || ewmaLambda >= one) return false
+        return true
+    }
+
     private fun generateStrategyName(marketSlugPrefix: String): String {
         val suffix = Instant.now().atZone(ZoneId.systemDefault())
             .format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
@@ -347,6 +675,28 @@ class CryptoTailStrategyService(
             spreadValue = e.spreadValue?.toPlainString(),
             spreadDirection = e.spreadDirection.name,
             enabled = e.enabled,
+            barrierEnabled = e.barrierEnabled,
+            entryProb = e.entryProb.toPlainString(),
+            entryEdge = e.entryEdge.toPlainString(),
+            maxEntryPrice = e.maxEntryPrice.toPlainString(),
+            costBuffer = e.costBuffer.toPlainString(),
+            barrierMinMarketProb = e.barrierMinMarketProb.toPlainString(),
+            sigmaScale = e.sigmaScale.toPlainString(),
+            dailyLossLimitUsdc = e.dailyLossLimitUsdc?.toPlainString(),
+            maxConcurrentPositions = e.maxConcurrentPositions,
+            takerFeeBps = e.takerFeeBps,
+            makerRebateBps = e.makerRebateBps,
+            gasCostUsdc = e.gasCostUsdc.toPlainString(),
+            entryOrderType = e.entryOrderType,
+            makerPriceOffset = e.makerPriceOffset.toPlainString(),
+            makerCancelBeforeSettleSeconds = e.makerCancelBeforeSettleSeconds,
+            makerFallbackTaker = e.makerFallbackTaker,
+            calibrationGateEnabled = e.calibrationGateEnabled,
+            probeAmountUsdc = e.probeAmountUsdc.toPlainString(),
+            calibrationMinSamples = e.calibrationMinSamples,
+            calibrationMaxError = e.calibrationMaxError.toPlainString(),
+            sigmaMethod = e.sigmaMethod,
+            ewmaLambda = e.ewmaLambda.toPlainString(),
             lastTriggerAt = lastTriggerAt,
             totalRealizedPnl = totalPnl?.toPlainString(),
             settledCount = settledCount,
@@ -365,6 +715,9 @@ class CryptoTailStrategyService(
         outcomeIndex = t.outcomeIndex,
         triggerPrice = t.triggerPrice.toPlainString(),
         amountUsdc = t.amountUsdc.toPlainString(),
+        filledSize = t.filledSize?.toPlainString(),
+        filledAmount = t.filledAmount?.toPlainString(),
+        orderType = t.orderType,
         orderId = t.orderId,
         status = t.status,
         failReason = t.failReason,
