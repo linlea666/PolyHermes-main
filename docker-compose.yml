@@ -10,6 +10,8 @@ services:
       dockerfile: Dockerfile
       # 本地构建时可以传递版本号参数（自动使用当前分支名）
       args:
+        # BUILD_IN_DOCKER=false 时镜像阶段不编译，直接使用宿主机预编译的产物（推荐，避免 :compileKotlin 卡死/OOM）
+        BUILD_IN_DOCKER: ${BUILD_IN_DOCKER:-true}
         VERSION: ${VERSION:-dev}
         GIT_TAG: ${GIT_TAG:-${VERSION:-dev}}
         GITHUB_REPO_URL: ${GITHUB_REPO_URL:-https://github.com/linlea666/PolyHermes-main}

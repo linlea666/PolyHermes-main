@@ -184,6 +184,52 @@ check_security_config() {
     info "安全配置检查通过"
 }
 
+# 在宿主机预编译前后端产物（不在镜像内编译）
+# 使用 gradle / node 官方镜像 + 持久化缓存做增量编译，避免镜像阶段 gradle --no-daemon 全量冷编译导致 :compileKotlin 卡死/OOM
+build_artifacts_on_host() {
+    local repo_url="https://github.com/linlea666/PolyHermes-main"
+
+    info "在宿主机预编译产物（BUILD_IN_DOCKER=false，镜像阶段不再编译）..."
+
+    # 后端：用 gradle 容器编译 JAR，挂载缓存卷复用依赖与增量编译结果
+    info "编译后端 JAR（增量编译，缓存复用）..."
+    docker run --rm \
+        --user root \
+        -e GRADLE_USER_HOME=/gradle-cache \
+        -e GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8" \
+        -v "$(pwd)/backend":/app/backend \
+        -v polyhermes-gradle-cache:/gradle-cache \
+        -w /app/backend \
+        gradle:8.5-jdk17 \
+        gradle bootJar --no-daemon -x test
+
+    if [ -z "$(ls -A backend/build/libs/*.jar 2>/dev/null)" ]; then
+        error "后端编译失败：未在 backend/build/libs/ 生成 JAR"
+        exit 1
+    fi
+    info "后端 JAR 编译完成"
+
+    # 前端：用 node 容器编译，挂载 npm 缓存卷
+    info "编译前端产物..."
+    docker run --rm \
+        --user root \
+        -e VERSION="${DOCKER_VERSION}" \
+        -e GIT_TAG="${DOCKER_VERSION}" \
+        -e GITHUB_REPO_URL="${repo_url}" \
+        -e npm_config_cache=/npm-cache \
+        -v "$(pwd)/frontend":/app/frontend \
+        -v polyhermes-npm-cache:/npm-cache \
+        -w /app/frontend \
+        node:18-alpine \
+        sh -c "npm ci && npm run build"
+
+    if [ ! -d "frontend/dist" ] || [ -z "$(ls -A frontend/dist 2>/dev/null)" ]; then
+        error "前端编译失败：未在 frontend/dist 生成产物"
+        exit 1
+    fi
+    info "前端产物编译完成"
+}
+
 # 构建并启动
 deploy() {
     # 检查安全配置
@@ -212,7 +258,12 @@ deploy() {
         fi
         export DOCKER_VERSION
         
-        info "构建 Docker 镜像（本地构建，版本号: ${DOCKER_VERSION}）..."
+        # 编译方式：默认在宿主机预编译产物（BUILD_IN_DOCKER=false），避免镜像阶段 :compileKotlin 卡死/OOM
+        # 如需回退到旧的「镜像内全量编译」行为，可显式 BUILD_IN_DOCKER=true ./deploy.sh
+        BUILD_IN_DOCKER="${BUILD_IN_DOCKER:-false}"
+        export BUILD_IN_DOCKER
+        
+        info "构建 Docker 镜像（本地构建，版本号: ${DOCKER_VERSION}，BUILD_IN_DOCKER=${BUILD_IN_DOCKER}）..."
         
         # 创建占位符目录（如果不存在），避免 Dockerfile COPY 失败
         # 当 BUILD_IN_DOCKER=true 时，backend/build 可能不存在
@@ -222,6 +273,11 @@ deploy() {
         export VERSION=${DOCKER_VERSION}
         export GIT_TAG=${DOCKER_VERSION}
         export GITHUB_REPO_URL=https://github.com/linlea666/PolyHermes-main
+        
+        # 预编译产物（仅在不使用镜像内编译时）
+        if [ "$BUILD_IN_DOCKER" = "false" ]; then
+            build_artifacts_on_host
+        fi
         
         compose build
     fi
