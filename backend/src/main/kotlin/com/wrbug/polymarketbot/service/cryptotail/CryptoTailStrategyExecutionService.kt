@@ -386,7 +386,7 @@ class CryptoTailStrategyExecutionService(
         ).toJson()
 
         if (r.side != outcomeIndex) {
-            return BarrierEval(false, "DIRECTION", "模型方向=${r.side}与当前outcome=$outcomeIndex不一致", snapshot, metrics)
+            return BarrierEval(false, "DIRECTION", "模型方向=${r.side}与当前outcome=${outcomeIndex}不一致", snapshot, metrics)
         }
         if (r.pWin < strategy.entryProb) {
             return BarrierEval(false, "PWIN", "pWin=${r.pWin.toPlainString()}<entryProb=${strategy.entryProb.toPlainString()}", snapshot, metrics)

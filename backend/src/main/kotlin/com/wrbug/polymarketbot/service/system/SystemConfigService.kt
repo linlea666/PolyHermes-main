@@ -1,5 +1,6 @@
 package com.wrbug.polymarketbot.service.system
 
+import com.wrbug.polymarketbot.dto.ChainlinkConfigUpdateRequest
 import com.wrbug.polymarketbot.dto.SystemConfigDto
 import com.wrbug.polymarketbot.dto.SystemConfigUpdateRequest
 import com.wrbug.polymarketbot.entity.SystemConfig
