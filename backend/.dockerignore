@@ -1,0 +1,33 @@
+# Gradle
+.gradle/
+build/
+out/
+bin/
+*.log
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 部署相关
+deploy/
+*.jar
+!build/libs/*.jar
+
+# 环境配置
+.env
+.env.local
+.env.*.local
+
+# 其他
+*.bak
+*.backup
+*.old
+

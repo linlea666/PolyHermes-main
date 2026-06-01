@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  app:
+    # 使用 Docker Hub 镜像（推荐生产环境）
+    # 取消注释下面一行，并注释掉 build 部分，即可使用 Docker Hub 的镜像
+    # image: wrbug/polyhermes:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # 本地构建时可以传递版本号参数（自动使用当前分支名）
+      args:
+        VERSION: ${VERSION:-dev}
+        GIT_TAG: ${GIT_TAG:-${VERSION:-dev}}
+        GITHUB_REPO_URL: ${GITHUB_REPO_URL:-https://github.com/linlea666/PolyHermes-main}
+    container_name: polyhermes
+    ports:
+      - "${SERVER_PORT:-80}:80"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
+      - DB_URL=${DB_URL:-jdbc:mysql://mysql:3306/polyhermes?useSSL=false&serverTimezone=UTC&characterEncoding=utf8&allowPublicKeyRetrieval=true}
+      - DB_USERNAME=${DB_USERNAME:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-}
+      - SERVER_PORT=8000
+      # ⚠️ 安全警告：以下两个环境变量不能使用默认值，否则容器启动会失败
+      # 请在 .env 文件中设置，或通过环境变量传入
+      # 生成随机密钥：openssl rand -hex 32 (ADMIN_RESET_PASSWORD_KEY) 或 openssl rand -hex 64 (JWT_SECRET)
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - ADMIN_RESET_PASSWORD_KEY=${ADMIN_RESET_PASSWORD_KEY:-change-me-in-production}
+      # 日志级别配置（可选，默认值：root=WARN, app=INFO）
+      # 可选值：TRACE, DEBUG, INFO, WARN, ERROR, OFF
+      - LOG_LEVEL_ROOT=${LOG_LEVEL_ROOT:-WARN}
+      - LOG_LEVEL_APP=${LOG_LEVEL_APP:-INFO}
+      # 动态更新配置
+      - ALLOW_PRERELEASE=${ALLOW_PRERELEASE:-false}
+      - GITHUB_REPO=${GITHUB_REPO:-linlea666/PolyHermes-main}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - polyhermes-network
+
+  mysql:
+    image: mysql:8.2
+    container_name: polyhermes-mysql
+    ports:
+      - "${MYSQL_PORT:-3307}:3306"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - MYSQL_ROOT_PASSWORD=${DB_PASSWORD:-rootpassword}
+      - MYSQL_DATABASE=polyhermes
+      - MYSQL_CHARACTER_SET_SERVER=utf8mb4
+      - MYSQL_COLLATION_SERVER=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - polyhermes-network
+
+volumes:
+  mysql-data:
+
+networks:
+  polyhermes-network:
+    driver: bridge

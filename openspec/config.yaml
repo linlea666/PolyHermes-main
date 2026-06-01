@@ -1,0 +1,23 @@
+schema: spec-driven
+
+context: |
+  Project: PolyHermes, a Polymarket copy-trading system.
+  Backend: Kotlin 1.9, Spring Boot 3.2, Spring Data JPA, Flyway, MySQL 8.2, Retrofit/OkHttp, WebSocket, Docker.
+  Frontend: React 18, TypeScript, Vite, Ant Design, Zustand, axios, react-i18next.
+  Domain: copy-trading configs connect accounts, leaders, and templates; orders are tracked through buy orders, sell match records, sell match details, filtered orders, and real PnL statistics.
+  Product language: write user-facing OpenSpec artifacts in Simplified Chinese unless the user asks otherwise.
+  Safety: this project can control real-money trading behavior. Prefer conservative defaults, explicit operator confirmation, audit trails, and non-destructive suggestions before automation.
+
+rules:
+  proposal:
+    - State the user-facing problem, why now, and what is explicitly out of scope.
+    - Separate live-money safety requirements from growth or automation ideas.
+  design:
+    - Cover backend, frontend, data model, scheduling, error states, observability, and rollout.
+    - Distinguish true zero-valued positions from unavailable quote/position data.
+  specs:
+    - Write requirement names, scenario names, and scenario content in Simplified Chinese.
+    - Keep only OpenSpec-required structural keywords in English when the CLI format requires them.
+  tasks:
+    - Split implementation into backend, frontend, tests, docs, deployment/ops, and verification chunks.
+    - Keep auto-trading or auto-pausing steps gated behind explicit configuration and tests.
