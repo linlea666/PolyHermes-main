@@ -2,6 +2,7 @@ package com.wrbug.polymarketbot.service.cryptotail
 
 import com.wrbug.polymarketbot.dto.CryptoTailCalibrationBin
 import com.wrbug.polymarketbot.dto.CryptoTailCalibrationResponse
+import com.wrbug.polymarketbot.dto.CryptoTailRecommendSigmaScaleResponse
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.entity.CryptoTailTradeSnapshot
 import com.wrbug.polymarketbot.repository.CryptoTailTradeSnapshotRepository
@@ -135,7 +136,6 @@ class CryptoTailCalibrationService(
         }.toSortedMap()
 
         val bins = mutableListOf<CryptoTailCalibrationBin>()
-        var weightedErrorNumerator = BigDecimal.ZERO
         for ((bucket, list) in grouped) {
             val cnt = list.size.toLong()
             val predicted = list.fold(BigDecimal.ZERO) { acc, s -> acc.add(s.pWin ?: BigDecimal.ZERO) }
@@ -156,11 +156,102 @@ class CryptoTailCalibrationService(
                     netPnl = netPnl.toPlainString()
                 )
             )
-            // 样本量加权 |预测-实际|
-            weightedErrorNumerator = weightedErrorNumerator.add(predicted.subtract(actual).abs().multiply(BigDecimal(cnt)))
         }
-        val calibrationError = weightedErrorNumerator.divide(BigDecimal(total), scale, RoundingMode.HALF_UP)
+        // 整体校准误差走共享口径（与放量闸、sigmaScale 推荐一致）；样本非空，必非 null
+        val calibrationError = weightedCalibrationError(samples) { it.pWin ?: BigDecimal.ZERO } ?: BigDecimal.ZERO
         return CalibrationAgg(total, winRate, calibrationError, totalNetPnl, avgNetPnl, bins)
+    }
+
+    /**
+     * 样本量加权校准误差 = Σ_bin |该箱平均预测pWin − 该箱实际胜率| × 箱样本数 / 总样本数。
+     * 分箱口径 floor(pWin×20)（5% 一箱，0~19）。pWinOf 提供每样本预测胜率（实际口径或重算口径）。
+     * 无样本返回 null。供 aggregate 与 recommendSigmaScale 共用，保证口径一致。
+     */
+    private fun weightedCalibrationError(
+        samples: List<CryptoTailTradeSnapshot>,
+        pWinOf: (CryptoTailTradeSnapshot) -> BigDecimal
+    ): BigDecimal? {
+        if (samples.isEmpty()) return null
+        val total = samples.size.toLong()
+        val grouped = samples.groupBy { s ->
+            pWinOf(s).multiply(BigDecimal(20)).setScale(0, RoundingMode.FLOOR).toInt().coerceIn(0, 19)
+        }
+        var numerator = BigDecimal.ZERO
+        for ((_, list) in grouped) {
+            val cnt = list.size.toLong()
+            val predicted = list.fold(BigDecimal.ZERO) { acc, s -> acc.add(pWinOf(s)) }
+                .divide(BigDecimal(cnt), scale, RoundingMode.HALF_UP)
+            val wins = list.count { it.won == true }.toLong()
+            val actual = BigDecimal(wins).divide(BigDecimal(cnt), scale, RoundingMode.HALF_UP)
+            numerator = numerator.add(predicted.subtract(actual).abs().multiply(BigDecimal(cnt)))
+        }
+        return numerator.divide(BigDecimal(total), scale, RoundingMode.HALF_UP)
+    }
+
+    /**
+     * 按已结算成交样本反推更优 sigmaScale。
+     * 利用快照存储的 safeRatio(z) 与当时 sigmaScale：换 newScale 时 z' = z × (oldScale / newScale)、
+     * pWin' = Φ(z')（复用 BarrierProbability.phi），取使加权校准误差最小的 newScale。无需重拉行情。
+     *
+     * 注意：样本仅含已通过 pWin≥entryProb 进场的周期（截尾样本），校准针对实际交易区间——
+     * 这正是关心的区域，但非全域校准；仅推荐不自动套用，由用户保存确认。
+     */
+    fun recommendSigmaScale(strategy: CryptoTailStrategy): CryptoTailRecommendSigmaScaleResponse {
+        val strategyId = strategy.id ?: 0L
+        val all = snapshotRepository.findAllByStrategyIdAndSettledTrueAndWonIsNotNullAndPWinIsNotNull(strategyId)
+        // 仅用 z 与 oldScale 均可用的样本（旧行可能缺失这些列）
+        val usable = all.filter {
+            val os = it.sigmaScale
+            it.safeRatio != null && os != null && os > BigDecimal.ZERO && it.won != null
+        }
+        val minSamples = strategy.calibrationMinSamples
+        if (usable.size < minSamples) {
+            return CryptoTailRecommendSigmaScaleResponse(
+                strategyId = strategyId,
+                sampleCount = usable.size.toLong(),
+                minSamples = minSamples,
+                enough = false,
+                currentSigmaScale = strategy.sigmaScale.toPlainString(),
+                recommendedSigmaScale = null,
+                currentError = null,
+                recommendedError = null,
+                sigmaMethod = strategy.sigmaMethod,
+                reason = "可用样本不足(${usable.size}/$minSamples)，无法校准"
+            )
+        }
+        // 给定 newScale 下单样本的重算 pWin
+        val pWinUnder: (CryptoTailTradeSnapshot, BigDecimal) -> BigDecimal = { s, newScale ->
+            val zNew = s.safeRatio!!.multiply(s.sigmaScale!!).divide(newScale, 12, RoundingMode.HALF_UP)
+            BigDecimal(BarrierProbability.phi(zNew.toDouble())).setScale(scale, RoundingMode.HALF_UP)
+        }
+        val currentError = weightedCalibrationError(usable) { pWinUnder(it, strategy.sigmaScale) }
+        // 网格搜索 newScale ∈ [0.10, 5.00]，步长 0.01
+        var bestScale = strategy.sigmaScale
+        var bestError: BigDecimal? = null
+        var candidate = BigDecimal("0.10")
+        val step = BigDecimal("0.01")
+        val maxScale = BigDecimal("5.00")
+        while (candidate <= maxScale) {
+            val err = weightedCalibrationError(usable) { pWinUnder(it, candidate) }
+            if (err != null && (bestError == null || err < bestError)) {
+                bestError = err
+                bestScale = candidate
+            }
+            candidate = candidate.add(step)
+        }
+        val recommended = bestScale.setScale(4, RoundingMode.HALF_UP)
+        return CryptoTailRecommendSigmaScaleResponse(
+            strategyId = strategyId,
+            sampleCount = usable.size.toLong(),
+            minSamples = minSamples,
+            enough = true,
+            currentSigmaScale = strategy.sigmaScale.toPlainString(),
+            recommendedSigmaScale = recommended.toPlainString(),
+            currentError = currentError?.toPlainString(),
+            recommendedError = bestError?.toPlainString(),
+            sigmaMethod = strategy.sigmaMethod,
+            reason = "基于 ${usable.size} 笔已结算样本，最小化样本量加权校准误差搜索得出"
+        )
     }
 
     /** 清除指定策略的放量判定缓存（配置变更/结算后可调用以即时刷新；非必须） */

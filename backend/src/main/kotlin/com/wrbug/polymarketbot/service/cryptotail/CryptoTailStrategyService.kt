@@ -478,6 +478,18 @@ class CryptoTailStrategyService(
         }
     }
 
+    /** 按已结算样本推荐 sigmaScale（仅推荐，不自动套用） */
+    fun recommendSigmaScale(request: CryptoTailRecommendSigmaScaleRequest): Result<CryptoTailRecommendSigmaScaleResponse> {
+        return try {
+            val strategy = strategyRepository.findById(request.strategyId).orElse(null)
+                ?: return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_NOT_FOUND.messageKey))
+            Result.success(calibrationService.recommendSigmaScale(strategy))
+        } catch (e: Exception) {
+            logger.error("推荐σ校准系数失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
     /** 单笔成交分析快照 CSV 导出（按时间范围取全部，升序便于回测时间序列） */
     fun exportTradeSnapshots(request: CryptoTailTradeSnapshotExportRequest): Result<CryptoTailTradeSnapshotExportResponse> {
         return try {

@@ -315,6 +315,39 @@ data class CryptoTailCalibrationResponse(
 )
 
 /**
+ * sigmaScale 自动校准推荐请求
+ */
+data class CryptoTailRecommendSigmaScaleRequest(
+    val strategyId: Long = 0L
+)
+
+/**
+ * sigmaScale 自动校准推荐响应
+ * 基于已结算成交样本，最小化样本量加权校准误差搜索得出的建议系数；仅推荐，不自动套用。
+ */
+data class CryptoTailRecommendSigmaScaleResponse(
+    val strategyId: Long = 0L,
+    /** 可用样本数（z 与 oldScale 均存在的已结算样本） */
+    val sampleCount: Long = 0L,
+    /** 达标所需最少样本（复用策略 calibrationMinSamples） */
+    val minSamples: Int = 0,
+    /** 样本是否足够给出推荐 */
+    val enough: Boolean = false,
+    /** 当前 sigmaScale */
+    val currentSigmaScale: String = "0",
+    /** 推荐 sigmaScale（样本不足时为 null） */
+    val recommendedSigmaScale: String? = null,
+    /** 当前系数下的加权校准误差（样本不足时为 null） */
+    val currentError: String? = null,
+    /** 推荐系数下的加权校准误差（样本不足时为 null） */
+    val recommendedError: String? = null,
+    /** 当前 σ 估计方法（推荐仅对该方法的样本有效） */
+    val sigmaMethod: String = "MAD",
+    /** 说明 */
+    val reason: String = ""
+)
+
+/**
  * 自动价差计算响应（按 30 根历史 K 线 + IQR 剔除后 × 0.7）
  */
 data class CryptoTailAutoMinSpreadResponse(

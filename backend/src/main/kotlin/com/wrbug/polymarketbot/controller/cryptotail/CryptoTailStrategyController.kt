@@ -19,6 +19,8 @@ import com.wrbug.polymarketbot.dto.CryptoTailPnlCurveRequest
 import com.wrbug.polymarketbot.dto.CryptoTailPnlCurveResponse
 import com.wrbug.polymarketbot.dto.CryptoTailCalibrationRequest
 import com.wrbug.polymarketbot.dto.CryptoTailCalibrationResponse
+import com.wrbug.polymarketbot.dto.CryptoTailRecommendSigmaScaleRequest
+import com.wrbug.polymarketbot.dto.CryptoTailRecommendSigmaScaleResponse
 import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogListRequest
 import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogListResponse
 import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotListRequest
@@ -178,6 +180,26 @@ class CryptoTailStrategyController(
             )
         } catch (e: Exception) {
             logger.error("查询校准统计异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
+    @PostMapping("/recommend-sigma-scale")
+    fun recommendSigmaScale(@RequestBody request: CryptoTailRecommendSigmaScaleRequest): ResponseEntity<ApiResponse<CryptoTailRecommendSigmaScaleResponse>> {
+        return try {
+            if (request.strategyId <= 0) {
+                return ResponseEntity.ok(ApiResponse.error(ErrorCode.CRYPTO_TAIL_STRATEGY_NOT_FOUND, messageSource = messageSource))
+            }
+            val result = cryptoTailStrategyService.recommendSigmaScale(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("推荐σ校准系数失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("推荐σ校准系数异常: ${e.message}", e)
             ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
         }
     }

@@ -47,6 +47,7 @@ const CryptoTailStrategyList: React.FC = () => {
   const [redeemModalOpen, setRedeemModalOpen] = useState(false)
   const [formModalOpen, setFormModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
+  const [recommendingSigma, setRecommendingSigma] = useState(false)
   const [marketOptions, setMarketOptions] = useState<CryptoTailMarketOptionDto[]>([])
   const [triggersModalOpen, setTriggersModalOpen] = useState(false)
   const [triggersStrategyId, setTriggersStrategyId] = useState<number | null>(null)
@@ -234,6 +235,58 @@ const CryptoTailStrategyList: React.FC = () => {
       ewmaLambda: record.ewmaLambda ?? '0.94'
     })
     setFormModalOpen(true)
+  }
+
+  // 风控一键补全：并发恒为 2（跨周期未结算敞口上限，与"每周期只下单一次"正交）；
+  // 日亏熔断仅在固定金额模式下按"金额×5"给出，比例模式无法换算 USDC，不臆造数值
+  const fillRiskDefaults = () => {
+    const updates: { maxConcurrentPositions: number; dailyLossLimitUsdc?: string } = {
+      maxConcurrentPositions: 2
+    }
+    const amountMode = form.getFieldValue('amountMode')
+    const amount = Number(form.getFieldValue('amountValue'))
+    if (amountMode === 'FIXED' && Number.isFinite(amount) && amount > 0) {
+      updates.dailyLossLimitUsdc = String(amount * 5)
+      form.setFieldsValue(updates)
+      message.success(t('cryptoTailStrategy.form.riskAutofillDone'))
+    } else {
+      form.setFieldsValue(updates)
+      message.info(t('cryptoTailStrategy.form.riskAutofillNoAmount'))
+    }
+  }
+
+  // 按已结算样本推荐 sigmaScale：仅编辑态可用（需 strategyId + 已结算样本），推荐后回填由用户保存确认
+  const recommendSigmaScale = async () => {
+    if (editingId == null) {
+      message.info(t('cryptoTailStrategy.form.sigmaRecommendNeedSaved'))
+      return
+    }
+    setRecommendingSigma(true)
+    try {
+      const res = await apiService.cryptoTailStrategy.recommendSigmaScale({ strategyId: editingId })
+      if (res.data.code !== 0 || !res.data.data) {
+        message.error(res.data.msg || t('cryptoTailStrategy.form.sigmaRecommendFailed'))
+        return
+      }
+      const data = res.data.data
+      if (!data.enough || !data.recommendedSigmaScale) {
+        message.warning(data.reason || t('cryptoTailStrategy.form.sigmaRecommendNotEnough'))
+        return
+      }
+      form.setFieldsValue({ sigmaScale: data.recommendedSigmaScale })
+      message.success(
+        t('cryptoTailStrategy.form.sigmaRecommendDone', {
+          scale: data.recommendedSigmaScale,
+          before: data.currentError ?? '-',
+          after: data.recommendedError ?? '-',
+          count: data.sampleCount
+        })
+      )
+    } catch {
+      message.error(t('cryptoTailStrategy.form.sigmaRecommendFailed'))
+    } finally {
+      setRecommendingSigma(false)
+    }
   }
 
   const handleFormSubmit = async () => {
@@ -1257,6 +1310,18 @@ const CryptoTailStrategyList: React.FC = () => {
               >
                 <InputNumber min={0} step={0.01} style={{ width: '100%' }} stringMode />
               </Form.Item>
+              {editingId != null && (
+                <Form.Item>
+                  <Space size={8} wrap>
+                    <Button size="small" loading={recommendingSigma} onClick={recommendSigmaScale}>
+                      {t('cryptoTailStrategy.form.sigmaRecommendBtn')}
+                    </Button>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('cryptoTailStrategy.form.sigmaRecommendHint')}
+                    </Typography.Text>
+                  </Space>
+                </Form.Item>
+              )}
               <Form.Item
                 name="sigmaMethod"
                 label={
@@ -1303,6 +1368,16 @@ const CryptoTailStrategyList: React.FC = () => {
                   <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
                 </Form.Item>
               )}
+              <Form.Item>
+                <Space size={8} wrap>
+                  <Button size="small" onClick={fillRiskDefaults}>
+                    {t('cryptoTailStrategy.form.riskAutofillBtn')}
+                  </Button>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('cryptoTailStrategy.form.riskAutofillHint')}
+                  </Typography.Text>
+                </Space>
+              </Form.Item>
               <Form.Item
                 name="dailyLossLimitUsdc"
                 label={

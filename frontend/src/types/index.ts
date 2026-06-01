@@ -1695,6 +1695,25 @@ export interface CryptoTailCalibrationResponse {
   bins: CryptoTailCalibrationBin[]
 }
 
+/** sigmaScale 自动校准推荐请求 */
+export interface CryptoTailRecommendSigmaScaleRequest {
+  strategyId: number
+}
+
+/** sigmaScale 自动校准推荐响应 */
+export interface CryptoTailRecommendSigmaScaleResponse {
+  strategyId: number
+  sampleCount: number
+  minSamples: number
+  enough: boolean
+  currentSigmaScale: string
+  recommendedSigmaScale?: string | null
+  currentError?: string | null
+  recommendedError?: string | null
+  sigmaMethod: string
+  reason: string
+}
+
 /** 收益曲线单点 */
 export interface CryptoTailPnlCurvePoint {
   timestamp: number
