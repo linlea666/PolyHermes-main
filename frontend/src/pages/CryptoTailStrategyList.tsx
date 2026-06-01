@@ -1167,6 +1167,18 @@ const CryptoTailStrategyList: React.FC = () => {
               )
             }
           </Form.Item>
+          {barrierEnabled && (
+            <Form.Item>
+              <Space size={8} wrap>
+                <Button size="small" onClick={fillRiskDefaults}>
+                  {t('cryptoTailStrategy.form.riskAutofillBtn')}
+                </Button>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {t('cryptoTailStrategy.form.riskAutofillHint')}
+                </Typography.Text>
+              </Space>
+            </Form.Item>
+          )}
           {!barrierEnabled && (
             <>
               <Form.Item
@@ -1368,16 +1380,6 @@ const CryptoTailStrategyList: React.FC = () => {
                   <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
                 </Form.Item>
               )}
-              <Form.Item>
-                <Space size={8} wrap>
-                  <Button size="small" onClick={fillRiskDefaults}>
-                    {t('cryptoTailStrategy.form.riskAutofillBtn')}
-                  </Button>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {t('cryptoTailStrategy.form.riskAutofillHint')}
-                  </Typography.Text>
-                </Space>
-              </Form.Item>
               <Form.Item
                 name="dailyLossLimitUsdc"
                 label={
