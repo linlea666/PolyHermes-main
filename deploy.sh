@@ -210,12 +210,18 @@ build_artifacts_on_host() {
     info "后端 JAR 编译完成"
 
     # 前端：用 node 容器编译，挂载 npm 缓存卷
-    info "编译前端产物..."
+    # 显式限内存：vite/rollup 在低配机上 rendering chunks 容易吃满内存被 OOM kill 后表现为"卡住"。
+    # NODE_OPTIONS 控制 V8 堆，--memory 限容器；FRONTEND_BUILD_MEM_MB 可通过环境变量覆盖（默认 2048）。
+    local fe_mem_mb="${FRONTEND_BUILD_MEM_MB:-2048}"
+    info "编译前端产物（NODE_OPTIONS 堆上限=${fe_mem_mb}MB）..."
     docker run --rm \
         --user root \
+        --memory "${fe_mem_mb}m" \
+        --memory-swap "${fe_mem_mb}m" \
         -e VERSION="${DOCKER_VERSION}" \
         -e GIT_TAG="${DOCKER_VERSION}" \
         -e GITHUB_REPO_URL="${repo_url}" \
+        -e NODE_OPTIONS="--max-old-space-size=${fe_mem_mb}" \
         -e npm_config_cache=/npm-cache \
         -v "$(pwd)/frontend":/app/frontend \
         -v polyhermes-npm-cache:/npm-cache \
