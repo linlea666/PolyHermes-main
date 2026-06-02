@@ -450,6 +450,72 @@ class CryptoTailStrategyService(
         }
     }
 
+    /** 跨策略决策日志分页查询（strategyId<=0 = 全部），结果按策略名富化 */
+    fun getDecisionLogAll(request: CryptoTailDecisionLogListRequest): Result<CryptoTailDecisionLogListResponse> {
+        return try {
+            val page = PageRequest.of((request.page - 1).coerceAtLeast(0), request.pageSize.coerceIn(1, 100))
+            val useTimeRange = request.startDate != null || request.endDate != null
+            val start = request.startDate ?: 0L
+            val end = request.endDate ?: Long.MAX_VALUE
+            val pageResult = when {
+                request.strategyId > 0 && useTimeRange ->
+                    decisionEventRepository.findAllByStrategyIdAndCreatedAtBetweenOrderByCreatedAtDesc(request.strategyId, start, end, page)
+                request.strategyId > 0 ->
+                    decisionEventRepository.findAllByStrategyIdOrderByCreatedAtDesc(request.strategyId, page)
+                useTimeRange ->
+                    decisionEventRepository.findAllByCreatedAtBetweenOrderByCreatedAtDesc(start, end, page)
+                else ->
+                    decisionEventRepository.findAllByOrderByCreatedAtDesc(page)
+            }
+            Result.success(
+                CryptoTailDecisionLogListResponse(
+                    list = enrichStrategyName(pageResult.content.map { it.toDto() }),
+                    total = pageResult.totalElements
+                )
+            )
+        } catch (e: Exception) {
+            logger.error("查询全局决策日志失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /** 决策日志整段导出（按时间区间，strategyId<=0 = 全部），上限保护避免一次拉取过多 */
+    fun exportDecisionLog(request: CryptoTailDecisionLogExportRequest): Result<CryptoTailDecisionLogExportResponse> {
+        return try {
+            val cap = PageRequest.of(0, 100000)
+            val useTimeRange = request.startDate != null || request.endDate != null
+            val start = request.startDate ?: 0L
+            val end = request.endDate ?: Long.MAX_VALUE
+            val pageResult = when {
+                request.strategyId > 0 && useTimeRange ->
+                    decisionEventRepository.findAllByStrategyIdAndCreatedAtBetweenOrderByCreatedAtDesc(request.strategyId, start, end, cap)
+                request.strategyId > 0 ->
+                    decisionEventRepository.findAllByStrategyIdOrderByCreatedAtDesc(request.strategyId, cap)
+                useTimeRange ->
+                    decisionEventRepository.findAllByCreatedAtBetweenOrderByCreatedAtDesc(start, end, cap)
+                else ->
+                    decisionEventRepository.findAllByOrderByCreatedAtDesc(cap)
+            }
+            Result.success(
+                CryptoTailDecisionLogExportResponse(
+                    list = enrichStrategyName(pageResult.content.map { it.toDto() }),
+                    total = pageResult.totalElements
+                )
+            )
+        } catch (e: Exception) {
+            logger.error("导出决策日志失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /** 为决策事件 DTO 批量填充策略名（一次性按 id 集合查询，避免 N+1） */
+    private fun enrichStrategyName(list: List<CryptoTailDecisionEventDto>): List<CryptoTailDecisionEventDto> {
+        if (list.isEmpty()) return list
+        val ids = list.map { it.strategyId }.toSet()
+        val nameById = strategyRepository.findAllById(ids).associate { (it.id ?: 0L) to it.name }
+        return list.map { it.copy(strategyName = nameById[it.strategyId]) }
+    }
+
     /** 单笔成交分析快照分页查询 */
     fun getTradeSnapshots(request: CryptoTailTradeSnapshotListRequest): Result<CryptoTailTradeSnapshotListResponse> {
         return try {

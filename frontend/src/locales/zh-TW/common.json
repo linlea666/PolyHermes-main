@@ -322,6 +322,7 @@
     "cryptoSpreadStrategy": "加密價差策略",
     "cryptoTailStrategy": "策略配置",
     "cryptoTailMonitor": "即時監控",
+    "cryptoTailDecisionLog": "決策日誌",
     "positions": "倉位管理",
     "backtest": "回測",
     "statistics": "統計信息",
@@ -1917,6 +1918,20 @@
       "exportEmpty": "暫無可匯出的成交快照",
       "exportSuccess": "已匯出 {{count}} 筆成交快照",
       "exportFailed": "匯出失敗"
+    },
+    "decisionLogPage": {
+      "title": "決策日誌",
+      "strategy": "策略",
+      "allStrategies": "全部策略",
+      "presetToday": "今日",
+      "presetWeek": "本週",
+      "preset7d": "近7日",
+      "presetCustom": "自訂",
+      "refresh": "重新整理",
+      "exportJson": "匯出JSON",
+      "exportSuccess": "已匯出 {{count}} 筆決策日誌",
+      "exportEmpty": "所選時間範圍內暫無決策日誌",
+      "totalCount": "共 {{count}} 筆"
     },
     "redeemRequiredModal": {
       "title": "請先配置自動贖回",

@@ -1509,6 +1509,8 @@ export interface CryptoTailStrategyDto {
 export interface CryptoTailDecisionEventDto {
   id: number
   strategyId: number
+  /** 策略名（跨策略汇总页展示用；单策略查询可能为 null） */
+  strategyName?: string | null
   periodStartUnix: number
   correlationId: string
   /** EVAL_STARTED/GATE_PASSED/GATE_FAILED/ORDER_SUBMITTED/ORDER_RESULT/SETTLED */
@@ -1537,6 +1539,20 @@ export interface CryptoTailDecisionLogListRequest {
 export interface CryptoTailDecisionLogListResponse {
   list: CryptoTailDecisionEventDto[]
   total: number
+}
+
+/** 决策日志导出请求（按时间区间整段导出，strategyId<=0 表示全部策略） */
+export interface CryptoTailDecisionLogExportRequest {
+  strategyId?: number
+  startDate?: number
+  endDate?: number
+}
+
+/** 决策日志导出响应 */
+export interface CryptoTailDecisionLogExportResponse {
+  list: CryptoTailDecisionEventDto[]
+  total: number
+  exportedAt: number
 }
 
 /** 单笔成交全链路分析快照（数值以字符串返回） */

@@ -23,6 +23,8 @@ import com.wrbug.polymarketbot.dto.CryptoTailRecommendSigmaScaleRequest
 import com.wrbug.polymarketbot.dto.CryptoTailRecommendSigmaScaleResponse
 import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogListRequest
 import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogListResponse
+import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogExportRequest
+import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogExportResponse
 import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotListRequest
 import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotListResponse
 import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotExportRequest
@@ -240,6 +242,40 @@ class CryptoTailStrategyController(
             )
         } catch (e: Exception) {
             logger.error("查询决策日志异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
+    @PostMapping("/decision-log/list-all")
+    fun getDecisionLogAll(@RequestBody request: CryptoTailDecisionLogListRequest): ResponseEntity<ApiResponse<CryptoTailDecisionLogListResponse>> {
+        return try {
+            val result = cryptoTailStrategyService.getDecisionLogAll(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("查询全局决策日志失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("查询全局决策日志异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
+    @PostMapping("/decision-log/export")
+    fun exportDecisionLog(@RequestBody request: CryptoTailDecisionLogExportRequest): ResponseEntity<ApiResponse<CryptoTailDecisionLogExportResponse>> {
+        return try {
+            val result = cryptoTailStrategyService.exportDecisionLog(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("导出决策日志失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("导出决策日志异常: ${e.message}", e)
             ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
         }
     }

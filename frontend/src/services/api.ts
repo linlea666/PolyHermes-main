@@ -607,6 +607,10 @@ export const apiService = {
       apiClient.post<ApiResponse<import('../types').CryptoTailRecommendSigmaScaleResponse>>('/crypto-tail-strategy/recommend-sigma-scale', data),
     decisionLog: (data: import('../types').CryptoTailDecisionLogListRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogListResponse>>('/crypto-tail-strategy/decision-log/list', data),
+    decisionLogAll: (data: import('../types').CryptoTailDecisionLogListRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogListResponse>>('/crypto-tail-strategy/decision-log/list-all', data),
+    decisionLogExport: (data: import('../types').CryptoTailDecisionLogExportRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogExportResponse>>('/crypto-tail-strategy/decision-log/export', data),
     tradeSnapshotList: (data: import('../types').CryptoTailTradeSnapshotListRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailTradeSnapshotListResponse>>('/crypto-tail-strategy/decision/snapshot/list', data),
     tradeSnapshotExport: (data: import('../types').CryptoTailTradeSnapshotExportRequest) =>

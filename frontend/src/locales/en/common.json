@@ -322,6 +322,7 @@
     "cryptoSpreadStrategy": "Crypto Spread Strategy",
     "cryptoTailStrategy": "Strategy Config",
     "cryptoTailMonitor": "Real-time Monitor",
+    "cryptoTailDecisionLog": "Decision Log",
     "positions": "Position Management",
     "backtest": "Backtest",
     "statistics": "Statistics",
@@ -1917,6 +1918,20 @@
       "exportEmpty": "No trade snapshots to export",
       "exportSuccess": "Exported {{count}} trade snapshots",
       "exportFailed": "Export failed"
+    },
+    "decisionLogPage": {
+      "title": "Decision Log",
+      "strategy": "Strategy",
+      "allStrategies": "All strategies",
+      "presetToday": "Today",
+      "presetWeek": "This week",
+      "preset7d": "Last 7 days",
+      "presetCustom": "Custom",
+      "refresh": "Refresh",
+      "exportJson": "Export JSON",
+      "exportSuccess": "Exported {{count}} decision logs",
+      "exportEmpty": "No decision logs in the selected range",
+      "totalCount": "{{count}} total"
     },
     "redeemRequiredModal": {
       "title": "Configure Auto Redeem First",

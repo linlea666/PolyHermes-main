@@ -78,7 +78,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     if (path.startsWith('/leaders') || path.startsWith('/leader-pool') || path.startsWith('/leader-research') || path.startsWith('/templates') || path.startsWith('/copy-trading') || path.startsWith('/backtest')) {
       keys.push('/copy-trading-management')
     }
-    if (path.startsWith('/crypto-tail-strategy') || path.startsWith('/crypto-tail-monitor')) {
+    if (path.startsWith('/crypto-tail-strategy') || path.startsWith('/crypto-tail-monitor') || path.startsWith('/crypto-tail-decision-log')) {
       keys.push('/crypto-tail-management')
     }
     if (path.startsWith('/system-settings')) {
@@ -96,7 +96,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     if (path.startsWith('/leaders') || path.startsWith('/leader-pool') || path.startsWith('/leader-research') || path.startsWith('/templates') || path.startsWith('/copy-trading') || path.startsWith('/backtest')) {
       keys.push('/copy-trading-management')
     }
-    if (path.startsWith('/crypto-tail-strategy') || path.startsWith('/crypto-tail-monitor')) {
+    if (path.startsWith('/crypto-tail-strategy') || path.startsWith('/crypto-tail-monitor') || path.startsWith('/crypto-tail-decision-log')) {
       keys.push('/crypto-tail-management')
     }
     if (path.startsWith('/system-settings')) {
@@ -190,6 +190,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           key: '/crypto-tail-monitor',
           icon: <DashboardOutlined />,
           label: t('menu.cryptoTailMonitor')
+        },
+        {
+          key: '/crypto-tail-decision-log',
+          icon: <UnorderedListOutlined />,
+          label: t('menu.cryptoTailDecisionLog')
         }
       ]
     },
