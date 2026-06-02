@@ -65,7 +65,11 @@ data class CryptoTailStrategyCreateRequest(
     /** σ 估计方法: MAD/EWMA/GARMAN_KLASS */
     val sigmaMethod: String? = null,
     /** EWMA 衰减系数 λ */
-    val ewmaLambda: String? = null
+    val ewmaLambda: String? = null,
+    /** 分数 Kelly 动态仓位开关 */
+    val kellyEnabled: Boolean? = null,
+    /** Kelly 分数 0~1 */
+    val kellyFraction: String? = null
 )
 
 /**
@@ -109,7 +113,9 @@ data class CryptoTailStrategyUpdateRequest(
     val calibrationMinSamples: Int? = null,
     val calibrationMaxError: String? = null,
     val sigmaMethod: String? = null,
-    val ewmaLambda: String? = null
+    val ewmaLambda: String? = null,
+    val kellyEnabled: Boolean? = null,
+    val kellyFraction: String? = null
 )
 
 /**
@@ -176,6 +182,10 @@ data class CryptoTailStrategyDto(
     val sigmaMethod: String = "MAD",
     /** EWMA 衰减系数 λ */
     val ewmaLambda: String = "0.94",
+    /** 分数 Kelly 动态仓位开关 */
+    val kellyEnabled: Boolean = false,
+    /** Kelly 分数 0~1 */
+    val kellyFraction: String = "0.25",
     val lastTriggerAt: Long? = null,
     /** 已实现总收益 USDC（已结算订单的 realizedPnl 之和） */
     val totalRealizedPnl: String? = null,

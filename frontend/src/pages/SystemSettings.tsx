@@ -116,6 +116,7 @@ const SystemSettings: React.FC = () => {
           autoRedeemEnabled: config.autoRedeemEnabled
         })
         chainlinkForm.setFieldsValue({
+          priceSource: config.cryptoTailPriceSource || 'RTDS',
           apiKey: config.chainlinkApiKeyDisplay || '',
           apiSecret: '',
           restBase: config.chainlinkRestBase || '',
@@ -135,6 +136,7 @@ const SystemSettings: React.FC = () => {
     try {
       // 全部字段都下发（空串=清空，null=不变）；apiSecret 留空表示不修改
       const updateData: ChainlinkConfigUpdateRequest = {
+        priceSource: values.priceSource ?? 'RTDS',
         apiKey: values.apiKey ?? '',
         restBase: values.restBase ?? '',
         feedBtc: values.feedBtc ?? '',
@@ -558,6 +560,18 @@ const SystemSettings: React.FC = () => {
           onFinish={handleChainlinkSubmit}
           size={isMobile ? 'middle' : 'large'}
         >
+          <Form.Item
+            label={t('chainlinkConfig.priceSource')}
+            name="priceSource"
+            help={t('chainlinkConfig.priceSourceHelp')}
+          >
+            <Select
+              options={[
+                { value: 'RTDS', label: t('chainlinkConfig.priceSourceRtds') },
+                { value: 'CHAINLINK', label: t('chainlinkConfig.priceSourceChainlink') },
+              ]}
+            />
+          </Form.Item>
           <Form.Item label={t('chainlinkConfig.apiKey')} name="apiKey">
             <Input placeholder={t('chainlinkConfig.apiKeyPlaceholder')} style={{ fontFamily: 'monospace' }} />
           </Form.Item>

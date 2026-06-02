@@ -558,6 +558,8 @@ export const apiService = {
       sigmaScale?: string
       dailyLossLimitUsdc?: string | null
       maxConcurrentPositions?: number | null
+      kellyEnabled?: boolean
+      kellyFraction?: string
     }) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/create', data),
     update: (data: {
@@ -582,6 +584,8 @@ export const apiService = {
       sigmaScale?: string
       dailyLossLimitUsdc?: string | null
       maxConcurrentPositions?: number | null
+      kellyEnabled?: boolean
+      kellyFraction?: string
     }) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/update', data),
     delete: (data: { strategyId: number }) =>

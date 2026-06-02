@@ -111,7 +111,9 @@ class CryptoTailStrategyService(
             val calibrationMaxError = request.calibrationMaxError?.toSafeBigDecimal() ?: BigDecimal("0.10")
             val sigmaMethod = (request.sigmaMethod ?: "MAD").trim().uppercase()
             val ewmaLambda = request.ewmaLambda?.toSafeBigDecimal() ?: BigDecimal("0.94")
-            if (request.barrierEnabled && !isBarrierParamsValid(entryProb, entryEdge, maxEntryPrice, costBuffer, barrierMinMarketProb, sigmaScale, dailyLossLimitUsdc, maxConcurrentPositions, takerFeeBps, makerRebateBps, gasCostUsdc, entryOrderType, makerPriceOffset, makerCancelBeforeSettleSeconds, interval, probeAmountUsdc, calibrationMinSamples, calibrationMaxError, sigmaMethod, ewmaLambda)) {
+            val kellyEnabled = request.kellyEnabled ?: false
+            val kellyFraction = request.kellyFraction?.toSafeBigDecimal() ?: BigDecimal("0.25")
+            if (request.barrierEnabled && !isBarrierParamsValid(entryProb, entryEdge, maxEntryPrice, costBuffer, barrierMinMarketProb, sigmaScale, dailyLossLimitUsdc, maxConcurrentPositions, takerFeeBps, makerRebateBps, gasCostUsdc, entryOrderType, makerPriceOffset, makerCancelBeforeSettleSeconds, interval, probeAmountUsdc, calibrationMinSamples, calibrationMaxError, sigmaMethod, ewmaLambda, kellyFraction)) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
             }
 
@@ -151,7 +153,9 @@ class CryptoTailStrategyService(
                 calibrationMinSamples = calibrationMinSamples,
                 calibrationMaxError = calibrationMaxError,
                 sigmaMethod = sigmaMethod,
-                ewmaLambda = ewmaLambda
+                ewmaLambda = ewmaLambda,
+                kellyEnabled = kellyEnabled,
+                kellyFraction = kellyFraction
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -230,7 +234,9 @@ class CryptoTailStrategyService(
             val newCalibrationMaxError = request.calibrationMaxError?.toSafeBigDecimal() ?: existing.calibrationMaxError
             val newSigmaMethod = (request.sigmaMethod?.trim()?.uppercase()) ?: existing.sigmaMethod
             val newEwmaLambda = request.ewmaLambda?.toSafeBigDecimal() ?: existing.ewmaLambda
-            if (newBarrierEnabled && !isBarrierParamsValid(newEntryProb, newEntryEdge, newMaxEntryPrice, newCostBuffer, newBarrierMinMarketProb, newSigmaScale, newDailyLossLimitUsdc, newMaxConcurrentPositions, newTakerFeeBps, newMakerRebateBps, newGasCostUsdc, newEntryOrderType, newMakerPriceOffset, newMakerCancelBeforeSettleSeconds, existing.intervalSeconds, newProbeAmountUsdc, newCalibrationMinSamples, newCalibrationMaxError, newSigmaMethod, newEwmaLambda)) {
+            val newKellyEnabled = request.kellyEnabled ?: existing.kellyEnabled
+            val newKellyFraction = request.kellyFraction?.toSafeBigDecimal() ?: existing.kellyFraction
+            if (newBarrierEnabled && !isBarrierParamsValid(newEntryProb, newEntryEdge, newMaxEntryPrice, newCostBuffer, newBarrierMinMarketProb, newSigmaScale, newDailyLossLimitUsdc, newMaxConcurrentPositions, newTakerFeeBps, newMakerRebateBps, newGasCostUsdc, newEntryOrderType, newMakerPriceOffset, newMakerCancelBeforeSettleSeconds, existing.intervalSeconds, newProbeAmountUsdc, newCalibrationMinSamples, newCalibrationMaxError, newSigmaMethod, newEwmaLambda, newKellyFraction)) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
             }
 
@@ -268,6 +274,8 @@ class CryptoTailStrategyService(
                 calibrationMaxError = newCalibrationMaxError,
                 sigmaMethod = newSigmaMethod,
                 ewmaLambda = newEwmaLambda,
+                kellyEnabled = newKellyEnabled,
+                kellyFraction = newKellyFraction,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -624,7 +632,8 @@ class CryptoTailStrategyService(
         calibrationMinSamples: Int,
         calibrationMaxError: BigDecimal,
         sigmaMethod: String,
-        ewmaLambda: BigDecimal
+        ewmaLambda: BigDecimal,
+        kellyFraction: BigDecimal
     ): Boolean {
         val one = BigDecimal.ONE
         val zero = BigDecimal.ZERO
@@ -653,6 +662,8 @@ class CryptoTailStrategyService(
         // σ 估计方法仅 MAD / EWMA / GARMAN_KLASS；EWMA 衰减系数须在 (0,1)
         if (sigmaMethod != "MAD" && sigmaMethod != "EWMA" && sigmaMethod != "GARMAN_KLASS") return false
         if (ewmaLambda <= zero || ewmaLambda >= one) return false
+        // 分数 Kelly：fraction 须在 (0,1]
+        if (kellyFraction <= zero || kellyFraction > one) return false
         return true
     }
 
@@ -709,6 +720,8 @@ class CryptoTailStrategyService(
             calibrationMaxError = e.calibrationMaxError.toPlainString(),
             sigmaMethod = e.sigmaMethod,
             ewmaLambda = e.ewmaLambda.toPlainString(),
+            kellyEnabled = e.kellyEnabled,
+            kellyFraction = e.kellyFraction.toPlainString(),
             lastTriggerAt = lastTriggerAt,
             totalRealizedPnl = totalPnl?.toPlainString(),
             settledCount = settledCount,

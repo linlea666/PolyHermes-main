@@ -1309,6 +1309,7 @@ export interface SystemConfig {
   chainlinkFeedEth?: string
   chainlinkFeedSol?: string
   chainlinkFeedXrp?: string
+  cryptoTailPriceSource?: string  // 障碍模式价源：RTDS（默认，免凭证）| CHAINLINK（自建直连）
 }
 
 /**
@@ -1331,6 +1332,7 @@ export interface ChainlinkConfigUpdateRequest {
   feedEth?: string
   feedSol?: string
   feedXrp?: string
+  priceSource?: string  // 障碍模式价源：RTDS（默认，免凭证）| CHAINLINK（自建直连）
 }
 
 export interface NotificationConfigUpdateRequest {
@@ -1488,6 +1490,10 @@ export interface CryptoTailStrategyDto {
   sigmaMethod?: string
   /** EWMA 衰减系数 λ */
   ewmaLambda?: string
+  /** 分数 Kelly 动态仓位开关 */
+  kellyEnabled?: boolean
+  /** Kelly 分数 0~1 */
+  kellyFraction?: string
   lastTriggerAt?: number
   /** 已实现总收益 USDC */
   totalRealizedPnl?: string

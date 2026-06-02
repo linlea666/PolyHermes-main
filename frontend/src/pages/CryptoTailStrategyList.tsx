@@ -188,7 +188,9 @@ const CryptoTailStrategyList: React.FC = () => {
       calibrationMinSamples: 30,
       calibrationMaxError: '0.10',
       sigmaMethod: 'MAD',
-      ewmaLambda: '0.94'
+      ewmaLambda: '0.94',
+      kellyEnabled: false,
+      kellyFraction: '0.25'
     })
     setFormModalOpen(true)
   }
@@ -232,7 +234,9 @@ const CryptoTailStrategyList: React.FC = () => {
       calibrationMinSamples: record.calibrationMinSamples ?? 30,
       calibrationMaxError: record.calibrationMaxError ?? '0.10',
       sigmaMethod: record.sigmaMethod ?? 'MAD',
-      ewmaLambda: record.ewmaLambda ?? '0.94'
+      ewmaLambda: record.ewmaLambda ?? '0.94',
+      kellyEnabled: record.kellyEnabled ?? false,
+      kellyFraction: record.kellyFraction ?? '0.25'
     })
     setFormModalOpen(true)
   }
@@ -329,7 +333,9 @@ const CryptoTailStrategyList: React.FC = () => {
         calibrationMinSamples: v.calibrationMinSamples != null ? Number(v.calibrationMinSamples) : undefined,
         calibrationMaxError: v.calibrationMaxError != null ? String(v.calibrationMaxError) : undefined,
         sigmaMethod: v.sigmaMethod != null ? String(v.sigmaMethod) : undefined,
-        ewmaLambda: v.ewmaLambda != null ? String(v.ewmaLambda) : undefined
+        ewmaLambda: v.ewmaLambda != null ? String(v.ewmaLambda) : undefined,
+        kellyEnabled: v.kellyEnabled === true,
+        kellyFraction: v.kellyFraction != null ? String(v.kellyFraction) : undefined
       }
       const payload = {
         accountId: v.accountId as number,
@@ -814,6 +820,7 @@ const CryptoTailStrategyList: React.FC = () => {
   const entryOrderType = Form.useWatch('entryOrderType', form)
   const calibrationGateEnabled = Form.useWatch('calibrationGateEnabled', form)
   const sigmaMethod = Form.useWatch('sigmaMethod', form)
+  const kellyEnabled = Form.useWatch('kellyEnabled', form)
   const intervalSeconds = marketOptions.find((m) => m.slug === selectedMarket)?.intervalSeconds ?? 300
   const maxMinutes = Math.floor(intervalSeconds / 60)
 
@@ -1596,6 +1603,47 @@ const CryptoTailStrategyList: React.FC = () => {
                     <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
                   </Form.Item>
                 </>
+              )}
+              <Form.Item
+                name="kellyEnabled"
+                valuePropName="checked"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.kellyEnabled')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.kellyEnabledTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
+              </Form.Item>
+              {kellyEnabled && (
+                <Form.Item
+                  name="kellyFraction"
+                  label={
+                    <Space size={4}>
+                      <span>{t('cryptoTailStrategy.form.kellyFraction')}</span>
+                      <Tooltip title={t('cryptoTailStrategy.form.kellyFractionTip')}>
+                        <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[
+                    {
+                      validator: (_, value) => {
+                        if (value == null || value === '') return Promise.resolve()
+                        const n = Number(value)
+                        if (Number.isNaN(n) || n <= 0 || n > 1) {
+                          return Promise.reject(new Error(t('cryptoTailStrategy.form.kellyFractionTip')))
+                        }
+                        return Promise.resolve()
+                      }
+                    }
+                  ]}
+                >
+                  <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+                </Form.Item>
               )}
             </>
           )}

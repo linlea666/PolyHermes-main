@@ -465,6 +465,10 @@
     "title": "Chainlink Data Streams",
     "alertTitle": "What is Chainlink Data Streams?",
     "description": "Polymarket's BTC/ETH/SOL/XRP up/down markets settle against Chainlink Data Streams. The crypto-tail barrier mode requires this so pWin is computed from the same source as settlement (using Binance prices otherwise distorts the odds). When not configured, barrier mode safely skips and places no orders.",
+    "priceSource": "Barrier price source",
+    "priceSourceHelp": "RTDS uses Polymarket's free official feed (no credentials needed, same Chainlink stream as settlement) - recommended. CHAINLINK uses your own Chainlink Data Streams credentials below.",
+    "priceSourceRtds": "Polymarket RTDS (free, no credentials, recommended)",
+    "priceSourceChainlink": "Self-hosted Chainlink Data Streams (needs credentials below)",
     "feedDocs": "View feedID list per asset",
     "apiKey": "API Key",
     "apiSecret": "API Secret",
@@ -1861,6 +1865,10 @@
       "calibrationMinSamplesTip": "Minimum settled filled samples required to qualify for scaling. Default 30. More samples = more reliable stats.",
       "calibrationMaxError": "Max Calibration Error",
       "calibrationMaxErrorTip": "Maximum allowed calibration error to qualify (sample-weighted |predicted - actual| win rate, range 0~1). Smaller is stricter. Default 0.10.",
+      "kellyEnabled": "Fractional Kelly Sizing",
+      "kellyEnabledTip": "When enabled, the order size scales with edge and confidence via fractional Kelly: f* = pWin - (1-pWin)*c/(1-c), bet = bankroll x kellyFraction x clamp(f*,0,1) (bankroll = available balance for RATIO, amount for FIXED). Only takes effect after calibration qualifies; during the probe phase the probe amount is used. Default off = fixed amount.",
+      "kellyFraction": "Kelly Fraction",
+      "kellyFractionTip": "Fraction of the full Kelly bet (range 0~1). Smaller is more conservative against estimation error and tail risk; 0.25 (quarter Kelly) recommended. Default 0.25.",
       "optionalPlaceholder": "Leave empty for no limit"
     },
     "calibration": {

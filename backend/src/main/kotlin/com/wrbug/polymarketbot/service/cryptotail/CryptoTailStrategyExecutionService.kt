@@ -273,7 +273,7 @@ class CryptoTailStrategyExecutionService(
                 val amountOverride = if (scaling.useProbe) strategy.probeAmountUsdc else null
                 recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, eval.metrics, bestBid, bestAsk, scaling, amountOverride)
                 ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
-                placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride)
+                placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride, eval.metrics?.pWin, eval.metrics?.effectiveCost)
             } else {
                 if (!passSpreadCheck(strategy, periodStartUnix, outcomeIndex)) return@withLock
                 ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
@@ -600,6 +600,31 @@ class CryptoTailStrategyExecutionService(
         }
     }
 
+    /**
+     * 二元市场分数 Kelly 下注额（USDC，未做下限钳制，调用方负责钳到 [MIN_ORDER_USDC, bankroll]）。
+     *
+     * 收益结构：胜则每份 (1−c) 利润，负则每份 c 损失（c=有效成本，含费）。最优 Kelly 比例：
+     *   f* = pWin − (1−pWin)·c/(1−c)
+     * 实际投入 = bankroll × kellyFraction × clamp(f*, 0, 1)。分数 Kelly（默认 ¼）抑制估计误差与尾部风险。
+     * c∉(0,1) 视为无效赔率，返回 0（交由下限/EV 闸处理）。
+     */
+    private fun computeKellyAmount(
+        pWin: BigDecimal,
+        effectiveCost: BigDecimal,
+        bankroll: BigDecimal,
+        kellyFraction: BigDecimal
+    ): BigDecimal {
+        if (bankroll <= BigDecimal.ZERO || kellyFraction <= BigDecimal.ZERO) return BigDecimal.ZERO
+        val c = effectiveCost
+        if (c <= BigDecimal.ZERO || c >= BigDecimal.ONE) return BigDecimal.ZERO
+        val oneMinusC = BigDecimal.ONE.subtract(c)
+        val fStar = pWin.subtract(
+            BigDecimal.ONE.subtract(pWin).multiply(c).divide(oneMinusC, 18, RoundingMode.HALF_UP)
+        )
+        val fClamped = fStar.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+        return bankroll.multiply(kellyFraction).multiply(fClamped)
+    }
+
     private suspend fun placeOrderForTrigger(
         strategy: CryptoTailStrategy,
         periodStartUnix: Long,
@@ -608,15 +633,36 @@ class CryptoTailStrategyExecutionService(
         outcomeIndex: Int,
         triggerPrice: BigDecimal,
         bestAsk: BigDecimal?,
-        amountOverrideUsdc: BigDecimal? = null
+        amountOverrideUsdc: BigDecimal? = null,
+        pWin: BigDecimal? = null,
+        effectiveCost: BigDecimal? = null
     ) {
         val ctx = getOrInvalidatePeriodContext(strategy, periodStartUnix)
 
         if (ctx != null) {
             var availableBalanceForRatio = BigDecimal.ZERO
+            // 优先级：放量闸 probe（安全优先） > 分数 Kelly（已校准且 kellyEnabled） > 原 amountMode
+            val useKelly = amountOverrideUsdc == null && strategy.barrierEnabled && strategy.kellyEnabled &&
+                    pWin != null && effectiveCost != null
+            var kellyBankroll = BigDecimal.ZERO
             var amountUsdc = when {
                 // 放量闸钳制：直接用小额覆盖（仍受 MIN_ORDER_USDC 下限保护）
                 amountOverrideUsdc != null -> amountOverrideUsdc
+                useKelly -> {
+                    // bankroll：RATIO=可用余额，FIXED=amountValue（视为本金/上限）
+                    val bankroll = if (strategy.amountMode.uppercase() == "RATIO") {
+                        val balanceResult = accountService.getAccountBalance(ctx.account.id)
+                        val availableBalance =
+                            balanceResult.getOrNull()?.availableBalance?.toSafeBigDecimal() ?: BigDecimal.ZERO
+                        availableBalanceForRatio = availableBalance
+                        availableBalance
+                    } else {
+                        strategy.amountValue
+                    }
+                    kellyBankroll = bankroll
+                    // 下注 = bankroll × kellyFraction × clamp(f*,0,1)，上限钳到 bankroll
+                    computeKellyAmount(pWin!!, effectiveCost!!, bankroll, strategy.kellyFraction).min(bankroll)
+                }
                 strategy.amountMode.uppercase() == "RATIO" -> {
                     val balanceResult = accountService.getAccountBalance(ctx.account.id)
                     val availableBalance =
@@ -629,7 +675,10 @@ class CryptoTailStrategyExecutionService(
             }
             if (amountUsdc < MIN_ORDER_USDC) {
                 val amountMode = strategy.amountMode.uppercase()
-                if (amountMode == "RATIO" && availableBalanceForRatio >= MIN_ORDER_USDC) {
+                if (useKelly && kellyBankroll >= MIN_ORDER_USDC) {
+                    // Kelly 下限钳制：本金够最小下单额则补到 MIN（f*≤0 等极小情形）
+                    amountUsdc = MIN_ORDER_USDC
+                } else if (amountMode == "RATIO" && availableBalanceForRatio >= MIN_ORDER_USDC) {
                     amountUsdc = MIN_ORDER_USDC
                 } else {
                     saveTriggerRecord(

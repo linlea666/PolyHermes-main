@@ -150,6 +150,14 @@ data class CryptoTailStrategy(
     @Column(name = "ewma_lambda", nullable = false, precision = 20, scale = 8)
     val ewmaLambda: BigDecimal = BigDecimal("0.94"),
 
+    /** 分数 Kelly 动态仓位开关：开启后下注额按 edge×置信度的分数 Kelly 计算（仅校准达标后生效），默认 false=固定金额 */
+    @Column(name = "kelly_enabled", nullable = false)
+    val kellyEnabled: Boolean = false,
+
+    /** Kelly 分数（0~1），实际下注 = 本金 × kellyFraction × f*，¼ Kelly 防误差/尾部风险，默认 0.25 */
+    @Column(name = "kelly_fraction", nullable = false, precision = 20, scale = 8)
+    val kellyFraction: BigDecimal = BigDecimal("0.25"),
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

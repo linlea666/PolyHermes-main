@@ -35,6 +35,11 @@ class SystemConfigService(
         const val CONFIG_KEY_CHAINLINK_DS_FEED_ETH = "chainlink.ds.feed.eth"
         const val CONFIG_KEY_CHAINLINK_DS_FEED_SOL = "chainlink.ds.feed.sol"
         const val CONFIG_KEY_CHAINLINK_DS_FEED_XRP = "chainlink.ds.feed.xrp"
+
+        // crypto-tail 障碍模式价源选择：RTDS（默认，免凭证）| CHAINLINK（自建直连）
+        const val CONFIG_KEY_CRYPTO_TAIL_PRICE_SOURCE = "crypto-tail.price_source"
+        const val PRICE_SOURCE_RTDS = "RTDS"
+        const val PRICE_SOURCE_CHAINLINK = "CHAINLINK"
     }
 
     /**
@@ -90,7 +95,8 @@ class SystemConfigService(
             chainlinkFeedBtc = getConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_BTC),
             chainlinkFeedEth = getConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_ETH),
             chainlinkFeedSol = getConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_SOL),
-            chainlinkFeedXrp = getConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_XRP)
+            chainlinkFeedXrp = getConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_XRP),
+            cryptoTailPriceSource = getCryptoTailPriceSource()
         )
     }
 
@@ -112,11 +118,25 @@ class SystemConfigService(
             request.feedEth?.let { updateConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_ETH, it.ifBlank { null }) }
             request.feedSol?.let { updateConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_SOL, it.ifBlank { null }) }
             request.feedXrp?.let { updateConfigValue(CONFIG_KEY_CHAINLINK_DS_FEED_XRP, it.ifBlank { null }) }
+            request.priceSource?.let {
+                val normalized = it.trim().uppercase()
+                if (normalized == PRICE_SOURCE_RTDS || normalized == PRICE_SOURCE_CHAINLINK) {
+                    updateConfigValue(CONFIG_KEY_CRYPTO_TAIL_PRICE_SOURCE, normalized)
+                }
+            }
             Result.success(getSystemConfig())
         } catch (e: Exception) {
             logger.error("更新 Chainlink Data Streams 配置失败", e)
             Result.failure(e)
         }
+    }
+
+    /**
+     * crypto-tail 障碍模式价源选择，默认 RTDS（免凭证）。仅返回 RTDS / CHAINLINK 之一。
+     */
+    fun getCryptoTailPriceSource(): String {
+        val v = getConfigValue(CONFIG_KEY_CRYPTO_TAIL_PRICE_SOURCE)?.trim()?.uppercase()
+        return if (v == PRICE_SOURCE_CHAINLINK) PRICE_SOURCE_CHAINLINK else PRICE_SOURCE_RTDS
     }
 
     /** Chainlink Data Streams 凭证（解密），未配置返回 null */
@@ -278,6 +298,7 @@ class SystemConfigService(
                     CONFIG_KEY_CHAINLINK_DS_FEED_ETH -> "Chainlink ETH/USD feedID"
                     CONFIG_KEY_CHAINLINK_DS_FEED_SOL -> "Chainlink SOL/USD feedID"
                     CONFIG_KEY_CHAINLINK_DS_FEED_XRP -> "Chainlink XRP/USD feedID"
+                    CONFIG_KEY_CRYPTO_TAIL_PRICE_SOURCE -> "障碍模式价源（RTDS 免凭证 / CHAINLINK 自建直连）"
                     else -> null
                 }
             )

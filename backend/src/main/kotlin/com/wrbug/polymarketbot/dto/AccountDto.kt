@@ -72,7 +72,8 @@ data class ChainlinkConfigUpdateRequest(
     val feedBtc: String? = null,
     val feedEth: String? = null,
     val feedSol: String? = null,
-    val feedXrp: String? = null
+    val feedXrp: String? = null,
+    val priceSource: String? = null  // 障碍模式价源：RTDS（默认，免凭证）| CHAINLINK（自建直连）
 )
 
 /**
@@ -94,7 +95,8 @@ data class SystemConfigDto(
     val chainlinkFeedBtc: String? = null,
     val chainlinkFeedEth: String? = null,
     val chainlinkFeedSol: String? = null,
-    val chainlinkFeedXrp: String? = null
+    val chainlinkFeedXrp: String? = null,
+    val cryptoTailPriceSource: String = "RTDS"  // 障碍模式价源：RTDS（默认，免凭证）| CHAINLINK（自建直连）
 )
 
 /**

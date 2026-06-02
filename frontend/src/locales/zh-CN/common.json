@@ -465,6 +465,10 @@
     "title": "Chainlink Data Streams 配置",
     "alertTitle": "什么是 Chainlink Data Streams？",
     "description": "Polymarket 的 BTC/ETH/SOL/XRP 涨跌（up/down）市场以 Chainlink Data Streams 作为结算价源。crypto-tail 障碍模式必须配置此项，使 pWin 计算与结算同源（否则用币安价会导致赔率失真）。未配置时障碍模式将安全跳过、不会下单。",
+    "priceSource": "障碍模式价源",
+    "priceSourceHelp": "RTDS 使用 Polymarket 官方免费数据流（无需任何凭证，与结算同源的 Chainlink 流）——推荐。CHAINLINK 使用下方你自建的 Chainlink Data Streams 凭证。",
+    "priceSourceRtds": "Polymarket RTDS（免费、免凭证、推荐）",
+    "priceSourceChainlink": "自建 Chainlink Data Streams（需下方凭证）",
     "feedDocs": "查看各币种 feedID 列表",
     "apiKey": "API Key",
     "apiSecret": "API Secret",
@@ -1861,6 +1865,10 @@
       "calibrationMinSamplesTip": "达标放量所需的最少已结算成交样本数，默认 30。样本越多统计越可靠。",
       "calibrationMaxError": "放量最大校准误差",
       "calibrationMaxErrorTip": "达标允许的最大校准误差(样本量加权 |预测胜率-实际胜率|，范围 0~1)，越小越严，默认 0.10。",
+      "kellyEnabled": "分数 Kelly 动态仓位",
+      "kellyEnabledTip": "开启后下注额按 edge 与置信度用分数 Kelly 动态计算：f* = pWin - (1-pWin)*c/(1-c)，下注 = 本金 × kellyFraction × clamp(f*,0,1)(RATIO 模式本金=可用余额，FIXED 模式本金=投入金额)。仅在校准达标后生效，校准期(小额探针)期间仍用探针金额。默认关闭=固定金额。",
+      "kellyFraction": "Kelly 分数",
+      "kellyFractionTip": "完整 Kelly 下注额的折扣比例(范围 0~1)，越小越保守、越能抵御估计误差与尾部风险；推荐 0.25(¼ Kelly)。默认 0.25。",
       "optionalPlaceholder": "留空表示不限制"
     },
     "calibration": {
