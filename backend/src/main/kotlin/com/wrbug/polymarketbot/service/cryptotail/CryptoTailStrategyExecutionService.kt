@@ -320,7 +320,8 @@ class CryptoTailStrategyExecutionService(
         tokenIds: List<String>,
         outcomeIndex: Int,
         bestBid: BigDecimal,
-        bestAsk: BigDecimal? = null
+        bestAsk: BigDecimal? = null,
+        orderbook: OrderbookQualitySnapshot? = null
     ) {
         if (outcomeIndex < 0 || outcomeIndex >= tokenIds.size) return
         // 仅旧价差模式走价格区间预过滤；
@@ -373,7 +374,7 @@ class CryptoTailStrategyExecutionService(
 
             when (strategy.mode) {
                 TradingMode.BARRIER_HOLD -> {
-                    val eval = evaluateBarrierGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk)
+                    val eval = evaluateBarrierGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk, orderbook)
                     recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
                     if (!eval.pass) return@withLock
                     val risk = cryptoTailRiskService.checkRiskGate(strategy)
@@ -391,7 +392,7 @@ class CryptoTailStrategyExecutionService(
                     placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride, eval.metrics, scaling)
                 }
                 TradingMode.BRACKET_DYNAMIC -> {
-                    val eval = evaluateBracketEntryGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk)
+                    val eval = evaluateBracketEntryGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk, orderbook)
                     recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
                     if (!eval.pass) return@withLock
                     val risk = cryptoTailRiskService.checkRiskGate(strategy)
@@ -455,6 +456,60 @@ class CryptoTailStrategyExecutionService(
         val retryable: Boolean
     )
 
+    private fun orderbookPayload(orderbook: OrderbookQualitySnapshot?, nowMs: Long = System.currentTimeMillis()): Map<String, Any> {
+        return orderbook?.toPayload(nowMs) ?: mapOf(
+            "bestBid" to "",
+            "bestAsk" to "",
+            "bidSize" to "",
+            "askSize" to "",
+            "bidDepthUsd" to "",
+            "askDepthUsd" to "",
+            "spread" to "",
+            "quoteAgeMs" to "",
+            "depthAgeMs" to "",
+            "depthStale" to true
+        )
+    }
+
+    private fun checkEntryMarketQuality(
+        strategy: CryptoTailStrategy,
+        orderbook: OrderbookQualitySnapshot?
+    ): BarrierEval? {
+        val nowMs = System.currentTimeMillis()
+        if (orderbook == null) {
+            return BarrierEval(false, "ORDERBOOK_STALE", "订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
+        }
+        val quoteAge = orderbook.quoteAgeMs(nowMs)
+        if (quoteAge > strategy.maxOrderbookAgeMs) {
+            return BarrierEval(
+                false,
+                "ORDERBOOK_STALE",
+                "订单簿过期: quoteAgeMs=$quoteAge>${strategy.maxOrderbookAgeMs}",
+                orderbookPayload(orderbook, nowMs).toJson()
+            )
+        }
+        val spread = orderbook.spread
+        if (spread != null && spread > strategy.maxEntrySpread) {
+            return BarrierEval(
+                false,
+                "SPREAD_TOO_WIDE",
+                "入场盘口价差=${spread.toPlainString()}>maxEntrySpread=${strategy.maxEntrySpread.toPlainString()}",
+                orderbookPayload(orderbook, nowMs).toJson()
+            )
+        }
+        val priceAge = periodPriceProvider.getCurrentPriceAgeMs(strategy.marketSlugPrefix)
+        if (priceAge != null && priceAge > strategy.maxPriceAgeMs) {
+            val payload = orderbookPayload(orderbook, nowMs).plus("priceAgeMs" to priceAge).toJson()
+            return BarrierEval(
+                false,
+                "PRICE_STALE",
+                "结算同源价源过期: priceAgeMs=$priceAge>${strategy.maxPriceAgeMs}",
+                payload
+            )
+        }
+        return null
+    }
+
     /**
      * 障碍（终值概率）模式闸：方向一致性 / pWin / 市场概率 / 扣费 EV。
      * 时间窗已由 WS onBestBid 复用现有 window 把关，此处不再重复校验。
@@ -464,8 +519,10 @@ class CryptoTailStrategyExecutionService(
         periodStartUnix: Long,
         outcomeIndex: Int,
         bestBid: BigDecimal,
-        bestAsk: BigDecimal?
+        bestAsk: BigDecimal?,
+        orderbook: OrderbookQualitySnapshot?
     ): BarrierEval {
+        checkEntryMarketQuality(strategy, orderbook)?.let { return it }
         // 障碍模式价源必须与 Polymarket 结算源(Chainlink)一致；缺凭证/feedID 时安全跳过，绝不回退币安
         if (!periodPriceProvider.isAvailable(strategy.marketSlugPrefix)) {
             return BarrierEval(false, "PRICE_SOURCE", "价源未就绪(未连接或最新价过期，启动后请稍候自动恢复)", null)
@@ -549,8 +606,12 @@ class CryptoTailStrategyExecutionService(
             "minSafeRatioDown" to strategy.minSafeRatioDown.toPlainString(),
             "highPriceThreshold" to strategy.highPriceThreshold.toPlainString(),
             "highPriceMinPWin" to strategy.highPriceMinPWin.toPlainString(),
-            "highPriceMinSafeRatio" to strategy.highPriceMinSafeRatio.toPlainString()
+            "highPriceMinSafeRatio" to strategy.highPriceMinSafeRatio.toPlainString(),
+            "maxEntrySpread" to strategy.maxEntrySpread.toPlainString(),
+            "maxOrderbookAgeMs" to strategy.maxOrderbookAgeMs,
+            "maxPriceAgeMs" to strategy.maxPriceAgeMs
         )
+        payload.putAll(orderbookPayload(orderbook))
         fun snapshot(): String = payload.toJson()
 
         if (r.side != outcomeIndex) {
@@ -599,8 +660,10 @@ class CryptoTailStrategyExecutionService(
         periodStartUnix: Long,
         outcomeIndex: Int,
         bestBid: BigDecimal,
-        bestAsk: BigDecimal?
+        bestAsk: BigDecimal?,
+        orderbook: OrderbookQualitySnapshot?
     ): BarrierEval {
+        checkEntryMarketQuality(strategy, orderbook)?.let { return it }
         if (!periodPriceProvider.isAvailable(strategy.marketSlugPrefix)) {
             return BarrierEval(false, "PRICE_SOURCE", "价源未就绪(未连接或最新价过期，启动后请稍候自动恢复)", null)
         }
@@ -677,8 +740,12 @@ class CryptoTailStrategyExecutionService(
             "minSafeRatioDown" to strategy.minSafeRatioDown.toPlainString(),
             "highPriceThreshold" to strategy.highPriceThreshold.toPlainString(),
             "highPriceMinPWin" to strategy.highPriceMinPWin.toPlainString(),
-            "highPriceMinSafeRatio" to strategy.highPriceMinSafeRatio.toPlainString()
+            "highPriceMinSafeRatio" to strategy.highPriceMinSafeRatio.toPlainString(),
+            "maxEntrySpread" to strategy.maxEntrySpread.toPlainString(),
+            "maxOrderbookAgeMs" to strategy.maxOrderbookAgeMs,
+            "maxPriceAgeMs" to strategy.maxPriceAgeMs
         )
+        payload.putAll(orderbookPayload(orderbook))
         fun snapshot(): String = payload.toJson()
 
         if (r.side != outcomeIndex) {

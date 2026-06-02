@@ -32,7 +32,7 @@ data class CryptoTailStrategyExit(
     @Column(name = "strategy_id", nullable = false)
     val strategyId: Long = 0L,
 
-    /** 退出类型: TP1/TP2/STOP/FORCE/SETTLE，对应 [com.wrbug.polymarketbot.enums.ExitKind] */
+    /** 退出类型: TP1/TP2/STOP/TRAILING_STOP/FORCE/SETTLE，对应 [com.wrbug.polymarketbot.enums.ExitKind] */
     @Column(name = "exit_kind", nullable = false, length = 16)
     val exitKind: String = "",
 

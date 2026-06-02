@@ -607,6 +607,24 @@ export const apiService = {
       wickHoldProfitScore?: number
       wickUseBinanceVolume?: boolean
       wickVolumeSpikeRatio?: string
+      wickMinTicksPerCandle?: number
+      wickMinRangeSigmaRatio?: string
+      wickClosePositionUpMax?: string
+      wickClosePositionDownMin?: string
+      maxHoldTp1DelaySeconds?: number
+      holdTp1PeakDrawdown?: string
+      maxEntrySpread?: string
+      maxOrderbookAgeMs?: number
+      maxPriceAgeMs?: number
+      minExitBidDepthUsdc?: string
+      maxExitSpread?: string
+      enableTrailingStop?: boolean
+      trailingStartDelta?: string
+      trailingDrawdown?: string
+      trailingSellPct?: string
+      maxOrdersPerDay?: number | null
+      maxConsecutiveLosses?: number | null
+      pauseAfterLossMinutes?: number
     }) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/create', data),
     update: (data: {
@@ -680,6 +698,24 @@ export const apiService = {
       wickHoldProfitScore?: number
       wickUseBinanceVolume?: boolean
       wickVolumeSpikeRatio?: string
+      wickMinTicksPerCandle?: number
+      wickMinRangeSigmaRatio?: string
+      wickClosePositionUpMax?: string
+      wickClosePositionDownMin?: string
+      maxHoldTp1DelaySeconds?: number
+      holdTp1PeakDrawdown?: string
+      maxEntrySpread?: string
+      maxOrderbookAgeMs?: number
+      maxPriceAgeMs?: number
+      minExitBidDepthUsdc?: string
+      maxExitSpread?: string
+      enableTrailingStop?: boolean
+      trailingStartDelta?: string
+      trailingDrawdown?: string
+      trailingSellPct?: string
+      maxOrdersPerDay?: number | null
+      maxConsecutiveLosses?: number | null
+      pauseAfterLossMinutes?: number
     }) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/update', data),
     delete: (data: { strategyId: number }) =>

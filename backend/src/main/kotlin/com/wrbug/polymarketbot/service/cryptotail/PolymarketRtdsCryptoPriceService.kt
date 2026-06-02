@@ -93,6 +93,13 @@ class PolymarketRtdsCryptoPriceService {
         return cached.first
     }
 
+    fun currentPriceAgeMs(marketSlugPrefix: String): Long? {
+        val coin = coinOfSlug(marketSlugPrefix) ?: return null
+        ensureStarted()
+        val cached = latestPrice[coin] ?: return null
+        return (System.currentTimeMillis() - cached.second).coerceAtLeast(0L)
+    }
+
     /** 指定 Unix 秒时间戳处的价（floorEntry：取该时刻或之前最近一笔）；无覆盖返回 null */
     fun priceAt(marketSlugPrefix: String, tsSeconds: Long): BigDecimal? {
         val coin = coinOfSlug(marketSlugPrefix) ?: return null
@@ -122,7 +129,8 @@ class PolymarketRtdsCryptoPriceService {
                     open = points.first(),
                     high = points.maxOrNull() ?: points.first(),
                     low = points.minOrNull() ?: points.first(),
-                    close = points.last()
+                    close = points.last(),
+                    tickCount = points.size
                 )
             )
         }

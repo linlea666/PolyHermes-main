@@ -1556,6 +1556,24 @@ export interface CryptoTailStrategyDto {
   wickHoldProfitScore?: number
   wickUseBinanceVolume?: boolean
   wickVolumeSpikeRatio?: string
+  wickMinTicksPerCandle?: number
+  wickMinRangeSigmaRatio?: string
+  wickClosePositionUpMax?: string
+  wickClosePositionDownMin?: string
+  maxHoldTp1DelaySeconds?: number
+  holdTp1PeakDrawdown?: string
+  maxEntrySpread?: string
+  maxOrderbookAgeMs?: number
+  maxPriceAgeMs?: number
+  minExitBidDepthUsdc?: string
+  maxExitSpread?: string
+  enableTrailingStop?: boolean
+  trailingStartDelta?: string
+  trailingDrawdown?: string
+  trailingSellPct?: string
+  maxOrdersPerDay?: number | null
+  maxConsecutiveLosses?: number | null
+  pauseAfterLossMinutes?: number
   lastTriggerAt?: number
   /** 已实现总收益 USDC */
   totalRealizedPnl?: string
@@ -1971,6 +1989,8 @@ export interface CryptoTailMonitorPushData {
   peakBid?: string | null
   drawdownFromPeak?: string | null
   stopLossLine?: string | null
+  trailingStartLine?: string | null
+  trailingStopLine?: string | null
   takeProfitLine1?: string | null
   takeProfitLine2?: string | null
   exitReason?: string | null
@@ -1978,6 +1998,10 @@ export interface CryptoTailMonitorPushData {
   wickLowerRatio?: string | null
   wickBodyRatio?: string | null
   wickCloseVsMa?: string | null
+  wickClosePosition?: string | null
+  wickRangeSigmaRatio?: string | null
+  wickTickCount?: number | null
+  wickQualityReason?: string | null
   wickReversalScore?: number | null
   wickContinuationScore?: number | null
   wickRejectionSide?: string | null

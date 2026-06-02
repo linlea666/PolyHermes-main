@@ -57,8 +57,8 @@ class CryptoTailOrderbookWsService(
     /** tokenId -> list of (strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex) */
     private val tokenToEntries = AtomicReference<Map<String, List<WsBookEntry>>>(emptyMap())
 
-    /** assetId -> 最近一次 bestAsk（最低卖价），障碍模式 EV 闸的有效成本来源；price_change 缺 best_ask 时回退此缓存 */
-    private val bestAskCache = java.util.concurrent.ConcurrentHashMap<String, BigDecimal>()
+    /** assetId -> 最近一次盘口质量快照；price_change 缺深度时复用 book 快照并标记 depthStale */
+    private val orderbookCache = java.util.concurrent.ConcurrentHashMap<String, OrderbookQualitySnapshot>()
 
     private var webSocket: WebSocket? = null
     private val wsUrl = PolymarketConstants.RTDS_WS_URL + "/ws/market"
@@ -175,23 +175,53 @@ class CryptoTailOrderbookWsService(
                 if (bids == null || bids.isEmpty) return
                 // Polymarket book 的 bids 为价格升序，bids[0] 为最低买价；bestBid 应取最高买价
                 var bestBid: BigDecimal? = null
+                var bestBidSize: BigDecimal? = null
+                var bidDepthUsd = BigDecimal.ZERO
                 for (i in 0 until bids.size()) {
                     val level = bids.get(i) as? com.google.gson.JsonObject ?: continue
                     val p = (level.get("price") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: continue
-                    if (bestBid == null || p.gt(bestBid)) bestBid = p
+                    val size = (level.get("size") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: BigDecimal.ZERO
+                    bidDepthUsd = bidDepthUsd.add(p.multiply(size))
+                    if (bestBid == null || p.gt(bestBid)) {
+                        bestBid = p
+                        bestBidSize = size
+                    }
                 }
                 // asks 取最低卖价作为 bestAsk（用于障碍模式 EV 闸的有效成本）
                 val asks = json.get("asks") as? com.google.gson.JsonArray
                 var bestAsk: BigDecimal? = null
+                var bestAskSize: BigDecimal? = null
+                var askDepthUsd = BigDecimal.ZERO
                 if (asks != null) {
                     for (i in 0 until asks.size()) {
                         val level = asks.get(i) as? com.google.gson.JsonObject ?: continue
                         val p = (level.get("price") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: continue
-                        if (bestAsk == null || p < bestAsk) bestAsk = p
+                        val size = (level.get("size") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: BigDecimal.ZERO
+                        askDepthUsd = askDepthUsd.add(p.multiply(size))
+                        if (bestAsk == null || p < bestAsk) {
+                            bestAsk = p
+                            bestAskSize = size
+                        }
                     }
                 }
-                if (bestAsk != null) bestAskCache[assetId] = bestAsk
-                if (bestBid != null) onBestBid(assetId, bestBid, bestAsk ?: bestAskCache[assetId])
+                if (bestBid != null) {
+                    val nowMs = System.currentTimeMillis()
+                    val snapshot = OrderbookQualitySnapshot(
+                        tokenId = assetId,
+                        bestBid = bestBid,
+                        bestAsk = bestAsk,
+                        bidSize = bestBidSize,
+                        askSize = bestAskSize,
+                        bidDepthUsd = bidDepthUsd,
+                        askDepthUsd = askDepthUsd,
+                        spread = bestAsk?.subtract(bestBid),
+                        quoteUpdatedAtMs = nowMs,
+                        depthUpdatedAtMs = nowMs,
+                        depthStale = false
+                    )
+                    orderbookCache[assetId] = snapshot
+                    onBestBid(assetId, snapshot)
+                }
             }
 
             "price_change" -> {
@@ -203,14 +233,33 @@ class CryptoTailOrderbookWsService(
                     val bestBid = bestBidStr?.toSafeBigDecimal()
                     val bestAskStr = (pc.get("best_ask") as? com.google.gson.JsonPrimitive)?.asString
                     val bestAsk = bestAskStr?.toSafeBigDecimal()
-                    if (bestAsk != null) bestAskCache[assetId] = bestAsk
-                    if (bestBid != null) onBestBid(assetId, bestBid, bestAsk ?: bestAskCache[assetId])
+                    if (bestBid != null) {
+                        val prev = orderbookCache[assetId]
+                        val nowMs = System.currentTimeMillis()
+                        val snapshot = OrderbookQualitySnapshot(
+                            tokenId = assetId,
+                            bestBid = bestBid,
+                            bestAsk = bestAsk ?: prev?.bestAsk,
+                            bidSize = prev?.bidSize,
+                            askSize = prev?.askSize,
+                            bidDepthUsd = prev?.bidDepthUsd,
+                            askDepthUsd = prev?.askDepthUsd,
+                            spread = (bestAsk ?: prev?.bestAsk)?.subtract(bestBid),
+                            quoteUpdatedAtMs = nowMs,
+                            depthUpdatedAtMs = prev?.depthUpdatedAtMs,
+                            depthStale = prev?.depthUpdatedAtMs == null
+                        )
+                        orderbookCache[assetId] = snapshot
+                        onBestBid(assetId, snapshot)
+                    }
                 }
             }
         }
     }
 
-    private fun onBestBid(tokenId: String, bestBid: BigDecimal, bestAsk: BigDecimal? = null) {
+    fun latestSnapshot(tokenId: String): OrderbookQualitySnapshot? = orderbookCache[tokenId]
+
+    private fun onBestBid(tokenId: String, orderbook: OrderbookQualitySnapshot) {
         if (closedForNoStrategies.get()) return
         val entries = tokenToEntries.get()[tokenId]
         if (entries == null) return
@@ -230,8 +279,9 @@ class CryptoTailOrderbookWsService(
                             marketTitle = e.marketTitle,
                             tokenIds = e.tokenIds,
                             outcomeIndex = e.outcomeIndex,
-                            bestBid = bestBid,
-                            bestAsk = bestAsk
+                            bestBid = orderbook.bestBid,
+                            bestAsk = orderbook.bestAsk,
+                            orderbook = orderbook
                         )
                     } catch (ex: Exception) {
                         logger.error("WS 触发下单异常: strategyId=${e.strategy.id}, ${ex.message}", ex)
@@ -249,8 +299,9 @@ class CryptoTailOrderbookWsService(
                             strategy = e.strategy,
                             periodStartUnix = e.periodStartUnix,
                             outcomeIndex = e.outcomeIndex,
-                            bestBid = bestBid,
-                            nowSeconds = nowSeconds
+                            bestBid = orderbook.bestBid,
+                            nowSeconds = nowSeconds,
+                            orderbook = orderbook
                         )
                     } catch (ex: Exception) {
                         logger.error("WS 阶梯退出评估异常: strategyId=${e.strategy.id}, ${ex.message}", ex)

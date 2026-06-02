@@ -1328,6 +1328,10 @@ const CryptoTailMonitor: React.FC = () => {
                   <div>{pushData?.stopLossLine ?? '-'}</div>
                 </Col>
                 <Col xs={12} md={6}>
+                  <Text type="secondary">移动止损线</Text>
+                  <div>{pushData?.trailingStartLine ?? '-'} / {pushData?.trailingStopLine ?? '-'}</div>
+                </Col>
+                <Col xs={12} md={6}>
                   <Text type="secondary">止盈线</Text>
                   <div>{pushData?.takeProfitLine1 ?? '-'} / {pushData?.takeProfitLine2 ?? '-'}</div>
                 </Col>
@@ -1338,6 +1342,14 @@ const CryptoTailMonitor: React.FC = () => {
                 <Col xs={12} md={6}>
                   <Text type="secondary">影线评分</Text>
                   <div>{pushData?.wickReversalScore ?? '-'} / {pushData?.wickContinuationScore ?? '-'} {pushData?.wickRejectionSide ?? ''}</div>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Text type="secondary">影线质量</Text>
+                  <div>{pushData?.wickTickCount ?? '-'} ticks / {pushData?.wickRangeSigmaRatio ?? '-'} sigma</div>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Text type="secondary">收盘位置</Text>
+                  <div>{pushData?.wickClosePosition ?? '-'} {pushData?.wickQualityReason ?? ''}</div>
                 </Col>
               </Row>
             </Card>

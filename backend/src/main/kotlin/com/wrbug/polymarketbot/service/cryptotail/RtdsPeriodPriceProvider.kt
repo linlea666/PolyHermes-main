@@ -44,6 +44,9 @@ class RtdsPeriodPriceProvider(
         return rtds.recentOhlc1m(marketSlugPrefix, minutes, nowSeconds)
     }
 
+    override fun getCurrentPriceAgeMs(marketSlugPrefix: String): Long? =
+        rtds.currentPriceAgeMs(marketSlugPrefix)
+
     override fun getSigmaPerSqrtS(
         marketSlugPrefix: String,
         intervalSeconds: Int,

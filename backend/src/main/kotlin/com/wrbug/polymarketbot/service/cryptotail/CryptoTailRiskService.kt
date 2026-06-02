@@ -3,6 +3,7 @@ package com.wrbug.polymarketbot.service.cryptotail
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
 import org.slf4j.LoggerFactory
+import org.springframework.data.domain.PageRequest
 import org.springframework.stereotype.Service
 import java.math.BigDecimal
 import java.time.LocalDate
@@ -63,6 +64,56 @@ class CryptoTailRiskService(
                 val reason = "未结算敞口 $openCount 达到上限 $maxConcurrent"
                 logger.info("crypto-tail 风控拦截(并发敞口): strategyId=$strategyId, $reason")
                 return RiskResult(false, "RISK_CONCURRENCY", reason)
+            }
+        }
+
+        val startOfDayMs = LocalDate.now(ZoneId.systemDefault())
+            .atStartOfDay(ZoneId.systemDefault())
+            .toInstant().toEpochMilli()
+        val nowMs = System.currentTimeMillis()
+
+        val maxOrdersPerDay = strategy.maxOrdersPerDay
+        if (maxOrdersPerDay != null && maxOrdersPerDay > 0) {
+            val count = triggerRepository.countByStrategyIdAndStatusAndCreatedAtBetween(
+                strategyId,
+                "success",
+                startOfDayMs,
+                nowMs
+            )
+            if (count >= maxOrdersPerDay) {
+                val reason = "当日成功入场 $count 达到上限 $maxOrdersPerDay"
+                logger.info("crypto-tail 风控拦截(日订单上限): strategyId=$strategyId, $reason")
+                return RiskResult(false, "RISK_MAX_ORDERS_PER_DAY", reason)
+            }
+        }
+
+        val latestResolved = triggerRepository.findLatestResolvedByStrategyId(strategyId, PageRequest.of(0, 20))
+
+        val pauseAfterLossMinutes = strategy.pauseAfterLossMinutes
+        if (pauseAfterLossMinutes > 0) {
+            val latest = latestResolved.firstOrNull()
+            val latestPnl = latest?.realizedPnl
+            val latestTs = latest?.settledAt ?: latest?.createdAt
+            if (latestPnl != null && latestPnl < BigDecimal.ZERO && latestTs != null) {
+                val until = latestTs + pauseAfterLossMinutes * 60_000L
+                if (nowMs < until) {
+                    val reason = "最近一笔亏损后暂停入场，剩余 ${(until - nowMs) / 1000}s"
+                    logger.info("crypto-tail 风控拦截(亏损冷却): strategyId=$strategyId, $reason")
+                    return RiskResult(false, "RISK_LOSS_COOLDOWN", reason)
+                }
+            }
+        }
+
+        val maxConsecutiveLosses = strategy.maxConsecutiveLosses
+        if (maxConsecutiveLosses != null && maxConsecutiveLosses > 0) {
+            val consecutiveLosses = latestResolved
+                .take(maxConsecutiveLosses)
+                .takeWhile { (it.realizedPnl ?: BigDecimal.ZERO) < BigDecimal.ZERO }
+                .size
+            if (consecutiveLosses >= maxConsecutiveLosses) {
+                val reason = "连续已结算亏损 $consecutiveLosses 达到上限 $maxConsecutiveLosses"
+                logger.info("crypto-tail 风控拦截(连续亏损): strategyId=$strategyId, $reason")
+                return RiskResult(false, "RISK_CONSECUTIVE_LOSSES", reason)
             }
         }
 

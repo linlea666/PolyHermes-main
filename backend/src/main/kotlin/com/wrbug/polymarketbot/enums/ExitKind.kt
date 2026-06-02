@@ -17,6 +17,7 @@ enum class ExitKind {
     MODEL_INVALID,
     MODEL_FLIP,
     GAP_FLIP,
+    TRAILING_STOP,
     WICK_REVERSAL,
     FORCE,
     SETTLE

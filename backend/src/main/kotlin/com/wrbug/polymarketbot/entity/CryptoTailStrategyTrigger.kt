@@ -124,6 +124,9 @@ data class CryptoTailStrategyTrigger(
     @Column(name = "last_exit_attempt_at")
     val lastExitAttemptAt: Long? = null,
 
+    @Column(name = "tp1_hold_started_at")
+    val tp1HoldStartedAt: Long? = null,
+
     @Column(name = "created_at", nullable = false)
     val createdAt: Long = System.currentTimeMillis(),
 

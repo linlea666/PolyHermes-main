@@ -100,7 +100,8 @@ class CryptoTailBracketExitService(
         periodStartUnix: Long,
         outcomeIndex: Int,
         bestBid: BigDecimal,
-        nowSeconds: Long
+        nowSeconds: Long,
+        orderbook: OrderbookQualitySnapshot? = null
     ) {
         if (strategy.mode == TradingMode.LEGACY_SPREAD || !strategy.enableExitManager) return
         val strategyId = strategy.id ?: return
@@ -114,7 +115,7 @@ class CryptoTailBracketExitService(
         for (t in openTriggers) {
             // 仅评估与 bestBid 同方向的 trigger（卖出价取该 outcome 的 bestBid）
             if (t.outcomeIndex != outcomeIndex) continue
-            evaluateAndExit(t, strategy, bestBid, nowSeconds)
+            evaluateAndExit(t, strategy, bestBid, nowSeconds, orderbook)
         }
     }
 
@@ -132,7 +133,8 @@ class CryptoTailBracketExitService(
         trigger: CryptoTailStrategyTrigger,
         strategy: CryptoTailStrategy,
         bestBid: BigDecimal,
-        nowSeconds: Long
+        nowSeconds: Long,
+        orderbook: OrderbookQualitySnapshot? = null
     ) {
         if (strategy.mode == TradingMode.LEGACY_SPREAD || !strategy.enableExitManager) return
         val triggerId = trigger.id ?: return
@@ -175,12 +177,18 @@ class CryptoTailBracketExitService(
                 trigger = checked,
                 holding = holding,
                 bestBid = bestBid,
-                remainingSeconds = remainingSeconds
+                remainingSeconds = remainingSeconds,
+                nowMs = nowMs,
+                orderbook = orderbook
             )
 
-            recordExitCheck(checked, strategy, holding, bestBid, remainingSeconds, decision)
+            recordExitCheck(checked, strategy, holding, bestBid, remainingSeconds, decision, orderbook)
 
-            if (decision.kind == null || decision.ratio <= BigDecimal.ZERO) return  // HOLD
+            if (decision.kind == null || decision.ratio <= BigDecimal.ZERO) {
+                persistTp1HoldStateIfNeeded(checked, decision)
+                return
+            }
+            persistTp1HoldStateIfNeeded(checked, decision)
             if (!applyExitConfirmation(checked, strategy, decision, nowMs)) return
 
             // V53 失败抑制窗：同 (triggerId, exitKind) 60s 内 placeExitOrder 失败过则跳过本次评估，避免死循环重试
@@ -212,7 +220,8 @@ class CryptoTailBracketExitService(
                 pwinHolding = pwinHolding,
                 bestBid = bestBid,
                 remainingSeconds = remainingSeconds,
-                reason = decision.reason
+                reason = decision.reason,
+                orderbook = orderbook
             )
         } catch (e: Exception) {
             logger.error("阶梯退出评估异常 triggerId=$triggerId, ${e.message}", e)
@@ -263,7 +272,9 @@ class CryptoTailBracketExitService(
         val kind: ExitKind?,
         /** 卖出比例（占 remainingSize 的比例），仅 kind != null 时有效 */
         val ratio: BigDecimal,
-        val reason: String
+        val reason: String,
+        val tp1HoldStartedAt: Long? = null,
+        val clearTp1HoldStartedAt: Boolean = false
     )
 
     private fun decideExit(
@@ -271,7 +282,9 @@ class CryptoTailBracketExitService(
         trigger: CryptoTailStrategyTrigger,
         holding: HoldingState?,
         bestBid: BigDecimal,
-        remainingSeconds: Int
+        remainingSeconds: Int,
+        nowMs: Long,
+        orderbook: OrderbookQualitySnapshot? = null
     ): Decision {
         if (remainingSeconds <= 0) {
             return Decision(null, BigDecimal.ZERO, "周期已结束，等待结算")
@@ -301,20 +314,48 @@ class CryptoTailBracketExitService(
         if (holding != null && holding.pWinHolding < strategy.exitPWin && holding.safeRatio < strategy.exitSafeRatio) {
             return Decision(ExitKind.MODEL_INVALID, BigDecimal.ONE, "模型失效: pWin=${holding.pWinHolding.toPlainString()} safeRatio=${holding.safeRatio.toPlainString()}")
         }
+        if (strategy.enableTrailingStop && entryFillPrice != null) {
+            val peakBid = trigger.peakBid ?: bestBid
+            val trailingStart = entryFillPrice.add(strategy.trailingStartDelta)
+            val trailingStop = peakBid.subtract(strategy.trailingDrawdown)
+            if (peakBid >= trailingStart && bestBid <= trailingStop) {
+                val ratio = strategy.trailingSellPct.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+                return Decision(
+                    ExitKind.TRAILING_STOP,
+                    ratio,
+                    "移动止损: peakBid=${peakBid.toPlainString()}>=${trailingStart.toPlainString()} 且 bestBid=${bestBid.toPlainString()}<=${trailingStop.toPlainString()}",
+                    clearTp1HoldStartedAt = true
+                )
+            }
+        }
         val wick = wickSignalService.evaluate(strategy, trigger.outcomeIndex)
         if (wick.available && wick.reversalScore >= strategy.wickExitScore) {
-            return Decision(ExitKind.WICK_REVERSAL, BigDecimal.ONE, "影线反转止损: score=${wick.reversalScore}>=${strategy.wickExitScore}")
+            return Decision(ExitKind.WICK_REVERSAL, BigDecimal.ONE, "影线反转止损: score=${wick.reversalScore}>=${strategy.wickExitScore}", clearTp1HoldStartedAt = true)
+        }
+        if (holding != null &&
+            remainingSeconds <= strategy.holdToSettleSeconds &&
+            holding.pWinHolding >= strategy.holdToSettlePwin &&
+            gapSupportsHolding(trigger, holding)
+        ) {
+            return Decision(
+                null,
+                BigDecimal.ZERO,
+                "HOLD_TO_SETTLE: pWin=${holding.pWinHolding.toPlainString()}>=${strategy.holdToSettlePwin.toPlainString()} 剩余=${remainingSeconds}s<=${strategy.holdToSettleSeconds}s",
+                clearTp1HoldStartedAt = true
+            )
         }
         if (remainingSeconds <= strategy.forceExitBeforeSettleSeconds) {
             return Decision(
                 ExitKind.FORCE,
                 BigDecimal.ONE,
-                "强制平仓: 剩余=${remainingSeconds}s<=${strategy.forceExitBeforeSettleSeconds}s 且未满足持有到结算条件"
+                "强制平仓: 剩余=${remainingSeconds}s<=${strategy.forceExitBeforeSettleSeconds}s 且未满足持有到结算条件",
+                clearTp1HoldStartedAt = true
             )
         }
         if (bestBid >= strategy.takeProfitBid2
             && !hasExitOfKind(trigger.id!!, ExitKind.TP2)
         ) {
+            checkTakeProfitLiquidity(strategy, orderbook, bestBid)?.let { return it }
             val ratio = strategy.takeProfitSellPct2.max(BigDecimal.ZERO).min(BigDecimal.ONE)
             return Decision(
                 ExitKind.TP2,
@@ -324,18 +365,97 @@ class CryptoTailBracketExitService(
         }
         val tp1Line = entryFillPrice?.add(strategy.takeProfitDelta1)
         if (tp1Line != null && bestBid >= tp1Line && !hasExitOfKind(trigger.id!!, ExitKind.TP1) && !hasExitOfKind(trigger.id!!, ExitKind.TP2)) {
+            checkTakeProfitLiquidity(strategy, orderbook, bestBid)?.let { return it }
             if (wick.available && wick.continuationScore >= strategy.wickHoldProfitScore && remainingSeconds > strategy.forceExitBeforeSettleSeconds) {
-                return Decision(null, BigDecimal.ZERO, "WICK_HOLD_TP: 顺势评分=${wick.continuationScore}>=${strategy.wickHoldProfitScore}, 暂缓TP1")
+                val holdStart = trigger.tp1HoldStartedAt ?: nowMs
+                val heldSeconds = ((nowMs - holdStart) / 1000L).coerceAtLeast(0L)
+                val peakBid = trigger.peakBid ?: bestBid
+                val drawdown = peakBid.subtract(bestBid).max(BigDecimal.ZERO)
+                if (strategy.maxHoldTp1DelaySeconds <= 0 || heldSeconds >= strategy.maxHoldTp1DelaySeconds) {
+                    val ratio = strategy.takeProfitSellPct1.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+                    return Decision(
+                        ExitKind.TP1,
+                        ratio,
+                        "止盈1: TP1暂缓超时 held=${heldSeconds}s>=${strategy.maxHoldTp1DelaySeconds}s",
+                        clearTp1HoldStartedAt = true
+                    )
+                }
+                if (drawdown >= strategy.holdTp1PeakDrawdown) {
+                    val ratio = strategy.takeProfitSellPct1.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+                    return Decision(
+                        ExitKind.TP1,
+                        ratio,
+                        "止盈1: TP1暂缓期间回撤=${drawdown.toPlainString()}>=${strategy.holdTp1PeakDrawdown.toPlainString()}",
+                        clearTp1HoldStartedAt = true
+                    )
+                }
+                return Decision(
+                    null,
+                    BigDecimal.ZERO,
+                    "WICK_HOLD_TP: 顺势评分=${wick.continuationScore}>=${strategy.wickHoldProfitScore}, 暂缓TP1 held=${heldSeconds}s",
+                    tp1HoldStartedAt = holdStart
+                )
             }
             val ratio = strategy.takeProfitSellPct1.max(BigDecimal.ZERO).min(BigDecimal.ONE)
             return Decision(
                 ExitKind.TP1,
                 ratio,
-                "止盈1: bestBid=${bestBid.toPlainString()}>=entry+delta=${tp1Line.toPlainString()}"
+                "止盈1: bestBid=${bestBid.toPlainString()}>=entry+delta=${tp1Line.toPlainString()}",
+                clearTp1HoldStartedAt = true
             )
         }
 
-        return Decision(null, BigDecimal.ZERO, "继续持有")
+        return Decision(null, BigDecimal.ZERO, "继续持有", clearTp1HoldStartedAt = true)
+    }
+
+    private fun checkTakeProfitLiquidity(
+        strategy: CryptoTailStrategy,
+        orderbook: OrderbookQualitySnapshot?,
+        bestBid: BigDecimal
+    ): Decision? {
+        val nowMs = System.currentTimeMillis()
+        if (orderbook == null) {
+            return Decision(null, BigDecimal.ZERO, "TP流动性等待: 订单簿快照缺失")
+        }
+        val quoteAge = orderbook.quoteAgeMs(nowMs)
+        if (quoteAge > strategy.maxOrderbookAgeMs) {
+            return Decision(null, BigDecimal.ZERO, "TP流动性等待: quoteAgeMs=$quoteAge>${strategy.maxOrderbookAgeMs}")
+        }
+        val depthAge = orderbook.depthAgeMs(nowMs)
+        if (orderbook.depthStale || depthAge == null || depthAge > strategy.maxOrderbookAgeMs) {
+            return Decision(null, BigDecimal.ZERO, "TP流动性等待: depthAgeMs=${depthAge ?: ""}>${strategy.maxOrderbookAgeMs} 或深度缺失")
+        }
+        val spread = orderbook.spread
+        if (spread != null && spread > strategy.maxExitSpread) {
+            return Decision(null, BigDecimal.ZERO, "TP流动性等待: exitSpread=${spread.toPlainString()}>${strategy.maxExitSpread.toPlainString()}")
+        }
+        val bidDepthUsd = orderbook.bidDepthUsd
+        if (bidDepthUsd != null && bidDepthUsd < strategy.minExitBidDepthUsdc) {
+            return Decision(null, BigDecimal.ZERO, "TP流动性等待: bidDepthUsd=${bidDepthUsd.toPlainString()}<${strategy.minExitBidDepthUsdc.toPlainString()}")
+        }
+        if (orderbook.bestBid.compareTo(bestBid) != 0) {
+            return Decision(null, BigDecimal.ZERO, "TP流动性等待: 快照bestBid与当前bestBid不一致")
+        }
+        return null
+    }
+
+    private fun gapSupportsHolding(trigger: CryptoTailStrategyTrigger, holding: HoldingState): Boolean {
+        return when (trigger.outcomeIndex) {
+            0 -> holding.gap > BigDecimal.ZERO
+            1 -> holding.gap < BigDecimal.ZERO
+            else -> false
+        }
+    }
+
+    private fun persistTp1HoldStateIfNeeded(trigger: CryptoTailStrategyTrigger, decision: Decision) {
+        val triggerId = trigger.id ?: return
+        val next = when {
+            decision.clearTp1HoldStartedAt -> null
+            decision.tp1HoldStartedAt != null -> decision.tp1HoldStartedAt
+            else -> trigger.tp1HoldStartedAt
+        }
+        if (next == trigger.tp1HoldStartedAt) return
+        triggerRepository.save(trigger.copy(id = triggerId, tp1HoldStartedAt = next))
     }
 
     private fun applyExitConfirmation(
@@ -363,7 +483,8 @@ class CryptoTailBracketExitService(
         holding: HoldingState?,
         bestBid: BigDecimal,
         remainingSeconds: Int,
-        decision: Decision
+        decision: Decision,
+        orderbook: OrderbookQualitySnapshot? = null
     ) {
         val entryFillPrice = trigger.entryFillPrice ?: BigDecimal.ZERO
         val peakBid = trigger.peakBid ?: bestBid
@@ -392,7 +513,16 @@ class CryptoTailBracketExitService(
             "exitReason" to (decision.kind?.name ?: ""),
             "remainingSize" to remaining.toPlainString(),
             "realizedPnlIfExit" to realizedIfExit.toPlainString(),
-            "reason" to decision.reason
+            "tp1HoldStartedAt" to (decision.tp1HoldStartedAt ?: trigger.tp1HoldStartedAt ?: ""),
+            "tp1HoldCleared" to decision.clearTp1HoldStartedAt,
+            "reason" to decision.reason,
+            "bidSize" to (orderbook?.bidSize?.toPlainString() ?: ""),
+            "bidDepthUsd" to (orderbook?.bidDepthUsd?.toPlainString() ?: ""),
+            "spread" to (orderbook?.spread?.toPlainString() ?: ""),
+            "quoteAgeMs" to (orderbook?.quoteAgeMs() ?: ""),
+            "depthAgeMs" to (orderbook?.depthAgeMs() ?: ""),
+            "depthStale" to (orderbook?.depthStale ?: true),
+            "expectedExitPrice" to bestBid.toPlainString()
         )
         decisionRecorder.record(
             CryptoTailDecisionEvent(
@@ -477,7 +607,8 @@ class CryptoTailBracketExitService(
         pwinHolding: BigDecimal?,
         bestBid: BigDecimal,
         remainingSeconds: Int,
-        reason: String
+        reason: String,
+        orderbook: OrderbookQualitySnapshot? = null
     ) {
         val triggerId = trigger.id ?: return
         val tokenId = trigger.tokenId ?: return
@@ -490,7 +621,7 @@ class CryptoTailBracketExitService(
         // STOP/FORCE 强制 FAK；TP1/TP2 按策略配置（FAK 默认；MAKER 由 Reconciler 在超时未成交时撤回退）
         val orderType = when (kind) {
             ExitKind.STOP, ExitKind.HARD_STOP, ExitKind.MODEL_INVALID, ExitKind.MODEL_FLIP,
-            ExitKind.GAP_FLIP, ExitKind.WICK_REVERSAL, ExitKind.FORCE -> "FAK"
+            ExitKind.GAP_FLIP, ExitKind.TRAILING_STOP, ExitKind.WICK_REVERSAL, ExitKind.FORCE -> "FAK"
             ExitKind.TP1, ExitKind.TP2 -> if (strategy.exitOrderType.uppercase() == "MAKER") "GTC" else "FAK"
             ExitKind.SETTLE -> "FAK"  // 不应到这（SETTLE 由 SettlementService 处理）
         }
@@ -553,7 +684,8 @@ class CryptoTailBracketExitService(
             )
             val submittedType = when (kind) {
                 ExitKind.TP1, ExitKind.TP2 -> "TAKE_PROFIT_SUBMITTED"
-                ExitKind.HARD_STOP, ExitKind.MODEL_INVALID, ExitKind.MODEL_FLIP, ExitKind.GAP_FLIP, ExitKind.WICK_REVERSAL, ExitKind.STOP -> "STOP_LOSS_SUBMITTED"
+                ExitKind.HARD_STOP, ExitKind.MODEL_INVALID, ExitKind.MODEL_FLIP, ExitKind.GAP_FLIP,
+                ExitKind.TRAILING_STOP, ExitKind.WICK_REVERSAL, ExitKind.STOP -> "STOP_LOSS_SUBMITTED"
                 else -> "EXIT_SUBMITTED"
             }
             recordEvent(
@@ -570,7 +702,10 @@ class CryptoTailBracketExitService(
                     "orderId" to orderId,
                     "exitPrice" to exitPrice.toPlainString(),
                     "targetSize" to sizeStr,
-                    "orderType" to recordOrderType
+                    "orderType" to recordOrderType,
+                    "bidDepthUsd" to (orderbook?.bidDepthUsd?.toPlainString() ?: ""),
+                    "spread" to (orderbook?.spread?.toPlainString() ?: ""),
+                    "quoteAgeMs" to (orderbook?.quoteAgeMs() ?: "")
                 )
             )
             logger.info("阶梯退出已提交 triggerId=$triggerId kind=$kind orderId=$orderId price=${exitPrice.toPlainString()} size=$sizeStr type=$recordOrderType reason=$reason")

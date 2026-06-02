@@ -236,7 +236,25 @@ const CryptoTailStrategyList: React.FC = () => {
       wickExitScore: 75,
       wickHoldProfitScore: 65,
       wickUseBinanceVolume: false,
-      wickVolumeSpikeRatio: '1.50'
+      wickVolumeSpikeRatio: '1.50',
+      wickMinTicksPerCandle: 5,
+      wickMinRangeSigmaRatio: '0.25',
+      wickClosePositionUpMax: '0.35',
+      wickClosePositionDownMin: '0.65',
+      maxHoldTp1DelaySeconds: 45,
+      holdTp1PeakDrawdown: '0.03',
+      maxEntrySpread: '0.03',
+      maxOrderbookAgeMs: 3000,
+      maxPriceAgeMs: 3000,
+      minExitBidDepthUsdc: '2.00',
+      maxExitSpread: '0.05',
+      enableTrailingStop: true,
+      trailingStartDelta: '0.08',
+      trailingDrawdown: '0.06',
+      trailingSellPct: '1.00',
+      maxOrdersPerDay: undefined,
+      maxConsecutiveLosses: undefined,
+      pauseAfterLossMinutes: 0
     })
     setFormModalOpen(true)
   }
@@ -328,7 +346,25 @@ const CryptoTailStrategyList: React.FC = () => {
       wickExitScore: record.wickExitScore ?? 75,
       wickHoldProfitScore: record.wickHoldProfitScore ?? 65,
       wickUseBinanceVolume: record.wickUseBinanceVolume ?? false,
-      wickVolumeSpikeRatio: record.wickVolumeSpikeRatio ?? '1.50'
+      wickVolumeSpikeRatio: record.wickVolumeSpikeRatio ?? '1.50',
+      wickMinTicksPerCandle: record.wickMinTicksPerCandle ?? 5,
+      wickMinRangeSigmaRatio: record.wickMinRangeSigmaRatio ?? '0.25',
+      wickClosePositionUpMax: record.wickClosePositionUpMax ?? '0.35',
+      wickClosePositionDownMin: record.wickClosePositionDownMin ?? '0.65',
+      maxHoldTp1DelaySeconds: record.maxHoldTp1DelaySeconds ?? 45,
+      holdTp1PeakDrawdown: record.holdTp1PeakDrawdown ?? '0.03',
+      maxEntrySpread: record.maxEntrySpread ?? '0.03',
+      maxOrderbookAgeMs: record.maxOrderbookAgeMs ?? 3000,
+      maxPriceAgeMs: record.maxPriceAgeMs ?? 3000,
+      minExitBidDepthUsdc: record.minExitBidDepthUsdc ?? '2.00',
+      maxExitSpread: record.maxExitSpread ?? '0.05',
+      enableTrailingStop: record.enableTrailingStop ?? true,
+      trailingStartDelta: record.trailingStartDelta ?? '0.08',
+      trailingDrawdown: record.trailingDrawdown ?? '0.06',
+      trailingSellPct: record.trailingSellPct ?? '1.00',
+      maxOrdersPerDay: record.maxOrdersPerDay ?? undefined,
+      maxConsecutiveLosses: record.maxConsecutiveLosses ?? undefined,
+      pauseAfterLossMinutes: record.pauseAfterLossMinutes ?? 0
     })
     setFormModalOpen(true)
   }
@@ -463,6 +499,24 @@ const CryptoTailStrategyList: React.FC = () => {
         wickHoldProfitScore: v.wickHoldProfitScore != null ? Number(v.wickHoldProfitScore) : undefined,
         wickUseBinanceVolume: v.wickUseBinanceVolume === true,
         wickVolumeSpikeRatio: v.wickVolumeSpikeRatio != null ? String(v.wickVolumeSpikeRatio) : undefined,
+        wickMinTicksPerCandle: v.wickMinTicksPerCandle != null ? Number(v.wickMinTicksPerCandle) : undefined,
+        wickMinRangeSigmaRatio: v.wickMinRangeSigmaRatio != null ? String(v.wickMinRangeSigmaRatio) : undefined,
+        wickClosePositionUpMax: v.wickClosePositionUpMax != null ? String(v.wickClosePositionUpMax) : undefined,
+        wickClosePositionDownMin: v.wickClosePositionDownMin != null ? String(v.wickClosePositionDownMin) : undefined,
+        maxHoldTp1DelaySeconds: v.maxHoldTp1DelaySeconds != null ? Number(v.maxHoldTp1DelaySeconds) : undefined,
+        holdTp1PeakDrawdown: v.holdTp1PeakDrawdown != null ? String(v.holdTp1PeakDrawdown) : undefined,
+        maxEntrySpread: v.maxEntrySpread != null ? String(v.maxEntrySpread) : undefined,
+        maxOrderbookAgeMs: v.maxOrderbookAgeMs != null ? Number(v.maxOrderbookAgeMs) : undefined,
+        maxPriceAgeMs: v.maxPriceAgeMs != null ? Number(v.maxPriceAgeMs) : undefined,
+        minExitBidDepthUsdc: v.minExitBidDepthUsdc != null ? String(v.minExitBidDepthUsdc) : undefined,
+        maxExitSpread: v.maxExitSpread != null ? String(v.maxExitSpread) : undefined,
+        enableTrailingStop: v.enableTrailingStop === true,
+        trailingStartDelta: v.trailingStartDelta != null ? String(v.trailingStartDelta) : undefined,
+        trailingDrawdown: v.trailingDrawdown != null ? String(v.trailingDrawdown) : undefined,
+        trailingSellPct: v.trailingSellPct != null ? String(v.trailingSellPct) : undefined,
+        maxOrdersPerDay: v.maxOrdersPerDay != null && v.maxOrdersPerDay !== '' ? Number(v.maxOrdersPerDay) : null,
+        maxConsecutiveLosses: v.maxConsecutiveLosses != null && v.maxConsecutiveLosses !== '' ? Number(v.maxConsecutiveLosses) : null,
+        pauseAfterLossMinutes: v.pauseAfterLossMinutes != null ? Number(v.pauseAfterLossMinutes) : undefined,
         ...(barrierOn ? {
           entryProb: v.entryProb != null ? String(v.entryProb) : undefined,
           entryEdge: v.entryEdge != null ? String(v.entryEdge) : undefined,
@@ -1635,6 +1689,36 @@ const CryptoTailStrategyList: React.FC = () => {
               <Form.Item name="exitPollIntervalMs" label="退出检查间隔(ms)">
                 <InputNumber min={500} step={500} style={{ width: '100%' }} />
               </Form.Item>
+              <Form.Item name="enableTrailingStop" label="启用移动止损" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="trailingStartDelta" label="移动止损启动价差">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="trailingDrawdown" label="移动止损回撤">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="trailingSellPct" label="移动止损卖出比例">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 12 }}>
+                <Typography.Text strong>盘口质量 / 行情新鲜度</Typography.Text>
+              </Form.Item>
+              <Form.Item name="maxEntrySpread" label="入场最大盘口价差">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="maxOrderbookAgeMs" label="订单簿最大年龄(ms)">
+                <InputNumber min={500} step={500} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="maxPriceAgeMs" label="价源最大年龄(ms)">
+                <InputNumber min={500} step={500} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="minExitBidDepthUsdc" label="止盈最小bid深度(USDC)">
+                <InputNumber min={0} step={0.5} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="maxExitSpread" label="止盈最大盘口价差">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
               <Form.Item style={{ marginBottom: 12 }}>
                 <Typography.Text strong>影线 / 反转过滤</Typography.Text>
               </Form.Item>
@@ -1668,6 +1752,24 @@ const CryptoTailStrategyList: React.FC = () => {
               <Form.Item name="wickVolumeSpikeRatio" label="成交量尖峰倍数">
                 <InputNumber min={1} step={0.1} style={{ width: '100%' }} stringMode />
               </Form.Item>
+              <Form.Item name="wickMinTicksPerCandle" label="单根K最小样本数">
+                <InputNumber min={1} max={60} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="wickMinRangeSigmaRatio" label="最小 range/sigma">
+                <InputNumber min={0} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="wickClosePositionUpMax" label="UP收盘位置上限">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="wickClosePositionDownMin" label="DOWN收盘位置下限">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="maxHoldTp1DelaySeconds" label="TP1最长暂缓秒数">
+                <InputNumber min={0} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="holdTp1PeakDrawdown" label="TP1暂缓回撤触发">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
               <Form.Item
                 name="dailyLossLimitUsdc"
                 label={
@@ -1693,6 +1795,15 @@ const CryptoTailStrategyList: React.FC = () => {
                 }
               >
                 <InputNumber min={0} step={1} precision={0} placeholder={t('cryptoTailStrategy.form.optionalPlaceholder')} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="maxOrdersPerDay" label="单日最大入场笔数">
+                <InputNumber min={0} step={1} precision={0} placeholder={t('cryptoTailStrategy.form.optionalPlaceholder')} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="maxConsecutiveLosses" label="最大连续亏损笔数">
+                <InputNumber min={0} step={1} precision={0} placeholder={t('cryptoTailStrategy.form.optionalPlaceholder')} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="pauseAfterLossMinutes" label="亏损后暂停分钟数">
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item
                 name="takerFeeBps"

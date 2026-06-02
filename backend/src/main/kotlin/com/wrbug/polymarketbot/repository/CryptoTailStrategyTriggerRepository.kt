@@ -20,6 +20,15 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
     fun countByStrategyIdAndCreatedAtBetween(strategyId: Long, startInclusive: Long, endInclusive: Long): Long
     fun countByStrategyIdAndStatusAndCreatedAtBetween(strategyId: Long, status: String, startInclusive: Long, endInclusive: Long): Long
 
+    @Query(
+        "SELECT t FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true " +
+            "ORDER BY COALESCE(t.settledAt, t.createdAt) DESC"
+    )
+    fun findLatestResolvedByStrategyId(
+        @Param("strategyId") strategyId: Long,
+        pageable: Pageable
+    ): List<CryptoTailStrategyTrigger>
+
     /** 轮询结算：仅处理下单成功的订单（status=success 且 orderId 非空）、且未结算的触发记录 */
     fun findByStatusAndResolvedAndOrderIdIsNotNullOrderByCreatedAtAsc(status: String, resolved: Boolean): List<CryptoTailStrategyTrigger>
 

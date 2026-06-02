@@ -219,6 +219,60 @@ data class CryptoTailStrategy(
     @Column(name = "wick_volume_spike_ratio", nullable = false, precision = 20, scale = 8)
     val wickVolumeSpikeRatio: BigDecimal = BigDecimal("1.50"),
 
+    @Column(name = "wick_min_ticks_per_candle", nullable = false)
+    val wickMinTicksPerCandle: Int = 5,
+
+    @Column(name = "wick_min_range_sigma_ratio", nullable = false, precision = 20, scale = 8)
+    val wickMinRangeSigmaRatio: BigDecimal = BigDecimal("0.25"),
+
+    @Column(name = "wick_close_position_up_max", nullable = false, precision = 20, scale = 8)
+    val wickClosePositionUpMax: BigDecimal = BigDecimal("0.35"),
+
+    @Column(name = "wick_close_position_down_min", nullable = false, precision = 20, scale = 8)
+    val wickClosePositionDownMin: BigDecimal = BigDecimal("0.65"),
+
+    @Column(name = "max_hold_tp1_delay_seconds", nullable = false)
+    val maxHoldTp1DelaySeconds: Int = 45,
+
+    @Column(name = "hold_tp1_peak_drawdown", nullable = false, precision = 20, scale = 8)
+    val holdTp1PeakDrawdown: BigDecimal = BigDecimal("0.03"),
+
+    @Column(name = "max_entry_spread", nullable = false, precision = 20, scale = 8)
+    val maxEntrySpread: BigDecimal = BigDecimal("0.03"),
+
+    @Column(name = "max_orderbook_age_ms", nullable = false)
+    val maxOrderbookAgeMs: Int = 3000,
+
+    @Column(name = "max_price_age_ms", nullable = false)
+    val maxPriceAgeMs: Int = 3000,
+
+    @Column(name = "min_exit_bid_depth_usdc", nullable = false, precision = 20, scale = 8)
+    val minExitBidDepthUsdc: BigDecimal = BigDecimal("2.00"),
+
+    @Column(name = "max_exit_spread", nullable = false, precision = 20, scale = 8)
+    val maxExitSpread: BigDecimal = BigDecimal("0.05"),
+
+    @Column(name = "enable_trailing_stop", nullable = false)
+    val enableTrailingStop: Boolean = true,
+
+    @Column(name = "trailing_start_delta", nullable = false, precision = 20, scale = 8)
+    val trailingStartDelta: BigDecimal = BigDecimal("0.08"),
+
+    @Column(name = "trailing_drawdown", nullable = false, precision = 20, scale = 8)
+    val trailingDrawdown: BigDecimal = BigDecimal("0.06"),
+
+    @Column(name = "trailing_sell_pct", nullable = false, precision = 20, scale = 8)
+    val trailingSellPct: BigDecimal = BigDecimal.ONE,
+
+    @Column(name = "max_orders_per_day")
+    val maxOrdersPerDay: Int? = null,
+
+    @Column(name = "max_consecutive_losses")
+    val maxConsecutiveLosses: Int? = null,
+
+    @Column(name = "pause_after_loss_minutes", nullable = false)
+    val pauseAfterLossMinutes: Int = 0,
+
     /**
      * 进场胜率阈值 pWin≥entryProb 才进场（0~1），默认 0.55。
      * 该闸仅作"方向倾向下限"防误判，真正的盈亏过滤交给扣费 EV 闸（entryEdge）。

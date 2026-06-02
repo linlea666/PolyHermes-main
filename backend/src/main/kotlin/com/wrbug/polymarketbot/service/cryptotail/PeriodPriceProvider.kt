@@ -19,7 +19,8 @@ interface PeriodPriceProvider {
         val open: BigDecimal,
         val high: BigDecimal,
         val low: BigDecimal,
-        val close: BigDecimal
+        val close: BigDecimal,
+        val tickCount: Int = 0
     )
 
     /** 该市场价源是否可用（凭证 + feedID / 连接 + 数据就绪） */
@@ -33,6 +34,9 @@ interface PeriodPriceProvider {
 
     /** 最近 1m OHLC，按时间升序返回；价源不支持时返回空列表。 */
     fun getRecentOhlc1m(marketSlugPrefix: String, minutes: Int, nowSeconds: Long = System.currentTimeMillis() / 1000): List<Ohlc1m> = emptyList()
+
+    /** 当前价缓存年龄（毫秒）；价源无法提供时返回 null，调用方不据此拦截。 */
+    fun getCurrentPriceAgeMs(marketSlugPrefix: String): Long? = null
 
     /**
      * 每 √秒 波动率 σ_per_√s。outcomeIndex 仅为兼容接口（终值波动率与方向无关，实现忽略之）。
@@ -98,7 +102,8 @@ class ChainlinkPeriodPriceProvider(
                     open = points.first(),
                     high = points.maxOrNull() ?: points.first(),
                     low = points.minOrNull() ?: points.first(),
-                    close = points.last()
+                    close = points.last(),
+                    tickCount = points.size
                 )
             )
         }

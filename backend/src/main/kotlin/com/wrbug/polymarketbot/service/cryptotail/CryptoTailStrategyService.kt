@@ -167,6 +167,24 @@ class CryptoTailStrategyService(
             val wickHoldProfitScore = request.wickHoldProfitScore ?: 65
             val wickUseBinanceVolume = request.wickUseBinanceVolume ?: false
             val wickVolumeSpikeRatio = request.wickVolumeSpikeRatio?.toSafeBigDecimal() ?: BigDecimal("1.50")
+            val wickMinTicksPerCandle = request.wickMinTicksPerCandle ?: 5
+            val wickMinRangeSigmaRatio = request.wickMinRangeSigmaRatio?.toSafeBigDecimal() ?: BigDecimal("0.25")
+            val wickClosePositionUpMax = request.wickClosePositionUpMax?.toSafeBigDecimal() ?: BigDecimal("0.35")
+            val wickClosePositionDownMin = request.wickClosePositionDownMin?.toSafeBigDecimal() ?: BigDecimal("0.65")
+            val maxHoldTp1DelaySeconds = request.maxHoldTp1DelaySeconds ?: 45
+            val holdTp1PeakDrawdown = request.holdTp1PeakDrawdown?.toSafeBigDecimal() ?: BigDecimal("0.03")
+            val maxEntrySpread = request.maxEntrySpread?.toSafeBigDecimal() ?: BigDecimal("0.03")
+            val maxOrderbookAgeMs = request.maxOrderbookAgeMs ?: 3000
+            val maxPriceAgeMs = request.maxPriceAgeMs ?: 3000
+            val minExitBidDepthUsdc = request.minExitBidDepthUsdc?.toSafeBigDecimal() ?: BigDecimal("2.00")
+            val maxExitSpread = request.maxExitSpread?.toSafeBigDecimal() ?: BigDecimal("0.05")
+            val enableTrailingStop = request.enableTrailingStop ?: true
+            val trailingStartDelta = request.trailingStartDelta?.toSafeBigDecimal() ?: BigDecimal("0.08")
+            val trailingDrawdown = request.trailingDrawdown?.toSafeBigDecimal() ?: BigDecimal("0.06")
+            val trailingSellPct = request.trailingSellPct?.toSafeBigDecimal() ?: BigDecimal.ONE
+            val maxOrdersPerDay = request.maxOrdersPerDay
+            val maxConsecutiveLosses = request.maxConsecutiveLosses
+            val pauseAfterLossMinutes = request.pauseAfterLossMinutes ?: 0
 
             if (resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD &&
                 !isBarrierParamsValid(entryProb, entryEdge, maxEntryPrice, costBuffer, barrierMinMarketProb, sigmaScale, dailyLossLimitUsdc, maxConcurrentPositions, takerFeeBps, makerRebateBps, gasCostUsdc, entryOrderType, entryFakSlippage, makerPriceOffset, makerCancelBeforeSettleSeconds, interval, probeAmountUsdc, calibrationMinSamples, calibrationMaxError, sigmaMethod, ewmaLambda, kellyFraction)) {
@@ -183,7 +201,10 @@ class CryptoTailStrategyService(
                     minSafeRatio, minSafeRatioUp, minSafeRatioDown, highPriceThreshold, highPriceMinPWin, highPriceMinSafeRatio,
                     maxLossPct, exitPWin, exitSafeRatio, exitConfirmTicks, takeProfitDelta1, takeProfitSellPct1, takeProfitBid2,
                     takeProfitSellPct2, exitPollIntervalMs, wickLookbackMinutes, wickMinBodyRatio, wickRejectionRatio, wickMaWindow,
-                    wickEntryBlockScore, wickExitScore, wickHoldProfitScore, wickVolumeSpikeRatio
+                    wickEntryBlockScore, wickExitScore, wickHoldProfitScore, wickVolumeSpikeRatio, wickMinTicksPerCandle,
+                    wickMinRangeSigmaRatio, wickClosePositionUpMax, wickClosePositionDownMin, maxHoldTp1DelaySeconds,
+                    holdTp1PeakDrawdown, maxEntrySpread, maxOrderbookAgeMs, maxPriceAgeMs, minExitBidDepthUsdc, maxExitSpread,
+                    trailingStartDelta, trailingDrawdown, trailingSellPct, maxOrdersPerDay, maxConsecutiveLosses, pauseAfterLossMinutes
                 )) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
             }
@@ -272,7 +293,25 @@ class CryptoTailStrategyService(
                 wickExitScore = wickExitScore,
                 wickHoldProfitScore = wickHoldProfitScore,
                 wickUseBinanceVolume = wickUseBinanceVolume,
-                wickVolumeSpikeRatio = wickVolumeSpikeRatio
+                wickVolumeSpikeRatio = wickVolumeSpikeRatio,
+                wickMinTicksPerCandle = wickMinTicksPerCandle,
+                wickMinRangeSigmaRatio = wickMinRangeSigmaRatio,
+                wickClosePositionUpMax = wickClosePositionUpMax,
+                wickClosePositionDownMin = wickClosePositionDownMin,
+                maxHoldTp1DelaySeconds = maxHoldTp1DelaySeconds,
+                holdTp1PeakDrawdown = holdTp1PeakDrawdown,
+                maxEntrySpread = maxEntrySpread,
+                maxOrderbookAgeMs = maxOrderbookAgeMs,
+                maxPriceAgeMs = maxPriceAgeMs,
+                minExitBidDepthUsdc = minExitBidDepthUsdc,
+                maxExitSpread = maxExitSpread,
+                enableTrailingStop = enableTrailingStop,
+                trailingStartDelta = trailingStartDelta,
+                trailingDrawdown = trailingDrawdown,
+                trailingSellPct = trailingSellPct,
+                maxOrdersPerDay = maxOrdersPerDay,
+                maxConsecutiveLosses = maxConsecutiveLosses,
+                pauseAfterLossMinutes = pauseAfterLossMinutes
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -404,6 +443,24 @@ class CryptoTailStrategyService(
             val newWickHoldProfitScore = request.wickHoldProfitScore ?: existing.wickHoldProfitScore
             val newWickUseBinanceVolume = request.wickUseBinanceVolume ?: existing.wickUseBinanceVolume
             val newWickVolumeSpikeRatio = request.wickVolumeSpikeRatio?.toSafeBigDecimal() ?: existing.wickVolumeSpikeRatio
+            val newWickMinTicksPerCandle = request.wickMinTicksPerCandle ?: existing.wickMinTicksPerCandle
+            val newWickMinRangeSigmaRatio = request.wickMinRangeSigmaRatio?.toSafeBigDecimal() ?: existing.wickMinRangeSigmaRatio
+            val newWickClosePositionUpMax = request.wickClosePositionUpMax?.toSafeBigDecimal() ?: existing.wickClosePositionUpMax
+            val newWickClosePositionDownMin = request.wickClosePositionDownMin?.toSafeBigDecimal() ?: existing.wickClosePositionDownMin
+            val newMaxHoldTp1DelaySeconds = request.maxHoldTp1DelaySeconds ?: existing.maxHoldTp1DelaySeconds
+            val newHoldTp1PeakDrawdown = request.holdTp1PeakDrawdown?.toSafeBigDecimal() ?: existing.holdTp1PeakDrawdown
+            val newMaxEntrySpread = request.maxEntrySpread?.toSafeBigDecimal() ?: existing.maxEntrySpread
+            val newMaxOrderbookAgeMs = request.maxOrderbookAgeMs ?: existing.maxOrderbookAgeMs
+            val newMaxPriceAgeMs = request.maxPriceAgeMs ?: existing.maxPriceAgeMs
+            val newMinExitBidDepthUsdc = request.minExitBidDepthUsdc?.toSafeBigDecimal() ?: existing.minExitBidDepthUsdc
+            val newMaxExitSpread = request.maxExitSpread?.toSafeBigDecimal() ?: existing.maxExitSpread
+            val newEnableTrailingStop = request.enableTrailingStop ?: existing.enableTrailingStop
+            val newTrailingStartDelta = request.trailingStartDelta?.toSafeBigDecimal() ?: existing.trailingStartDelta
+            val newTrailingDrawdown = request.trailingDrawdown?.toSafeBigDecimal() ?: existing.trailingDrawdown
+            val newTrailingSellPct = request.trailingSellPct?.toSafeBigDecimal() ?: existing.trailingSellPct
+            val newMaxOrdersPerDay = request.maxOrdersPerDay ?: existing.maxOrdersPerDay
+            val newMaxConsecutiveLosses = request.maxConsecutiveLosses ?: existing.maxConsecutiveLosses
+            val newPauseAfterLossMinutes = request.pauseAfterLossMinutes ?: existing.pauseAfterLossMinutes
 
             if (newMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD &&
                 !isBarrierParamsValid(newEntryProb, newEntryEdge, newMaxEntryPrice, newCostBuffer, newBarrierMinMarketProb, newSigmaScale, newDailyLossLimitUsdc, newMaxConcurrentPositions, newTakerFeeBps, newMakerRebateBps, newGasCostUsdc, newEntryOrderType, newEntryFakSlippage, newMakerPriceOffset, newMakerCancelBeforeSettleSeconds, existing.intervalSeconds, newProbeAmountUsdc, newCalibrationMinSamples, newCalibrationMaxError, newSigmaMethod, newEwmaLambda, newKellyFraction)) {
@@ -421,7 +478,10 @@ class CryptoTailStrategyService(
                     newMaxLossPct, newExitPWin, newExitSafeRatio, newExitConfirmTicks, newTakeProfitDelta1, newTakeProfitSellPct1,
                     newTakeProfitBid2, newTakeProfitSellPct2, newExitPollIntervalMs, newWickLookbackMinutes, newWickMinBodyRatio,
                     newWickRejectionRatio, newWickMaWindow, newWickEntryBlockScore, newWickExitScore, newWickHoldProfitScore,
-                    newWickVolumeSpikeRatio
+                    newWickVolumeSpikeRatio, newWickMinTicksPerCandle, newWickMinRangeSigmaRatio, newWickClosePositionUpMax,
+                    newWickClosePositionDownMin, newMaxHoldTp1DelaySeconds, newHoldTp1PeakDrawdown, newMaxEntrySpread,
+                    newMaxOrderbookAgeMs, newMaxPriceAgeMs, newMinExitBidDepthUsdc, newMaxExitSpread, newTrailingStartDelta,
+                    newTrailingDrawdown, newTrailingSellPct, newMaxOrdersPerDay, newMaxConsecutiveLosses, newPauseAfterLossMinutes
                 )) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
             }
@@ -507,6 +567,24 @@ class CryptoTailStrategyService(
                 wickHoldProfitScore = newWickHoldProfitScore,
                 wickUseBinanceVolume = newWickUseBinanceVolume,
                 wickVolumeSpikeRatio = newWickVolumeSpikeRatio,
+                wickMinTicksPerCandle = newWickMinTicksPerCandle,
+                wickMinRangeSigmaRatio = newWickMinRangeSigmaRatio,
+                wickClosePositionUpMax = newWickClosePositionUpMax,
+                wickClosePositionDownMin = newWickClosePositionDownMin,
+                maxHoldTp1DelaySeconds = newMaxHoldTp1DelaySeconds,
+                holdTp1PeakDrawdown = newHoldTp1PeakDrawdown,
+                maxEntrySpread = newMaxEntrySpread,
+                maxOrderbookAgeMs = newMaxOrderbookAgeMs,
+                maxPriceAgeMs = newMaxPriceAgeMs,
+                minExitBidDepthUsdc = newMinExitBidDepthUsdc,
+                maxExitSpread = newMaxExitSpread,
+                enableTrailingStop = newEnableTrailingStop,
+                trailingStartDelta = newTrailingStartDelta,
+                trailingDrawdown = newTrailingDrawdown,
+                trailingSellPct = newTrailingSellPct,
+                maxOrdersPerDay = newMaxOrdersPerDay,
+                maxConsecutiveLosses = newMaxConsecutiveLosses,
+                pauseAfterLossMinutes = newPauseAfterLossMinutes,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -1099,7 +1177,24 @@ class CryptoTailStrategyService(
         wickEntryBlockScore: Int,
         wickExitScore: Int,
         wickHoldProfitScore: Int,
-        wickVolumeSpikeRatio: BigDecimal
+        wickVolumeSpikeRatio: BigDecimal,
+        wickMinTicksPerCandle: Int,
+        wickMinRangeSigmaRatio: BigDecimal,
+        wickClosePositionUpMax: BigDecimal,
+        wickClosePositionDownMin: BigDecimal,
+        maxHoldTp1DelaySeconds: Int,
+        holdTp1PeakDrawdown: BigDecimal,
+        maxEntrySpread: BigDecimal,
+        maxOrderbookAgeMs: Int,
+        maxPriceAgeMs: Int,
+        minExitBidDepthUsdc: BigDecimal,
+        maxExitSpread: BigDecimal,
+        trailingStartDelta: BigDecimal,
+        trailingDrawdown: BigDecimal,
+        trailingSellPct: BigDecimal,
+        maxOrdersPerDay: Int?,
+        maxConsecutiveLosses: Int?,
+        pauseAfterLossMinutes: Int
     ): Boolean {
         val zero = BigDecimal.ZERO
         val one = BigDecimal.ONE
@@ -1124,6 +1219,24 @@ class CryptoTailStrategyService(
         if (wickExitScore !in 0..100) return false
         if (wickHoldProfitScore !in 0..100) return false
         if (wickVolumeSpikeRatio < one) return false
+        if (wickMinTicksPerCandle !in 1..60) return false
+        if (wickMinRangeSigmaRatio < zero) return false
+        if (wickClosePositionUpMax < zero || wickClosePositionUpMax > one) return false
+        if (wickClosePositionDownMin < zero || wickClosePositionDownMin > one) return false
+        if (wickClosePositionUpMax >= wickClosePositionDownMin) return false
+        if (maxHoldTp1DelaySeconds < 0) return false
+        if (holdTp1PeakDrawdown < zero || holdTp1PeakDrawdown > one) return false
+        if (maxEntrySpread < zero || maxEntrySpread > one) return false
+        if (maxOrderbookAgeMs < 500) return false
+        if (maxPriceAgeMs < 500) return false
+        if (minExitBidDepthUsdc < zero) return false
+        if (maxExitSpread < zero || maxExitSpread > one) return false
+        if (trailingStartDelta < zero || trailingStartDelta > one) return false
+        if (trailingDrawdown < zero || trailingDrawdown > one) return false
+        if (trailingSellPct <= zero || trailingSellPct > one) return false
+        if (maxOrdersPerDay != null && maxOrdersPerDay < 0) return false
+        if (maxConsecutiveLosses != null && maxConsecutiveLosses < 0) return false
+        if (pauseAfterLossMinutes < 0) return false
         return true
     }
 
@@ -1227,6 +1340,24 @@ class CryptoTailStrategyService(
             wickHoldProfitScore = e.wickHoldProfitScore,
             wickUseBinanceVolume = e.wickUseBinanceVolume,
             wickVolumeSpikeRatio = e.wickVolumeSpikeRatio.toPlainString(),
+            wickMinTicksPerCandle = e.wickMinTicksPerCandle,
+            wickMinRangeSigmaRatio = e.wickMinRangeSigmaRatio.toPlainString(),
+            wickClosePositionUpMax = e.wickClosePositionUpMax.toPlainString(),
+            wickClosePositionDownMin = e.wickClosePositionDownMin.toPlainString(),
+            maxHoldTp1DelaySeconds = e.maxHoldTp1DelaySeconds,
+            holdTp1PeakDrawdown = e.holdTp1PeakDrawdown.toPlainString(),
+            maxEntrySpread = e.maxEntrySpread.toPlainString(),
+            maxOrderbookAgeMs = e.maxOrderbookAgeMs,
+            maxPriceAgeMs = e.maxPriceAgeMs,
+            minExitBidDepthUsdc = e.minExitBidDepthUsdc.toPlainString(),
+            maxExitSpread = e.maxExitSpread.toPlainString(),
+            enableTrailingStop = e.enableTrailingStop,
+            trailingStartDelta = e.trailingStartDelta.toPlainString(),
+            trailingDrawdown = e.trailingDrawdown.toPlainString(),
+            trailingSellPct = e.trailingSellPct.toPlainString(),
+            maxOrdersPerDay = e.maxOrdersPerDay,
+            maxConsecutiveLosses = e.maxConsecutiveLosses,
+            pauseAfterLossMinutes = e.pauseAfterLossMinutes,
             lastTriggerAt = lastTriggerAt,
             totalRealizedPnl = totalPnl?.toPlainString(),
             settledCount = settledCount,
