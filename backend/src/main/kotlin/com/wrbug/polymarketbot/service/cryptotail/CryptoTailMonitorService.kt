@@ -8,6 +8,7 @@ import com.wrbug.polymarketbot.dto.CryptoTailMonitorPushData
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.repository.AccountRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
+import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
 import com.wrbug.polymarketbot.service.binance.BinanceKlineAutoSpreadService
 import com.wrbug.polymarketbot.service.binance.BinanceKlineService
 import com.wrbug.polymarketbot.service.common.WebSocketSubscriptionService
@@ -52,7 +53,9 @@ class CryptoTailMonitorService(
     private val binanceKlineService: BinanceKlineService,
     private val binanceKlineAutoSpreadService: BinanceKlineAutoSpreadService,
     private val webSocketSubscriptionService: WebSocketSubscriptionService,
-    private val periodPriceProvider: PeriodPriceProvider
+    private val periodPriceProvider: PeriodPriceProvider,
+    private val triggerRepository: CryptoTailStrategyTriggerRepository,
+    private val wickSignalService: CryptoTailWickSignalService
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailMonitorService::class.java)
@@ -745,6 +748,23 @@ class CryptoTailMonitorService(
                 currentDown >= strategy.minPrice && currentDown <= strategy.maxPrice
 
         val marketTitle = marketTitleByStrategyPeriod["${strategy.id!!}-$periodStartUnix"] ?: strategy.marketSlugPrefix
+        val openPositions = if (strategy.mode != com.wrbug.polymarketbot.enums.TradingMode.LEGACY_SPREAD) {
+            triggerRepository.findOpenForBracket(strategy.id!!, periodStartUnix)
+        } else emptyList()
+        val position = openPositions.firstOrNull()
+        val positionBid = when (position?.outcomeIndex) {
+            0 -> currentUp
+            1 -> currentDown
+            else -> null
+        }
+        val entryFill = position?.entryFillPrice
+        val remaining = position?.remainingSize
+        val floatingPnl = if (entryFill != null && positionBid != null && remaining != null) {
+            positionBid.subtract(entryFill).multiply(remaining).setScale(8, RoundingMode.HALF_UP)
+        } else null
+        val peakBid = position?.peakBid ?: positionBid
+        val drawdown = if (peakBid != null && positionBid != null) peakBid.subtract(positionBid).max(BigDecimal.ZERO) else null
+        val wick = wickSignalService.evaluate(strategy, position?.outcomeIndex ?: 0)
 
         return CryptoTailMonitorPushData(
             strategyId = strategy.id!!,
@@ -766,7 +786,25 @@ class CryptoTailMonitorService(
             inPriceRangeDown = inPriceRangeDown,
             triggered = priceData.triggered,
             triggerDirection = priceData.triggerDirection,
-            periodEnded = remainingSeconds <= 0
+            periodEnded = remainingSeconds <= 0,
+            positionId = position?.id,
+            positionOutcomeIndex = position?.outcomeIndex,
+            entryFillPrice = entryFill?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            currentBestBid = positionBid?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            floatingPnl = floatingPnl?.toPlainString(),
+            peakBid = peakBid?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            drawdownFromPeak = drawdown?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            stopLossLine = entryFill?.multiply(BigDecimal.ONE.subtract(strategy.maxLossPct))?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            takeProfitLine1 = entryFill?.add(strategy.takeProfitDelta1)?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            takeProfitLine2 = strategy.takeProfitBid2.setScale(4, RoundingMode.HALF_UP).toPlainString(),
+            exitReason = position?.exitConfirmReason,
+            wickUpperRatio = if (wick.available) wick.upperWickRatio.toPlainString() else null,
+            wickLowerRatio = if (wick.available) wick.lowerWickRatio.toPlainString() else null,
+            wickBodyRatio = if (wick.available) wick.bodyRatio.toPlainString() else null,
+            wickCloseVsMa = if (wick.available) wick.closeVsMa.toPlainString() else null,
+            wickReversalScore = if (wick.available) wick.reversalScore else null,
+            wickContinuationScore = if (wick.available) wick.continuationScore else null,
+            wickRejectionSide = if (wick.available) wick.rejectionSide else null
         )
     }
 

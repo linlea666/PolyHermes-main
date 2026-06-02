@@ -135,6 +135,90 @@ data class CryptoTailStrategy(
     @Column(name = "exit_order_type", nullable = false, length = 8)
     val exitOrderType: String = "FAK",
 
+    @Column(name = "min_safe_ratio", nullable = false, precision = 20, scale = 8)
+    val minSafeRatio: BigDecimal = BigDecimal("1.20"),
+
+    @Column(name = "min_safe_ratio_up", nullable = false, precision = 20, scale = 8)
+    val minSafeRatioUp: BigDecimal = BigDecimal("1.50"),
+
+    @Column(name = "min_safe_ratio_down", nullable = false, precision = 20, scale = 8)
+    val minSafeRatioDown: BigDecimal = BigDecimal("1.20"),
+
+    @Column(name = "high_price_threshold", nullable = false, precision = 20, scale = 8)
+    val highPriceThreshold: BigDecimal = BigDecimal("0.90"),
+
+    @Column(name = "high_price_min_pwin", nullable = false, precision = 20, scale = 8)
+    val highPriceMinPWin: BigDecimal = BigDecimal("0.97"),
+
+    @Column(name = "high_price_min_safe_ratio", nullable = false, precision = 20, scale = 8)
+    val highPriceMinSafeRatio: BigDecimal = BigDecimal("2.50"),
+
+    @Column(name = "enable_exit_manager", nullable = false)
+    val enableExitManager: Boolean = true,
+
+    @Column(name = "max_loss_pct", nullable = false, precision = 20, scale = 8)
+    val maxLossPct: BigDecimal = BigDecimal("0.20"),
+
+    @Column(name = "exit_pwin", nullable = false, precision = 20, scale = 8)
+    val exitPWin: BigDecimal = BigDecimal("0.70"),
+
+    @Column(name = "exit_safe_ratio", nullable = false, precision = 20, scale = 8)
+    val exitSafeRatio: BigDecimal = BigDecimal("0.80"),
+
+    @Column(name = "exit_confirm_ticks", nullable = false)
+    val exitConfirmTicks: Int = 2,
+
+    @Column(name = "take_profit_delta1", nullable = false, precision = 20, scale = 8)
+    val takeProfitDelta1: BigDecimal = BigDecimal("0.08"),
+
+    @Column(name = "take_profit_sell_pct1", nullable = false, precision = 20, scale = 8)
+    val takeProfitSellPct1: BigDecimal = BigDecimal("0.50"),
+
+    @Column(name = "take_profit_bid2", nullable = false, precision = 20, scale = 8)
+    val takeProfitBid2: BigDecimal = BigDecimal("0.93"),
+
+    @Column(name = "take_profit_sell_pct2", nullable = false, precision = 20, scale = 8)
+    val takeProfitSellPct2: BigDecimal = BigDecimal("0.80"),
+
+    @Column(name = "emergency_exit_on_model_flip", nullable = false)
+    val emergencyExitOnModelFlip: Boolean = true,
+
+    @Column(name = "emergency_exit_on_gap_flip", nullable = false)
+    val emergencyExitOnGapFlip: Boolean = true,
+
+    @Column(name = "exit_poll_interval_ms", nullable = false)
+    val exitPollIntervalMs: Int = 3000,
+
+    @Column(name = "enable_wick_filter", nullable = false)
+    val enableWickFilter: Boolean = true,
+
+    @Column(name = "wick_lookback_minutes", nullable = false)
+    val wickLookbackMinutes: Int = 2,
+
+    @Column(name = "wick_min_body_ratio", nullable = false, precision = 20, scale = 8)
+    val wickMinBodyRatio: BigDecimal = BigDecimal("0.20"),
+
+    @Column(name = "wick_rejection_ratio", nullable = false, precision = 20, scale = 8)
+    val wickRejectionRatio: BigDecimal = BigDecimal("0.55"),
+
+    @Column(name = "wick_ma_window", nullable = false)
+    val wickMaWindow: Int = 3,
+
+    @Column(name = "wick_entry_block_score", nullable = false)
+    val wickEntryBlockScore: Int = 70,
+
+    @Column(name = "wick_exit_score", nullable = false)
+    val wickExitScore: Int = 75,
+
+    @Column(name = "wick_hold_profit_score", nullable = false)
+    val wickHoldProfitScore: Int = 65,
+
+    @Column(name = "wick_use_binance_volume", nullable = false)
+    val wickUseBinanceVolume: Boolean = false,
+
+    @Column(name = "wick_volume_spike_ratio", nullable = false, precision = 20, scale = 8)
+    val wickVolumeSpikeRatio: BigDecimal = BigDecimal("1.50"),
+
     /**
      * 进场胜率阈值 pWin≥entryProb 才进场（0~1），默认 0.55。
      * 该闸仅作"方向倾向下限"防误判，真正的盈亏过滤交给扣费 EV 闸（entryEdge）。

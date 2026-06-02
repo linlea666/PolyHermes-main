@@ -40,6 +40,10 @@ class RtdsPeriodPriceProvider(
         return open to close
     }
 
+    override fun getRecentOhlc1m(marketSlugPrefix: String, minutes: Int, nowSeconds: Long): List<PeriodPriceProvider.Ohlc1m> {
+        return rtds.recentOhlc1m(marketSlugPrefix, minutes, nowSeconds)
+    }
+
     override fun getSigmaPerSqrtS(
         marketSlugPrefix: String,
         intervalSeconds: Int,

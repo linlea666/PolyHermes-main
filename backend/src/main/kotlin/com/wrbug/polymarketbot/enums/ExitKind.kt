@@ -13,6 +13,11 @@ enum class ExitKind {
     TP1,
     TP2,
     STOP,
+    HARD_STOP,
+    MODEL_INVALID,
+    MODEL_FLIP,
+    GAP_FLIP,
+    WICK_REVERSAL,
     FORCE,
     SETTLE
 }

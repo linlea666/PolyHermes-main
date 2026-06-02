@@ -579,6 +579,34 @@ export const apiService = {
       stopPrice?: string
       forceExitBeforeSettleSeconds?: number
       exitOrderType?: string
+      minSafeRatio?: string
+      minSafeRatioUp?: string
+      minSafeRatioDown?: string
+      highPriceThreshold?: string
+      highPriceMinPWin?: string
+      highPriceMinSafeRatio?: string
+      enableExitManager?: boolean
+      maxLossPct?: string
+      exitPWin?: string
+      exitSafeRatio?: string
+      exitConfirmTicks?: number
+      takeProfitDelta1?: string
+      takeProfitSellPct1?: string
+      takeProfitBid2?: string
+      takeProfitSellPct2?: string
+      emergencyExitOnModelFlip?: boolean
+      emergencyExitOnGapFlip?: boolean
+      exitPollIntervalMs?: number
+      enableWickFilter?: boolean
+      wickLookbackMinutes?: number
+      wickMinBodyRatio?: string
+      wickRejectionRatio?: string
+      wickMaWindow?: number
+      wickEntryBlockScore?: number
+      wickExitScore?: number
+      wickHoldProfitScore?: number
+      wickUseBinanceVolume?: boolean
+      wickVolumeSpikeRatio?: string
     }) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/create', data),
     update: (data: {
@@ -624,6 +652,34 @@ export const apiService = {
       stopPrice?: string
       forceExitBeforeSettleSeconds?: number
       exitOrderType?: string
+      minSafeRatio?: string
+      minSafeRatioUp?: string
+      minSafeRatioDown?: string
+      highPriceThreshold?: string
+      highPriceMinPWin?: string
+      highPriceMinSafeRatio?: string
+      enableExitManager?: boolean
+      maxLossPct?: string
+      exitPWin?: string
+      exitSafeRatio?: string
+      exitConfirmTicks?: number
+      takeProfitDelta1?: string
+      takeProfitSellPct1?: string
+      takeProfitBid2?: string
+      takeProfitSellPct2?: string
+      emergencyExitOnModelFlip?: boolean
+      emergencyExitOnGapFlip?: boolean
+      exitPollIntervalMs?: number
+      enableWickFilter?: boolean
+      wickLookbackMinutes?: number
+      wickMinBodyRatio?: string
+      wickRejectionRatio?: string
+      wickMaWindow?: number
+      wickEntryBlockScore?: number
+      wickExitScore?: number
+      wickHoldProfitScore?: number
+      wickUseBinanceVolume?: boolean
+      wickVolumeSpikeRatio?: string
     }) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/update', data),
     delete: (data: { strategyId: number }) =>

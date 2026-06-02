@@ -1528,6 +1528,34 @@ export interface CryptoTailStrategyDto {
   forceExitBeforeSettleSeconds?: number
   /** 退出订单类型: FAK / MAKER */
   exitOrderType?: string
+  minSafeRatio?: string
+  minSafeRatioUp?: string
+  minSafeRatioDown?: string
+  highPriceThreshold?: string
+  highPriceMinPWin?: string
+  highPriceMinSafeRatio?: string
+  enableExitManager?: boolean
+  maxLossPct?: string
+  exitPWin?: string
+  exitSafeRatio?: string
+  exitConfirmTicks?: number
+  takeProfitDelta1?: string
+  takeProfitSellPct1?: string
+  takeProfitBid2?: string
+  takeProfitSellPct2?: string
+  emergencyExitOnModelFlip?: boolean
+  emergencyExitOnGapFlip?: boolean
+  exitPollIntervalMs?: number
+  enableWickFilter?: boolean
+  wickLookbackMinutes?: number
+  wickMinBodyRatio?: string
+  wickRejectionRatio?: string
+  wickMaWindow?: number
+  wickEntryBlockScore?: number
+  wickExitScore?: number
+  wickHoldProfitScore?: number
+  wickUseBinanceVolume?: boolean
+  wickVolumeSpikeRatio?: string
   lastTriggerAt?: number
   /** 已实现总收益 USDC */
   totalRealizedPnl?: string
@@ -1935,6 +1963,24 @@ export interface CryptoTailMonitorPushData {
   triggerDirection?: string
   /** 周期是否已结束 */
   periodEnded: boolean
+  positionId?: number | null
+  positionOutcomeIndex?: number | null
+  entryFillPrice?: string | null
+  currentBestBid?: string | null
+  floatingPnl?: string | null
+  peakBid?: string | null
+  drawdownFromPeak?: string | null
+  stopLossLine?: string | null
+  takeProfitLine1?: string | null
+  takeProfitLine2?: string | null
+  exitReason?: string | null
+  wickUpperRatio?: string | null
+  wickLowerRatio?: string | null
+  wickBodyRatio?: string | null
+  wickCloseVsMa?: string | null
+  wickReversalScore?: number | null
+  wickContinuationScore?: number | null
+  wickRejectionSide?: string | null
 }
 
 export interface CryptoTailManualOrderResponse {

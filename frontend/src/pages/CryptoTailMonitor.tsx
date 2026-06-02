@@ -1302,6 +1302,47 @@ const CryptoTailMonitor: React.FC = () => {
             message={`${t('cryptoTailMonitor.priceRange')}: ${formatNumber(initData.minPrice, 2)} ~ ${formatNumber(initData.maxPrice, 2)} | ${t('cryptoTailMonitor.timeWindow')}: ${Math.floor(initData.windowStartSeconds / 60)}:${(initData.windowStartSeconds % 60).toString().padStart(2, '0')} ~ ${Math.floor(initData.windowEndSeconds / 60)}:${(initData.windowEndSeconds % 60).toString().padStart(2, '0')}`}
           />
 
+          {(pushData?.positionId || pushData?.wickReversalScore != null) && (
+            <Card title="持仓 / 影线状态" style={{ marginBottom: 16 }}>
+              <Row gutter={[16, 12]}>
+                <Col xs={12} md={6}>
+                  <Text type="secondary">当前持仓</Text>
+                  <div>{pushData?.positionId ? `#${pushData.positionId} ${pushData.positionOutcomeIndex === 0 ? 'UP' : 'DOWN'}` : '-'}</div>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Text type="secondary">买入价 / 可卖价</Text>
+                  <div>{pushData?.entryFillPrice ?? '-'} / {pushData?.currentBestBid ?? '-'}</div>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Text type="secondary">浮动盈亏</Text>
+                  <div style={{ color: Number(pushData?.floatingPnl ?? 0) < 0 ? '#cf1322' : '#3f8600' }}>
+                    {pushData?.floatingPnl != null ? formatUSDC(pushData.floatingPnl) : '-'}
+                  </div>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Text type="secondary">最高可卖 / 回撤</Text>
+                  <div>{pushData?.peakBid ?? '-'} / {pushData?.drawdownFromPeak ?? '-'}</div>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Text type="secondary">止损线</Text>
+                  <div>{pushData?.stopLossLine ?? '-'}</div>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Text type="secondary">止盈线</Text>
+                  <div>{pushData?.takeProfitLine1 ?? '-'} / {pushData?.takeProfitLine2 ?? '-'}</div>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Text type="secondary">退出原因</Text>
+                  <div>{pushData?.exitReason ?? '-'}</div>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Text type="secondary">影线评分</Text>
+                  <div>{pushData?.wickReversalScore ?? '-'} / {pushData?.wickContinuationScore ?? '-'} {pushData?.wickRejectionSide ?? ''}</div>
+                </Col>
+              </Row>
+            </Card>
+          )}
+
           {/* 价格分时图 */}
           <Card title={`${initData.marketSlugPrefix || 'BTC'} ${t('cryptoTailMonitor.chart.priceChart')}`}>
             <div

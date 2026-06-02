@@ -139,6 +139,34 @@ class CryptoTailStrategyService(
             val stopPrice = request.stopPrice?.toSafeBigDecimal() ?: BigDecimal("0.70")
             val forceExitBeforeSettleSeconds = request.forceExitBeforeSettleSeconds ?: 15
             val exitOrderType = (request.exitOrderType ?: "FAK").trim().uppercase()
+            val minSafeRatio = request.minSafeRatio?.toSafeBigDecimal() ?: BigDecimal("1.20")
+            val minSafeRatioUp = request.minSafeRatioUp?.toSafeBigDecimal() ?: BigDecimal("1.50")
+            val minSafeRatioDown = request.minSafeRatioDown?.toSafeBigDecimal() ?: BigDecimal("1.20")
+            val highPriceThreshold = request.highPriceThreshold?.toSafeBigDecimal() ?: BigDecimal("0.90")
+            val highPriceMinPWin = request.highPriceMinPWin?.toSafeBigDecimal() ?: BigDecimal("0.97")
+            val highPriceMinSafeRatio = request.highPriceMinSafeRatio?.toSafeBigDecimal() ?: BigDecimal("2.50")
+            val enableExitManager = request.enableExitManager ?: true
+            val maxLossPct = request.maxLossPct?.toSafeBigDecimal() ?: BigDecimal("0.20")
+            val exitPWin = request.exitPWin?.toSafeBigDecimal() ?: BigDecimal("0.70")
+            val exitSafeRatio = request.exitSafeRatio?.toSafeBigDecimal() ?: BigDecimal("0.80")
+            val exitConfirmTicks = request.exitConfirmTicks ?: 2
+            val takeProfitDelta1 = request.takeProfitDelta1?.toSafeBigDecimal() ?: BigDecimal("0.08")
+            val takeProfitSellPct1 = request.takeProfitSellPct1?.toSafeBigDecimal() ?: BigDecimal("0.50")
+            val takeProfitBid2 = request.takeProfitBid2?.toSafeBigDecimal() ?: BigDecimal("0.93")
+            val takeProfitSellPct2 = request.takeProfitSellPct2?.toSafeBigDecimal() ?: BigDecimal("0.80")
+            val emergencyExitOnModelFlip = request.emergencyExitOnModelFlip ?: true
+            val emergencyExitOnGapFlip = request.emergencyExitOnGapFlip ?: true
+            val exitPollIntervalMs = request.exitPollIntervalMs ?: 3000
+            val enableWickFilter = request.enableWickFilter ?: true
+            val wickLookbackMinutes = request.wickLookbackMinutes ?: 2
+            val wickMinBodyRatio = request.wickMinBodyRatio?.toSafeBigDecimal() ?: BigDecimal("0.20")
+            val wickRejectionRatio = request.wickRejectionRatio?.toSafeBigDecimal() ?: BigDecimal("0.55")
+            val wickMaWindow = request.wickMaWindow ?: 3
+            val wickEntryBlockScore = request.wickEntryBlockScore ?: 70
+            val wickExitScore = request.wickExitScore ?: 75
+            val wickHoldProfitScore = request.wickHoldProfitScore ?: 65
+            val wickUseBinanceVolume = request.wickUseBinanceVolume ?: false
+            val wickVolumeSpikeRatio = request.wickVolumeSpikeRatio?.toSafeBigDecimal() ?: BigDecimal("1.50")
 
             if (resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD &&
                 !isBarrierParamsValid(entryProb, entryEdge, maxEntryPrice, costBuffer, barrierMinMarketProb, sigmaScale, dailyLossLimitUsdc, maxConcurrentPositions, takerFeeBps, makerRebateBps, gasCostUsdc, entryOrderType, entryFakSlippage, makerPriceOffset, makerCancelBeforeSettleSeconds, interval, probeAmountUsdc, calibrationMinSamples, calibrationMaxError, sigmaMethod, ewmaLambda, kellyFraction)) {
@@ -148,6 +176,15 @@ class CryptoTailStrategyService(
                 !isBracketParamsValid(bracketEntryProb, bracketEntryEdge, bracketMaxEntryPrice,
                     tp1Price, tp1Ratio, tp1HoldPwin, tp2Price, tp2Ratio, tp2HoldPwin,
                     holdToSettlePwin, holdToSettleSeconds, stopProb, stopPrice, forceExitBeforeSettleSeconds, exitOrderType, entryFakSlippage)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
+            }
+            if (resolvedMode != com.wrbug.polymarketbot.enums.TradingMode.LEGACY_SPREAD &&
+                !isProbabilityRiskParamsValid(
+                    minSafeRatio, minSafeRatioUp, minSafeRatioDown, highPriceThreshold, highPriceMinPWin, highPriceMinSafeRatio,
+                    maxLossPct, exitPWin, exitSafeRatio, exitConfirmTicks, takeProfitDelta1, takeProfitSellPct1, takeProfitBid2,
+                    takeProfitSellPct2, exitPollIntervalMs, wickLookbackMinutes, wickMinBodyRatio, wickRejectionRatio, wickMaWindow,
+                    wickEntryBlockScore, wickExitScore, wickHoldProfitScore, wickVolumeSpikeRatio
+                )) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
             }
 
@@ -207,7 +244,35 @@ class CryptoTailStrategyService(
                 stopProb = stopProb,
                 stopPrice = stopPrice,
                 forceExitBeforeSettleSeconds = forceExitBeforeSettleSeconds,
-                exitOrderType = exitOrderType
+                exitOrderType = exitOrderType,
+                minSafeRatio = minSafeRatio,
+                minSafeRatioUp = minSafeRatioUp,
+                minSafeRatioDown = minSafeRatioDown,
+                highPriceThreshold = highPriceThreshold,
+                highPriceMinPWin = highPriceMinPWin,
+                highPriceMinSafeRatio = highPriceMinSafeRatio,
+                enableExitManager = enableExitManager,
+                maxLossPct = maxLossPct,
+                exitPWin = exitPWin,
+                exitSafeRatio = exitSafeRatio,
+                exitConfirmTicks = exitConfirmTicks,
+                takeProfitDelta1 = takeProfitDelta1,
+                takeProfitSellPct1 = takeProfitSellPct1,
+                takeProfitBid2 = takeProfitBid2,
+                takeProfitSellPct2 = takeProfitSellPct2,
+                emergencyExitOnModelFlip = emergencyExitOnModelFlip,
+                emergencyExitOnGapFlip = emergencyExitOnGapFlip,
+                exitPollIntervalMs = exitPollIntervalMs,
+                enableWickFilter = enableWickFilter,
+                wickLookbackMinutes = wickLookbackMinutes,
+                wickMinBodyRatio = wickMinBodyRatio,
+                wickRejectionRatio = wickRejectionRatio,
+                wickMaWindow = wickMaWindow,
+                wickEntryBlockScore = wickEntryBlockScore,
+                wickExitScore = wickExitScore,
+                wickHoldProfitScore = wickHoldProfitScore,
+                wickUseBinanceVolume = wickUseBinanceVolume,
+                wickVolumeSpikeRatio = wickVolumeSpikeRatio
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -311,6 +376,34 @@ class CryptoTailStrategyService(
             val newStopPrice = request.stopPrice?.toSafeBigDecimal() ?: existing.stopPrice
             val newForceExitBeforeSettleSeconds = request.forceExitBeforeSettleSeconds ?: existing.forceExitBeforeSettleSeconds
             val newExitOrderType = (request.exitOrderType?.trim()?.uppercase()) ?: existing.exitOrderType
+            val newMinSafeRatio = request.minSafeRatio?.toSafeBigDecimal() ?: existing.minSafeRatio
+            val newMinSafeRatioUp = request.minSafeRatioUp?.toSafeBigDecimal() ?: existing.minSafeRatioUp
+            val newMinSafeRatioDown = request.minSafeRatioDown?.toSafeBigDecimal() ?: existing.minSafeRatioDown
+            val newHighPriceThreshold = request.highPriceThreshold?.toSafeBigDecimal() ?: existing.highPriceThreshold
+            val newHighPriceMinPWin = request.highPriceMinPWin?.toSafeBigDecimal() ?: existing.highPriceMinPWin
+            val newHighPriceMinSafeRatio = request.highPriceMinSafeRatio?.toSafeBigDecimal() ?: existing.highPriceMinSafeRatio
+            val newEnableExitManager = request.enableExitManager ?: existing.enableExitManager
+            val newMaxLossPct = request.maxLossPct?.toSafeBigDecimal() ?: existing.maxLossPct
+            val newExitPWin = request.exitPWin?.toSafeBigDecimal() ?: existing.exitPWin
+            val newExitSafeRatio = request.exitSafeRatio?.toSafeBigDecimal() ?: existing.exitSafeRatio
+            val newExitConfirmTicks = request.exitConfirmTicks ?: existing.exitConfirmTicks
+            val newTakeProfitDelta1 = request.takeProfitDelta1?.toSafeBigDecimal() ?: existing.takeProfitDelta1
+            val newTakeProfitSellPct1 = request.takeProfitSellPct1?.toSafeBigDecimal() ?: existing.takeProfitSellPct1
+            val newTakeProfitBid2 = request.takeProfitBid2?.toSafeBigDecimal() ?: existing.takeProfitBid2
+            val newTakeProfitSellPct2 = request.takeProfitSellPct2?.toSafeBigDecimal() ?: existing.takeProfitSellPct2
+            val newEmergencyExitOnModelFlip = request.emergencyExitOnModelFlip ?: existing.emergencyExitOnModelFlip
+            val newEmergencyExitOnGapFlip = request.emergencyExitOnGapFlip ?: existing.emergencyExitOnGapFlip
+            val newExitPollIntervalMs = request.exitPollIntervalMs ?: existing.exitPollIntervalMs
+            val newEnableWickFilter = request.enableWickFilter ?: existing.enableWickFilter
+            val newWickLookbackMinutes = request.wickLookbackMinutes ?: existing.wickLookbackMinutes
+            val newWickMinBodyRatio = request.wickMinBodyRatio?.toSafeBigDecimal() ?: existing.wickMinBodyRatio
+            val newWickRejectionRatio = request.wickRejectionRatio?.toSafeBigDecimal() ?: existing.wickRejectionRatio
+            val newWickMaWindow = request.wickMaWindow ?: existing.wickMaWindow
+            val newWickEntryBlockScore = request.wickEntryBlockScore ?: existing.wickEntryBlockScore
+            val newWickExitScore = request.wickExitScore ?: existing.wickExitScore
+            val newWickHoldProfitScore = request.wickHoldProfitScore ?: existing.wickHoldProfitScore
+            val newWickUseBinanceVolume = request.wickUseBinanceVolume ?: existing.wickUseBinanceVolume
+            val newWickVolumeSpikeRatio = request.wickVolumeSpikeRatio?.toSafeBigDecimal() ?: existing.wickVolumeSpikeRatio
 
             if (newMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD &&
                 !isBarrierParamsValid(newEntryProb, newEntryEdge, newMaxEntryPrice, newCostBuffer, newBarrierMinMarketProb, newSigmaScale, newDailyLossLimitUsdc, newMaxConcurrentPositions, newTakerFeeBps, newMakerRebateBps, newGasCostUsdc, newEntryOrderType, newEntryFakSlippage, newMakerPriceOffset, newMakerCancelBeforeSettleSeconds, existing.intervalSeconds, newProbeAmountUsdc, newCalibrationMinSamples, newCalibrationMaxError, newSigmaMethod, newEwmaLambda, newKellyFraction)) {
@@ -320,6 +413,16 @@ class CryptoTailStrategyService(
                 !isBracketParamsValid(newBracketEntryProb, newBracketEntryEdge, newBracketMaxEntryPrice,
                     newTp1Price, newTp1Ratio, newTp1HoldPwin, newTp2Price, newTp2Ratio, newTp2HoldPwin,
                     newHoldToSettlePwin, newHoldToSettleSeconds, newStopProb, newStopPrice, newForceExitBeforeSettleSeconds, newExitOrderType, newEntryFakSlippage)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
+            }
+            if (newMode != com.wrbug.polymarketbot.enums.TradingMode.LEGACY_SPREAD &&
+                !isProbabilityRiskParamsValid(
+                    newMinSafeRatio, newMinSafeRatioUp, newMinSafeRatioDown, newHighPriceThreshold, newHighPriceMinPWin, newHighPriceMinSafeRatio,
+                    newMaxLossPct, newExitPWin, newExitSafeRatio, newExitConfirmTicks, newTakeProfitDelta1, newTakeProfitSellPct1,
+                    newTakeProfitBid2, newTakeProfitSellPct2, newExitPollIntervalMs, newWickLookbackMinutes, newWickMinBodyRatio,
+                    newWickRejectionRatio, newWickMaWindow, newWickEntryBlockScore, newWickExitScore, newWickHoldProfitScore,
+                    newWickVolumeSpikeRatio
+                )) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
             }
 
@@ -376,6 +479,34 @@ class CryptoTailStrategyService(
                 stopPrice = newStopPrice,
                 forceExitBeforeSettleSeconds = newForceExitBeforeSettleSeconds,
                 exitOrderType = newExitOrderType,
+                minSafeRatio = newMinSafeRatio,
+                minSafeRatioUp = newMinSafeRatioUp,
+                minSafeRatioDown = newMinSafeRatioDown,
+                highPriceThreshold = newHighPriceThreshold,
+                highPriceMinPWin = newHighPriceMinPWin,
+                highPriceMinSafeRatio = newHighPriceMinSafeRatio,
+                enableExitManager = newEnableExitManager,
+                maxLossPct = newMaxLossPct,
+                exitPWin = newExitPWin,
+                exitSafeRatio = newExitSafeRatio,
+                exitConfirmTicks = newExitConfirmTicks,
+                takeProfitDelta1 = newTakeProfitDelta1,
+                takeProfitSellPct1 = newTakeProfitSellPct1,
+                takeProfitBid2 = newTakeProfitBid2,
+                takeProfitSellPct2 = newTakeProfitSellPct2,
+                emergencyExitOnModelFlip = newEmergencyExitOnModelFlip,
+                emergencyExitOnGapFlip = newEmergencyExitOnGapFlip,
+                exitPollIntervalMs = newExitPollIntervalMs,
+                enableWickFilter = newEnableWickFilter,
+                wickLookbackMinutes = newWickLookbackMinutes,
+                wickMinBodyRatio = newWickMinBodyRatio,
+                wickRejectionRatio = newWickRejectionRatio,
+                wickMaWindow = newWickMaWindow,
+                wickEntryBlockScore = newWickEntryBlockScore,
+                wickExitScore = newWickExitScore,
+                wickHoldProfitScore = newWickHoldProfitScore,
+                wickUseBinanceVolume = newWickUseBinanceVolume,
+                wickVolumeSpikeRatio = newWickVolumeSpikeRatio,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -527,8 +658,8 @@ class CryptoTailStrategyService(
     fun getStrategy(strategyId: Long): CryptoTailStrategy? = strategyRepository.findById(strategyId).orElse(null)
 
     /**
-     * 阶梯模式退出明细列表（按 trigger 维度），用于前端展开行展示分档退出过程。
-     * 任意 trigger 都可调用，非 BRACKET trigger 返回空列表。
+     * 概率模式退出明细列表（按 trigger 维度），用于前端展开行展示分档/止损退出过程。
+     * 任意 trigger 都可调用，未接入退出管理的 trigger 返回空列表。
      */
     fun getStrategyExits(request: CryptoTailStrategyExitListRequest): Result<CryptoTailStrategyExitListResponse> {
         return try {
@@ -944,6 +1075,58 @@ class CryptoTailStrategyService(
         return true
     }
 
+    /** 新增概率模式风控参数校验：覆盖入场安全比、高价保护、退出管理、影线评分。 */
+    private fun isProbabilityRiskParamsValid(
+        minSafeRatio: BigDecimal,
+        minSafeRatioUp: BigDecimal,
+        minSafeRatioDown: BigDecimal,
+        highPriceThreshold: BigDecimal,
+        highPriceMinPWin: BigDecimal,
+        highPriceMinSafeRatio: BigDecimal,
+        maxLossPct: BigDecimal,
+        exitPWin: BigDecimal,
+        exitSafeRatio: BigDecimal,
+        exitConfirmTicks: Int,
+        takeProfitDelta1: BigDecimal,
+        takeProfitSellPct1: BigDecimal,
+        takeProfitBid2: BigDecimal,
+        takeProfitSellPct2: BigDecimal,
+        exitPollIntervalMs: Int,
+        wickLookbackMinutes: Int,
+        wickMinBodyRatio: BigDecimal,
+        wickRejectionRatio: BigDecimal,
+        wickMaWindow: Int,
+        wickEntryBlockScore: Int,
+        wickExitScore: Int,
+        wickHoldProfitScore: Int,
+        wickVolumeSpikeRatio: BigDecimal
+    ): Boolean {
+        val zero = BigDecimal.ZERO
+        val one = BigDecimal.ONE
+        if (minSafeRatio < zero || minSafeRatioUp < zero || minSafeRatioDown < zero) return false
+        if (highPriceThreshold <= zero || highPriceThreshold > one) return false
+        if (highPriceMinPWin <= zero || highPriceMinPWin > one) return false
+        if (highPriceMinSafeRatio < zero) return false
+        if (maxLossPct <= zero || maxLossPct >= one) return false
+        if (exitPWin < zero || exitPWin > one) return false
+        if (exitSafeRatio < zero) return false
+        if (exitConfirmTicks < 1) return false
+        if (takeProfitDelta1 < zero || takeProfitDelta1 > one) return false
+        if (takeProfitSellPct1 <= zero || takeProfitSellPct1 > one) return false
+        if (takeProfitBid2 <= zero || takeProfitBid2 > one) return false
+        if (takeProfitSellPct2 <= zero || takeProfitSellPct2 > one) return false
+        if (exitPollIntervalMs < 500) return false
+        if (wickLookbackMinutes !in 1..10) return false
+        if (wickMinBodyRatio < zero || wickMinBodyRatio > one) return false
+        if (wickRejectionRatio < zero || wickRejectionRatio > one) return false
+        if (wickMaWindow !in 1..20) return false
+        if (wickEntryBlockScore !in 0..100) return false
+        if (wickExitScore !in 0..100) return false
+        if (wickHoldProfitScore !in 0..100) return false
+        if (wickVolumeSpikeRatio < one) return false
+        return true
+    }
+
     private fun generateStrategyName(marketSlugPrefix: String): String {
         val suffix = Instant.now().atZone(ZoneId.systemDefault())
             .format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
@@ -1016,6 +1199,34 @@ class CryptoTailStrategyService(
             stopPrice = e.stopPrice.toPlainString(),
             forceExitBeforeSettleSeconds = e.forceExitBeforeSettleSeconds,
             exitOrderType = e.exitOrderType,
+            minSafeRatio = e.minSafeRatio.toPlainString(),
+            minSafeRatioUp = e.minSafeRatioUp.toPlainString(),
+            minSafeRatioDown = e.minSafeRatioDown.toPlainString(),
+            highPriceThreshold = e.highPriceThreshold.toPlainString(),
+            highPriceMinPWin = e.highPriceMinPWin.toPlainString(),
+            highPriceMinSafeRatio = e.highPriceMinSafeRatio.toPlainString(),
+            enableExitManager = e.enableExitManager,
+            maxLossPct = e.maxLossPct.toPlainString(),
+            exitPWin = e.exitPWin.toPlainString(),
+            exitSafeRatio = e.exitSafeRatio.toPlainString(),
+            exitConfirmTicks = e.exitConfirmTicks,
+            takeProfitDelta1 = e.takeProfitDelta1.toPlainString(),
+            takeProfitSellPct1 = e.takeProfitSellPct1.toPlainString(),
+            takeProfitBid2 = e.takeProfitBid2.toPlainString(),
+            takeProfitSellPct2 = e.takeProfitSellPct2.toPlainString(),
+            emergencyExitOnModelFlip = e.emergencyExitOnModelFlip,
+            emergencyExitOnGapFlip = e.emergencyExitOnGapFlip,
+            exitPollIntervalMs = e.exitPollIntervalMs,
+            enableWickFilter = e.enableWickFilter,
+            wickLookbackMinutes = e.wickLookbackMinutes,
+            wickMinBodyRatio = e.wickMinBodyRatio.toPlainString(),
+            wickRejectionRatio = e.wickRejectionRatio.toPlainString(),
+            wickMaWindow = e.wickMaWindow,
+            wickEntryBlockScore = e.wickEntryBlockScore,
+            wickExitScore = e.wickExitScore,
+            wickHoldProfitScore = e.wickHoldProfitScore,
+            wickUseBinanceVolume = e.wickUseBinanceVolume,
+            wickVolumeSpikeRatio = e.wickVolumeSpikeRatio.toPlainString(),
             lastTriggerAt = lastTriggerAt,
             totalRealizedPnl = totalPnl?.toPlainString(),
             settledCount = settledCount,

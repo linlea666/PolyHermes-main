@@ -211,12 +211,18 @@ class CryptoTailExitOrderReconciler(
             settledAt = System.currentTimeMillis()
         )
         exitRepository.save(updated)
+        val resultType = when {
+            status == "success" && (exit.exitKind == "TP1" || exit.exitKind == "TP2") -> "TAKE_PROFIT_RESULT"
+            status == "success" && exit.exitKind.contains("STOP") -> "STOP_LOSS_RESULT"
+            status == "success" -> "EXIT_RESULT"
+            else -> "EXIT_FAILED"
+        }
         decisionRecorder.record(
             CryptoTailDecisionEvent(
                 strategyId = exit.strategyId,
                 periodStartUnix = periodStartUnix,
                 correlationId = "${exit.strategyId}-$periodStartUnix-bracket-exit-${exit.id}",
-                eventType = if (status == "success") "BRACKET_EXIT_FILLED" else "BRACKET_EXIT_CANCELED",
+                eventType = resultType,
                 gateName = exit.exitKind,
                 passed = status == "success",
                 reason = reason ?: "exitId=${exit.id} status=$status",
@@ -262,6 +268,26 @@ class CryptoTailExitOrderReconciler(
         val curRemaining = trigger.remainingSize ?: BigDecimal.ZERO
         if (newRemaining.compareTo(curRemaining) != 0 || newStatus != trigger.exitStatus) {
             triggerRepository.save(trigger.copy(remainingSize = newRemaining, exitStatus = newStatus))
+            if (newStatus == ExitStatus.FULLY_EXITED.name) {
+                decisionRecorder.record(
+                    CryptoTailDecisionEvent(
+                        strategyId = trigger.strategyId,
+                        periodStartUnix = trigger.periodStartUnix,
+                        correlationId = "${trigger.strategyId}-${trigger.periodStartUnix}-position-${trigger.id}",
+                        eventType = "POSITION_CLOSED",
+                        gateName = null,
+                        passed = true,
+                        reason = "仓位已全部退出",
+                        payloadJson = mapOf(
+                            "positionId" to trigger.id,
+                            "remainingSize" to newRemaining.toPlainString(),
+                            "totalFilledSize" to totalFilled.toPlainString()
+                        ).toJson(),
+                        outcomeIndex = trigger.outcomeIndex,
+                        triggerId = trigger.id
+                    )
+                )
+            }
             logger.info(
                 "阶梯持仓状态同步: triggerId=$triggerId remaining=${newRemaining.toPlainString()} " +
                     "exitStatus=$newStatus (totalFilled=${totalFilled.toPlainString()}, rawRemaining=${rawRemaining.toPlainString()}, dust=$isDust)"

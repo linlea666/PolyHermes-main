@@ -107,5 +107,23 @@ data class CryptoTailMonitorPushData(
     /** 触发方向: UP, DOWN, null */
     val triggerDirection: String? = null,
     /** 周期是否已结束 */
-    val periodEnded: Boolean = false
+    val periodEnded: Boolean = false,
+    val positionId: Long? = null,
+    val positionOutcomeIndex: Int? = null,
+    val entryFillPrice: String? = null,
+    val currentBestBid: String? = null,
+    val floatingPnl: String? = null,
+    val peakBid: String? = null,
+    val drawdownFromPeak: String? = null,
+    val stopLossLine: String? = null,
+    val takeProfitLine1: String? = null,
+    val takeProfitLine2: String? = null,
+    val exitReason: String? = null,
+    val wickUpperRatio: String? = null,
+    val wickLowerRatio: String? = null,
+    val wickBodyRatio: String? = null,
+    val wickCloseVsMa: String? = null,
+    val wickReversalScore: Int? = null,
+    val wickContinuationScore: Int? = null,
+    val wickRejectionSide: String? = null
 )

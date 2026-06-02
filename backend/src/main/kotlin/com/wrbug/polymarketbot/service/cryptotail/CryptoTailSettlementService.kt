@@ -127,9 +127,10 @@ class CryptoTailSettlementService(
     private suspend fun settleOne(trigger: CryptoTailStrategyTrigger): Boolean {
         if (trigger.resolved) return false
         val strategy = strategyRepository.findById(trigger.strategyId).orElse(null) ?: return false
-        // 阶梯模式独立结算路径：FULLY_EXITED 直接根据 exits 求和；
-        // 部分平仓 / HELD_TO_SETTLE 等到周期结束后取 condition + exits 合并结算
-        if (trigger.mode == TradingMode.BRACKET_DYNAMIC) {
+        // 概率模式若进入统一退出状态机，则走 exits + 链上残余合并结算；
+        // 未接入退出的历史 BARRIER 单保持原结算路径。
+        val hasExitRows = exitRepository.findByTriggerIdOrderByCreatedAtAsc(trigger.id ?: 0L).isNotEmpty()
+        if (trigger.mode != TradingMode.LEGACY_SPREAD && (trigger.exitStatus != ExitStatus.NONE.name || hasExitRows)) {
             return settleBracketTrigger(trigger, strategy)
         }
         val conditionId = resolveConditionId(strategy, trigger) ?: return false
@@ -414,7 +415,7 @@ class CryptoTailSettlementService(
         entryFeeAdj: BigDecimal
     ) {
         val payload = mutableMapOf<String, Any?>(
-            "mode" to "BRACKET_DYNAMIC",
+            "mode" to trigger.mode.name,
             "won" to (won?.toString() ?: "n/a"),
             "winnerOutcomeIndex" to (trigger.winnerOutcomeIndex?.toString() ?: ""),
             "outcomeIndex" to trigger.outcomeIndex,
@@ -453,6 +454,20 @@ class CryptoTailSettlementService(
                     won == false -> "阶梯结算失败"
                     else -> "阶梯结算(全部盘口退出)"
                 },
+                payloadJson = payload.toJson(),
+                outcomeIndex = trigger.outcomeIndex,
+                triggerId = trigger.id
+            )
+        )
+        decisionRecorder.record(
+            CryptoTailDecisionEvent(
+                strategyId = trigger.strategyId,
+                periodStartUnix = trigger.periodStartUnix,
+                correlationId = "${trigger.strategyId}-${trigger.periodStartUnix}",
+                eventType = "POST_EXIT_SETTLED",
+                gateName = null,
+                passed = won,
+                reason = "退出后结算完成",
                 payloadJson = payload.toJson(),
                 outcomeIndex = trigger.outcomeIndex,
                 triggerId = trigger.id

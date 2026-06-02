@@ -23,7 +23,7 @@ import java.math.RoundingMode
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 概率阶梯止盈模式（BRACKET_DYNAMIC）退出决策与执行服务。
+ * 加密尾盘概率模式退出决策与执行服务。
  *
  * 设计：
  *  1) 由 [CryptoTailOrderbookWsService.onBestBid] 在每次盘口变化时驱动；
@@ -54,7 +54,8 @@ class CryptoTailBracketExitService(
     private val orderSigningService: OrderSigningService,
     private val accountContextFactory: CryptoTailAccountContextFactory,
     private val periodPriceProvider: PeriodPriceProvider,
-    private val decisionRecorder: CryptoTailDecisionRecorder
+    private val decisionRecorder: CryptoTailDecisionRecorder,
+    private val wickSignalService: CryptoTailWickSignalService
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailBracketExitService::class.java)
@@ -86,9 +87,9 @@ class CryptoTailBracketExitService(
 
     /**
      * WS 高层入口：当某 outcome 的 bestBid 变化时，扫描该策略当前周期下持仓中、且 outcomeIndex 匹配的
-     * BRACKET trigger 并评估退出。封装了 trigger 查询，调用方不必关心数据访问。
+     * 概率模式 trigger 并评估退出。封装了 trigger 查询，调用方不必关心数据访问。
      *
-     * @param strategy 策略（必须 mode == BRACKET_DYNAMIC，调用方应预先过滤但内部也会校验）
+     * @param strategy 策略（LEGACY_SPREAD 不接入退出管理，内部也会校验）
      * @param periodStartUnix 当前周期起点
      * @param outcomeIndex 此 bestBid 对应的 outcome（持仓方向匹配才评估）
      * @param bestBid 当前 outcome 的最优买价
@@ -101,12 +102,12 @@ class CryptoTailBracketExitService(
         bestBid: BigDecimal,
         nowSeconds: Long
     ) {
-        if (strategy.mode != TradingMode.BRACKET_DYNAMIC) return
+        if (strategy.mode == TradingMode.LEGACY_SPREAD || !strategy.enableExitManager) return
         val strategyId = strategy.id ?: return
         val openTriggers = try {
             triggerRepository.findOpenForBracket(strategyId, periodStartUnix)
         } catch (e: Exception) {
-            logger.warn("查询 BRACKET 持仓 trigger 失败 strategyId=$strategyId period=$periodStartUnix, ${e.message}")
+            logger.warn("查询概率模式持仓 trigger 失败 strategyId=$strategyId period=$periodStartUnix, ${e.message}")
             return
         }
         if (openTriggers.isEmpty()) return
@@ -119,7 +120,7 @@ class CryptoTailBracketExitService(
 
     /**
      * 主入口：评估退出条件并在必要时挂卖单。
-     * 调用方需保证 trigger.exitStatus ∈ {OPEN, PARTIAL_EXIT}、trigger.mode == BRACKET_DYNAMIC。
+     * 调用方需保证 trigger.exitStatus ∈ {OPEN, PARTIAL_EXIT}、trigger.mode != LEGACY_SPREAD。
      * 失败/异常不向调用方抛出，仅记录日志，避免污染热路径。
      *
      * @param trigger 当前持仓触发记录（必须包含 tokenId / remainingSize）
@@ -133,7 +134,7 @@ class CryptoTailBracketExitService(
         bestBid: BigDecimal,
         nowSeconds: Long
     ) {
-        if (strategy.mode != TradingMode.BRACKET_DYNAMIC) return
+        if (strategy.mode == TradingMode.LEGACY_SPREAD || !strategy.enableExitManager) return
         val triggerId = trigger.id ?: return
         val tokenId = trigger.tokenId
         if (tokenId.isNullOrBlank()) {
@@ -153,41 +154,34 @@ class CryptoTailBracketExitService(
             // （配合 Reconciler.syncTriggerAfterExitFinalized 与 SettlementService.BRACKET_DUST_THRESHOLD 三处对齐）
             if (freshRemaining <= DUST_THRESHOLD) return
             if (fresh.exitStatus != ExitStatus.OPEN.name && fresh.exitStatus != ExitStatus.PARTIAL_EXIT.name) return
+            val nowMs = System.currentTimeMillis()
+            val intervalMs = strategy.exitPollIntervalMs.coerceAtLeast(500).toLong()
+            if (fresh.lastExitCheckAt != null && nowMs - fresh.lastExitCheckAt < intervalMs) return
 
             // 计算 pWin（与进场同源；持仓方向与模型方向不同时取 1-pWin）
-            val pwinHolding: BigDecimal? = computeHoldingPwin(strategy, fresh, nowSeconds)
+            val holding = computeHoldingState(strategy, fresh, nowSeconds)
+            val pwinHolding: BigDecimal? = holding?.pWinHolding
             val remainingSeconds = (fresh.periodStartUnix + strategy.intervalSeconds - nowSeconds).toInt()
+            val peakBid = (fresh.peakBid ?: bestBid).max(bestBid)
+            val checked = triggerRepository.save(
+                fresh.copy(
+                    peakBid = peakBid,
+                    lastExitCheckAt = nowMs
+                )
+            )
 
             val decision = decideExit(
                 strategy = strategy,
-                trigger = fresh,
-                pwinHolding = pwinHolding,
+                trigger = checked,
+                holding = holding,
                 bestBid = bestBid,
                 remainingSeconds = remainingSeconds
             )
 
-            // 决策日志（每 trigger×period×kind 去重一次/10 分钟，避免热路径每 tick 记一条 HOLD）
-            // V53 修正：dedupe key 加 periodStartUnix，避免长周期（如 1h）跨周期同 kind 决策被误抑制
-            val dedupeKey = "$triggerId-${fresh.periodStartUnix}-${decision.kind}"
-            if (decisionLoggedCache.getIfPresent(dedupeKey) == null) {
-                decisionLoggedCache.put(dedupeKey, true)
-                recordEvent(
-                    fresh,
-                    eventType = "BRACKET_EXIT_DECIDED",
-                    gateName = decision.kind?.name,
-                    passed = decision.kind != null,
-                    reason = decision.reason,
-                    pwinHolding = pwinHolding,
-                    bestBid = bestBid,
-                    remainingSeconds = remainingSeconds,
-                    extra = mapOf(
-                        "exitKind" to (decision.kind?.name ?: ""),
-                        "ratio" to decision.ratio.toPlainString()
-                    )
-                )
-            }
+            recordExitCheck(checked, strategy, holding, bestBid, remainingSeconds, decision)
 
             if (decision.kind == null || decision.ratio <= BigDecimal.ZERO) return  // HOLD
+            if (!applyExitConfirmation(checked, strategy, decision, nowMs)) return
 
             // V53 失败抑制窗：同 (triggerId, exitKind) 60s 内 placeExitOrder 失败过则跳过本次评估，避免死循环重试
             if (failBackoffCache.getIfPresent(failBackoffKey(triggerId, decision.kind)) != null) {
@@ -212,7 +206,7 @@ class CryptoTailBracketExitService(
 
             placeExitOrder(
                 strategy = strategy,
-                trigger = fresh,
+                trigger = checked,
                 kind = decision.kind,
                 targetSize = targetSize,
                 pwinHolding = pwinHolding,
@@ -227,17 +221,19 @@ class CryptoTailBracketExitService(
         }
     }
 
-    /**
-     * 复用 BarrierProbability 计算"当前持仓方向的胜率"。
-     * BarrierProbability 总按 gap 符号决定 model.side；
-     * 若 model.side != trigger.outcomeIndex（标的反向波动），则当前持仓胜率 = 1 - r.pWin。
-     * 价源未就绪 / σ 不可用 → 返回 null（决策层用兜底逻辑）。
-     */
-    private fun computeHoldingPwin(
+    private data class HoldingState(
+        val gap: BigDecimal,
+        val modelSide: Int,
+        val pWinModel: BigDecimal,
+        val pWinHolding: BigDecimal,
+        val safeRatio: BigDecimal
+    )
+
+    private fun computeHoldingState(
         strategy: CryptoTailStrategy,
         trigger: CryptoTailStrategyTrigger,
         nowSeconds: Long
-    ): BigDecimal? {
+    ): HoldingState? {
         if (!periodPriceProvider.isAvailable(strategy.marketSlugPrefix)) return null
         val oc = periodPriceProvider.getCurrentOpenClose(
             strategy.marketSlugPrefix, strategy.intervalSeconds, trigger.periodStartUnix
@@ -251,8 +247,14 @@ class CryptoTailBracketExitService(
             trigger.outcomeIndex, strategy.sigmaScale, strategy.sigmaMethod, strategy.ewmaLambda
         ) ?: return null
         val r = BarrierProbability.winProbTerminal(gap, sigma, remaining) ?: return null
-        // 模型方向与持仓方向不同 → 当前持仓胜率 = 1 - r.pWin
-        return if (r.side == trigger.outcomeIndex) r.pWin else BigDecimal.ONE.subtract(r.pWin)
+        val holdingPWin = if (r.side == trigger.outcomeIndex) r.pWin else BigDecimal.ONE.subtract(r.pWin)
+        return HoldingState(
+            gap = gap,
+            modelSide = r.side,
+            pWinModel = r.pWin,
+            pWinHolding = holdingPWin,
+            safeRatio = r.safeRatio
+        )
     }
 
     /** 退出决策结果 */
@@ -264,54 +266,45 @@ class CryptoTailBracketExitService(
         val reason: String
     )
 
-    /**
-     * 决策核心。优先级（与代码实际顺序一致）：
-     *   STOP > 周期结束兜底 > HOLD > FORCE > TP2 > TP1 > 继续持有
-     *
-     * 设计要点：
-     *  - STOP 最高：pWin/价格触底时立即 FAK 全清，拒绝所有止盈/持有可能性
-     *  - 周期结束兜底：remainingSeconds<=0 直接不挂单，等 SettlementService 走链上 HELD_TO_SETTLE
-     *  - HOLD 早于 FORCE/TP：pWin 极高且接近结算时不该再卖（链上 condition 直接拿到 1.00）
-     *  - FORCE 早于 TP：剩余时间过短即便价没到 TP1 也强清，避免尾盘流动性枯竭
-     *  - TP2 早于 TP1：高档优先（满足高档时低档守卫由 hasExitOfKind 自然抑制）
-     * pWin 不可用（冷启动）时：仅 TP/STOP_PRICE/FORCE 可用，pWin 相关闸不触发。
-     */
     private fun decideExit(
         strategy: CryptoTailStrategy,
         trigger: CryptoTailStrategyTrigger,
-        pwinHolding: BigDecimal?,
+        holding: HoldingState?,
         bestBid: BigDecimal,
         remainingSeconds: Int
     ): Decision {
-        // STOP：pWin 已落到 stopProb 或价格已落到 stopPrice，OR 关系，全部清仓
-        val pwinHitsStop = pwinHolding != null && pwinHolding <= strategy.stopProb
-        val priceHitsStop = bestBid <= strategy.stopPrice
-        if (pwinHitsStop || priceHitsStop) {
-            val why = buildList {
-                if (pwinHitsStop) add("pWin=${pwinHolding!!.toPlainString()}<=stopProb=${strategy.stopProb.toPlainString()}")
-                if (priceHitsStop) add("bestBid=${bestBid.toPlainString()}<=stopPrice=${strategy.stopPrice.toPlainString()}")
-            }.joinToString(" 且 ")
-            return Decision(ExitKind.STOP, BigDecimal.ONE, "止损触发: $why")
-        }
-
-        // 已超过周期结束（理论上不会被监听到，兜底由 SettlementService 处理 HELD_TO_SETTLE）
         if (remainingSeconds <= 0) {
             return Decision(null, BigDecimal.ZERO, "周期已结束，等待结算")
         }
-
-        // HOLD：pWin 极高且接近结算，放弃 TP，拿到链上 condition 结算（payout=1）
-        if (pwinHolding != null
-            && pwinHolding >= strategy.holdToSettlePwin
-            && remainingSeconds <= strategy.holdToSettleSeconds
-        ) {
-            return Decision(
-                null,
-                BigDecimal.ZERO,
-                "持有到结算: pWin=${pwinHolding.toPlainString()}>=${strategy.holdToSettlePwin.toPlainString()}, 剩余=${remainingSeconds}s"
-            )
+        val entryFillPrice = trigger.entryFillPrice ?: run {
+            val fs = trigger.filledSize
+            val fa = trigger.filledAmount
+            if (fs != null && fa != null && fs > BigDecimal.ZERO) fa.divide(fs, 8, RoundingMode.HALF_UP) else null
         }
-
-        // FORCE：剩余时间过短且 hold 条件未达，强制平仓避免尾盘流动性枯竭
+        if (entryFillPrice != null) {
+            val stopLine = entryFillPrice.multiply(BigDecimal.ONE.subtract(strategy.maxLossPct))
+            if (bestBid <= stopLine) {
+                return Decision(ExitKind.HARD_STOP, BigDecimal.ONE, "硬止损: bestBid=${bestBid.toPlainString()}<=${stopLine.toPlainString()}")
+            }
+        }
+        if (holding != null && strategy.emergencyExitOnModelFlip && trigger.entryModelSide != null && holding.modelSide != trigger.entryModelSide) {
+            return Decision(ExitKind.MODEL_FLIP, BigDecimal.ONE, "模型方向反转: entry=${trigger.entryModelSide}, current=${holding.modelSide}")
+        }
+        if (holding != null && strategy.emergencyExitOnGapFlip) {
+            if (trigger.outcomeIndex == 0 && holding.gap <= BigDecimal.ZERO) {
+                return Decision(ExitKind.GAP_FLIP, BigDecimal.ONE, "UP 持仓 gap 反转: gap=${holding.gap.toPlainString()}")
+            }
+            if (trigger.outcomeIndex == 1 && holding.gap >= BigDecimal.ZERO) {
+                return Decision(ExitKind.GAP_FLIP, BigDecimal.ONE, "DOWN 持仓 gap 反转: gap=${holding.gap.toPlainString()}")
+            }
+        }
+        if (holding != null && holding.pWinHolding < strategy.exitPWin && holding.safeRatio < strategy.exitSafeRatio) {
+            return Decision(ExitKind.MODEL_INVALID, BigDecimal.ONE, "模型失效: pWin=${holding.pWinHolding.toPlainString()} safeRatio=${holding.safeRatio.toPlainString()}")
+        }
+        val wick = wickSignalService.evaluate(strategy, trigger.outcomeIndex)
+        if (wick.available && wick.reversalScore >= strategy.wickExitScore) {
+            return Decision(ExitKind.WICK_REVERSAL, BigDecimal.ONE, "影线反转止损: score=${wick.reversalScore}>=${strategy.wickExitScore}")
+        }
         if (remainingSeconds <= strategy.forceExitBeforeSettleSeconds) {
             return Decision(
                 ExitKind.FORCE,
@@ -319,34 +312,118 @@ class CryptoTailBracketExitService(
                 "强制平仓: 剩余=${remainingSeconds}s<=${strategy.forceExitBeforeSettleSeconds}s 且未满足持有到结算条件"
             )
         }
-
-        // TP2：bestBid 到二档；要求未尝试过 TP2（含已成/挂中/已撤），防 MAKER 死循环
-        if (bestBid >= strategy.tp2Price
-            && (pwinHolding == null || pwinHolding < strategy.tp2HoldPwin)
+        if (bestBid >= strategy.takeProfitBid2
             && !hasExitOfKind(trigger.id!!, ExitKind.TP2)
         ) {
-            val ratio = strategy.tp2Ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+            val ratio = strategy.takeProfitSellPct2.max(BigDecimal.ZERO).min(BigDecimal.ONE)
             return Decision(
                 ExitKind.TP2,
                 ratio,
-                "止盈2: bestBid=${bestBid.toPlainString()}>=${strategy.tp2Price.toPlainString()}, pWin=${pwinHolding?.toPlainString() ?: "n/a"}<${strategy.tp2HoldPwin.toPlainString()}"
+                "止盈2: bestBid=${bestBid.toPlainString()}>=${strategy.takeProfitBid2.toPlainString()}"
             )
         }
-
-        // TP1：bestBid 到一档；要求未尝试过 TP1（同 TP2 守卫）
-        if (bestBid >= strategy.tp1Price
-            && (pwinHolding == null || pwinHolding < strategy.tp1HoldPwin)
-            && !hasExitOfKind(trigger.id!!, ExitKind.TP1)
-        ) {
-            val ratio = strategy.tp1Ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+        val tp1Line = entryFillPrice?.add(strategy.takeProfitDelta1)
+        if (tp1Line != null && bestBid >= tp1Line && !hasExitOfKind(trigger.id!!, ExitKind.TP1) && !hasExitOfKind(trigger.id!!, ExitKind.TP2)) {
+            if (wick.available && wick.continuationScore >= strategy.wickHoldProfitScore && remainingSeconds > strategy.forceExitBeforeSettleSeconds) {
+                return Decision(null, BigDecimal.ZERO, "WICK_HOLD_TP: 顺势评分=${wick.continuationScore}>=${strategy.wickHoldProfitScore}, 暂缓TP1")
+            }
+            val ratio = strategy.takeProfitSellPct1.max(BigDecimal.ZERO).min(BigDecimal.ONE)
             return Decision(
                 ExitKind.TP1,
                 ratio,
-                "止盈1: bestBid=${bestBid.toPlainString()}>=${strategy.tp1Price.toPlainString()}, pWin=${pwinHolding?.toPlainString() ?: "n/a"}<${strategy.tp1HoldPwin.toPlainString()}"
+                "止盈1: bestBid=${bestBid.toPlainString()}>=entry+delta=${tp1Line.toPlainString()}"
             )
         }
 
         return Decision(null, BigDecimal.ZERO, "继续持有")
+    }
+
+    private fun applyExitConfirmation(
+        trigger: CryptoTailStrategyTrigger,
+        strategy: CryptoTailStrategy,
+        decision: Decision,
+        nowMs: Long
+    ): Boolean {
+        val kind = decision.kind ?: return false
+        val immediate = kind == ExitKind.MODEL_FLIP || kind == ExitKind.GAP_FLIP || kind == ExitKind.TP1 || kind == ExitKind.TP2 || kind == ExitKind.FORCE
+        val nextCount = if (trigger.exitConfirmReason == kind.name) trigger.exitConfirmCount + 1 else 1
+        triggerRepository.save(
+            trigger.copy(
+                exitConfirmReason = kind.name,
+                exitConfirmCount = nextCount,
+                lastExitAttemptAt = if (immediate || nextCount >= strategy.exitConfirmTicks) nowMs else trigger.lastExitAttemptAt
+            )
+        )
+        return immediate || nextCount >= strategy.exitConfirmTicks
+    }
+
+    private fun recordExitCheck(
+        trigger: CryptoTailStrategyTrigger,
+        strategy: CryptoTailStrategy,
+        holding: HoldingState?,
+        bestBid: BigDecimal,
+        remainingSeconds: Int,
+        decision: Decision
+    ) {
+        val entryFillPrice = trigger.entryFillPrice ?: BigDecimal.ZERO
+        val peakBid = trigger.peakBid ?: bestBid
+        val drawdown = peakBid.subtract(bestBid).max(BigDecimal.ZERO)
+        val remaining = trigger.remainingSize ?: BigDecimal.ZERO
+        val realizedIfExit = bestBid.subtract(entryFillPrice).multiply(remaining).setScale(8, RoundingMode.HALF_UP)
+        val payload = mapOf(
+            "positionId" to (trigger.id?.toString() ?: ""),
+            "marketSlug" to strategy.marketSlugPrefix,
+            "periodStartUnix" to trigger.periodStartUnix,
+            "outcomeIndex" to trigger.outcomeIndex,
+            "entryFillPrice" to entryFillPrice.toPlainString(),
+            "currentBestBid" to bestBid.toPlainString(),
+            "currentBestAsk" to "",
+            "entryPWin" to (trigger.entryPWin?.toPlainString() ?: ""),
+            "currentPWin" to (holding?.pWinHolding?.toPlainString() ?: ""),
+            "entrySafeRatio" to (trigger.entrySafeRatio?.toPlainString() ?: ""),
+            "currentSafeRatio" to (holding?.safeRatio?.toPlainString() ?: ""),
+            "entryModelSide" to (trigger.entryModelSide ?: ""),
+            "currentModelSide" to (holding?.modelSide ?: ""),
+            "entryGap" to (trigger.entryGap?.toPlainString() ?: ""),
+            "currentGap" to (holding?.gap?.toPlainString() ?: ""),
+            "remainingSeconds" to remainingSeconds,
+            "peakBid" to peakBid.toPlainString(),
+            "drawdownFromPeak" to drawdown.toPlainString(),
+            "exitReason" to (decision.kind?.name ?: ""),
+            "remainingSize" to remaining.toPlainString(),
+            "realizedPnlIfExit" to realizedIfExit.toPlainString(),
+            "reason" to decision.reason
+        )
+        decisionRecorder.record(
+            CryptoTailDecisionEvent(
+                strategyId = trigger.strategyId,
+                periodStartUnix = trigger.periodStartUnix,
+                correlationId = "${trigger.strategyId}-${trigger.periodStartUnix}-exit-${trigger.id}",
+                eventType = "EXIT_CHECK",
+                gateName = decision.kind?.name,
+                passed = decision.kind != null,
+                reason = decision.reason,
+                payloadJson = payload.toJson(),
+                outcomeIndex = trigger.outcomeIndex,
+                triggerId = trigger.id
+            )
+        )
+        if (decision.kind != null) {
+            decisionRecorder.record(
+                CryptoTailDecisionEvent(
+                    strategyId = trigger.strategyId,
+                    periodStartUnix = trigger.periodStartUnix,
+                    correlationId = "${trigger.strategyId}-${trigger.periodStartUnix}-exit-${trigger.id}",
+                    eventType = "EXIT_SIGNAL",
+                    gateName = decision.kind.name,
+                    passed = true,
+                    reason = decision.reason,
+                    payloadJson = payload.toJson(),
+                    outcomeIndex = trigger.outcomeIndex,
+                    triggerId = trigger.id
+                )
+            )
+        }
     }
 
     /**
@@ -412,7 +489,8 @@ class CryptoTailBracketExitService(
 
         // STOP/FORCE 强制 FAK；TP1/TP2 按策略配置（FAK 默认；MAKER 由 Reconciler 在超时未成交时撤回退）
         val orderType = when (kind) {
-            ExitKind.STOP, ExitKind.FORCE -> "FAK"
+            ExitKind.STOP, ExitKind.HARD_STOP, ExitKind.MODEL_INVALID, ExitKind.MODEL_FLIP,
+            ExitKind.GAP_FLIP, ExitKind.WICK_REVERSAL, ExitKind.FORCE -> "FAK"
             ExitKind.TP1, ExitKind.TP2 -> if (strategy.exitOrderType.uppercase() == "MAKER") "GTC" else "FAK"
             ExitKind.SETTLE -> "FAK"  // 不应到这（SETTLE 由 SettlementService 处理）
         }
@@ -473,9 +551,14 @@ class CryptoTailBracketExitService(
                 strategy, trigger, kind, targetSize, exitPrice, recordOrderType, "pending",
                 pwinHolding, bestBid, remainingSeconds, reason, null, orderId
             )
+            val submittedType = when (kind) {
+                ExitKind.TP1, ExitKind.TP2 -> "TAKE_PROFIT_SUBMITTED"
+                ExitKind.HARD_STOP, ExitKind.MODEL_INVALID, ExitKind.MODEL_FLIP, ExitKind.GAP_FLIP, ExitKind.WICK_REVERSAL, ExitKind.STOP -> "STOP_LOSS_SUBMITTED"
+                else -> "EXIT_SUBMITTED"
+            }
             recordEvent(
                 trigger,
-                eventType = "BRACKET_EXIT_PLACED",
+                eventType = submittedType,
                 gateName = kind.name,
                 passed = true,
                 reason = "$reason → 已提交卖单 orderId=$orderId 价=${exitPrice.toPlainString()} 量=${sizeStr} 类型=$recordOrderType",
@@ -499,7 +582,7 @@ class CryptoTailBracketExitService(
             failBackoffCache.put(failBackoffKey(triggerId, kind), true)
             recordEvent(
                 trigger,
-                eventType = "BRACKET_EXIT_PLACED",
+                eventType = "EXIT_FAILED",
                 gateName = kind.name,
                 passed = false,
                 reason = "$reason → 提交失败:${failReason ?: "unknown"}",
@@ -563,7 +646,7 @@ class CryptoTailBracketExitService(
         extra: Map<String, Any?> = emptyMap()
     ) {
         val payload = buildMap<String, Any?> {
-            put("mode", "BRACKET_DYNAMIC")
+            put("mode", trigger.mode.name)
             put("triggerId", trigger.id)
             put("outcomeIndex", trigger.outcomeIndex)
             put("remainingSize", trigger.remainingSize?.toPlainString() ?: "")

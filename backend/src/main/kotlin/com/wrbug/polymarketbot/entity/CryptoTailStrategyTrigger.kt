@@ -83,13 +83,46 @@ data class CryptoTailStrategyTrigger(
     @Column(name = "mode", nullable = false, columnDefinition = "TINYINT")
     val mode: TradingMode = TradingMode.LEGACY_SPREAD,
 
-    /** 部分卖出后剩余 shares（仅 BRACKET_DYNAMIC 使用）；NULL=未填充, 0=已全部退出 */
+    /** 部分卖出后剩余 shares（启用退出管理的概率模式使用）；NULL=未填充, 0=已全部退出 */
     @Column(name = "remaining_size", precision = 20, scale = 8)
     val remainingSize: BigDecimal? = null,
 
-    /** 退出状态机（仅 BRACKET_DYNAMIC 使用，其他模式恒为 NONE） */
+    /** 退出状态机（启用退出管理的概率模式使用，LEGACY_SPREAD 恒为 NONE） */
     @Column(name = "exit_status", nullable = false, length = 20)
     val exitStatus: String = ExitStatus.NONE.name,
+
+    @Column(name = "entry_fill_price", precision = 20, scale = 8)
+    val entryFillPrice: BigDecimal? = null,
+
+    @Column(name = "entry_model_side")
+    val entryModelSide: Int? = null,
+
+    @Column(name = "entry_pwin", precision = 20, scale = 8)
+    val entryPWin: BigDecimal? = null,
+
+    @Column(name = "entry_safe_ratio", precision = 20, scale = 8)
+    val entrySafeRatio: BigDecimal? = null,
+
+    @Column(name = "entry_gap", precision = 30, scale = 8)
+    val entryGap: BigDecimal? = null,
+
+    @Column(name = "entry_remaining_seconds")
+    val entryRemainingSeconds: Int? = null,
+
+    @Column(name = "peak_bid", precision = 20, scale = 8)
+    val peakBid: BigDecimal? = null,
+
+    @Column(name = "exit_confirm_reason", length = 40)
+    val exitConfirmReason: String? = null,
+
+    @Column(name = "exit_confirm_count", nullable = false)
+    val exitConfirmCount: Int = 0,
+
+    @Column(name = "last_exit_check_at")
+    val lastExitCheckAt: Long? = null,
+
+    @Column(name = "last_exit_attempt_at")
+    val lastExitAttemptAt: Long? = null,
 
     @Column(name = "created_at", nullable = false)
     val createdAt: Long = System.currentTimeMillis(),

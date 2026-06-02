@@ -101,6 +101,34 @@ class PolymarketRtdsCryptoPriceService {
         return history.floorEntry(tsSeconds)?.value
     }
 
+    /** 最近完整 1m OHLC，按时间升序返回。使用 RTDS 历史价 5s 网格合成，不引入外部口径。 */
+    fun recentOhlc1m(marketSlugPrefix: String, minutes: Int, nowSeconds: Long = System.currentTimeMillis() / 1000): List<PeriodPriceProvider.Ohlc1m> {
+        if (minutes <= 0) return emptyList()
+        val coin = coinOfSlug(marketSlugPrefix) ?: return emptyList()
+        ensureStarted()
+        val history = priceHistory[coin] ?: return emptyList()
+        val endMinute = nowSeconds - (nowSeconds % 60)
+        val result = ArrayList<PeriodPriceProvider.Ohlc1m>(minutes)
+        for (i in minutes downTo 1) {
+            val start = endMinute - i * 60L
+            val end = start + 59L
+            val points = history.subMap(start, true, end, true).entries
+                .sortedBy { it.key }
+                .map { it.value }
+            if (points.isEmpty()) continue
+            result.add(
+                PeriodPriceProvider.Ohlc1m(
+                    minuteStartUnix = start,
+                    open = points.first(),
+                    high = points.maxOrNull() ?: points.first(),
+                    low = points.minOrNull() ?: points.first(),
+                    close = points.last()
+                )
+            )
+        }
+        return result
+    }
+
     // ---------------- 连接 / 订阅 ----------------
 
     private fun ensureStarted() {

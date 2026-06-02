@@ -239,10 +239,10 @@ class CryptoTailOrderbookWsService(
                 }
             }
 
-            // 退出分支：仅 BRACKET_DYNAMIC 模式启用，且不受时间窗限制
+            // 退出分支：概率模式启用，且不受时间窗限制
             //  - 持仓监听整个周期内都需活跃，包括 forceExitBeforeSettleSeconds 兜底窗口
             //  - 跨周期由 SettlementService 兜底（HELD_TO_SETTLE）
-            if (e.strategy.mode == TradingMode.BRACKET_DYNAMIC) {
+            if (e.strategy.mode != TradingMode.LEGACY_SPREAD && e.strategy.enableExitManager) {
                 scope.launch {
                     try {
                         bracketExitService.evaluatePeriodOutcome(

@@ -208,7 +208,35 @@ const CryptoTailStrategyList: React.FC = () => {
       stopProb: '0.55',
       stopPrice: '0.70',
       forceExitBeforeSettleSeconds: 15,
-      exitOrderType: 'FAK'
+      exitOrderType: 'FAK',
+      minSafeRatio: '1.20',
+      minSafeRatioUp: '1.50',
+      minSafeRatioDown: '1.20',
+      highPriceThreshold: '0.90',
+      highPriceMinPWin: '0.97',
+      highPriceMinSafeRatio: '2.50',
+      enableExitManager: true,
+      maxLossPct: '0.20',
+      exitPWin: '0.70',
+      exitSafeRatio: '0.80',
+      exitConfirmTicks: 2,
+      takeProfitDelta1: '0.08',
+      takeProfitSellPct1: '0.50',
+      takeProfitBid2: '0.93',
+      takeProfitSellPct2: '0.80',
+      emergencyExitOnModelFlip: true,
+      emergencyExitOnGapFlip: true,
+      exitPollIntervalMs: 3000,
+      enableWickFilter: true,
+      wickLookbackMinutes: 2,
+      wickMinBodyRatio: '0.20',
+      wickRejectionRatio: '0.55',
+      wickMaWindow: 3,
+      wickEntryBlockScore: 70,
+      wickExitScore: 75,
+      wickHoldProfitScore: 65,
+      wickUseBinanceVolume: false,
+      wickVolumeSpikeRatio: '1.50'
     })
     setFormModalOpen(true)
   }
@@ -272,7 +300,35 @@ const CryptoTailStrategyList: React.FC = () => {
       stopProb: record.stopProb ?? '0.55',
       stopPrice: record.stopPrice ?? '0.70',
       forceExitBeforeSettleSeconds: record.forceExitBeforeSettleSeconds ?? 15,
-      exitOrderType: record.exitOrderType ?? 'FAK'
+      exitOrderType: record.exitOrderType ?? 'FAK',
+      minSafeRatio: record.minSafeRatio ?? '1.20',
+      minSafeRatioUp: record.minSafeRatioUp ?? '1.50',
+      minSafeRatioDown: record.minSafeRatioDown ?? '1.20',
+      highPriceThreshold: record.highPriceThreshold ?? '0.90',
+      highPriceMinPWin: record.highPriceMinPWin ?? '0.97',
+      highPriceMinSafeRatio: record.highPriceMinSafeRatio ?? '2.50',
+      enableExitManager: record.enableExitManager ?? true,
+      maxLossPct: record.maxLossPct ?? '0.20',
+      exitPWin: record.exitPWin ?? '0.70',
+      exitSafeRatio: record.exitSafeRatio ?? '0.80',
+      exitConfirmTicks: record.exitConfirmTicks ?? 2,
+      takeProfitDelta1: record.takeProfitDelta1 ?? '0.08',
+      takeProfitSellPct1: record.takeProfitSellPct1 ?? '0.50',
+      takeProfitBid2: record.takeProfitBid2 ?? '0.93',
+      takeProfitSellPct2: record.takeProfitSellPct2 ?? '0.80',
+      emergencyExitOnModelFlip: record.emergencyExitOnModelFlip ?? true,
+      emergencyExitOnGapFlip: record.emergencyExitOnGapFlip ?? true,
+      exitPollIntervalMs: record.exitPollIntervalMs ?? 3000,
+      enableWickFilter: record.enableWickFilter ?? true,
+      wickLookbackMinutes: record.wickLookbackMinutes ?? 2,
+      wickMinBodyRatio: record.wickMinBodyRatio ?? '0.20',
+      wickRejectionRatio: record.wickRejectionRatio ?? '0.55',
+      wickMaWindow: record.wickMaWindow ?? 3,
+      wickEntryBlockScore: record.wickEntryBlockScore ?? 70,
+      wickExitScore: record.wickExitScore ?? 75,
+      wickHoldProfitScore: record.wickHoldProfitScore ?? 65,
+      wickUseBinanceVolume: record.wickUseBinanceVolume ?? false,
+      wickVolumeSpikeRatio: record.wickVolumeSpikeRatio ?? '1.50'
     })
     setFormModalOpen(true)
   }
@@ -379,6 +435,34 @@ const CryptoTailStrategyList: React.FC = () => {
         entryFakSlippage: v.entryFakSlippage != null ? String(v.entryFakSlippage) : undefined,
         sigmaMethod: v.sigmaMethod != null ? String(v.sigmaMethod) : undefined,
         ewmaLambda: v.ewmaLambda != null ? String(v.ewmaLambda) : undefined,
+        minSafeRatio: v.minSafeRatio != null ? String(v.minSafeRatio) : undefined,
+        minSafeRatioUp: v.minSafeRatioUp != null ? String(v.minSafeRatioUp) : undefined,
+        minSafeRatioDown: v.minSafeRatioDown != null ? String(v.minSafeRatioDown) : undefined,
+        highPriceThreshold: v.highPriceThreshold != null ? String(v.highPriceThreshold) : undefined,
+        highPriceMinPWin: v.highPriceMinPWin != null ? String(v.highPriceMinPWin) : undefined,
+        highPriceMinSafeRatio: v.highPriceMinSafeRatio != null ? String(v.highPriceMinSafeRatio) : undefined,
+        enableExitManager: v.enableExitManager === true,
+        maxLossPct: v.maxLossPct != null ? String(v.maxLossPct) : undefined,
+        exitPWin: v.exitPWin != null ? String(v.exitPWin) : undefined,
+        exitSafeRatio: v.exitSafeRatio != null ? String(v.exitSafeRatio) : undefined,
+        exitConfirmTicks: v.exitConfirmTicks != null ? Number(v.exitConfirmTicks) : undefined,
+        takeProfitDelta1: v.takeProfitDelta1 != null ? String(v.takeProfitDelta1) : undefined,
+        takeProfitSellPct1: v.takeProfitSellPct1 != null ? String(v.takeProfitSellPct1) : undefined,
+        takeProfitBid2: v.takeProfitBid2 != null ? String(v.takeProfitBid2) : undefined,
+        takeProfitSellPct2: v.takeProfitSellPct2 != null ? String(v.takeProfitSellPct2) : undefined,
+        emergencyExitOnModelFlip: v.emergencyExitOnModelFlip === true,
+        emergencyExitOnGapFlip: v.emergencyExitOnGapFlip === true,
+        exitPollIntervalMs: v.exitPollIntervalMs != null ? Number(v.exitPollIntervalMs) : undefined,
+        enableWickFilter: v.enableWickFilter === true,
+        wickLookbackMinutes: v.wickLookbackMinutes != null ? Number(v.wickLookbackMinutes) : undefined,
+        wickMinBodyRatio: v.wickMinBodyRatio != null ? String(v.wickMinBodyRatio) : undefined,
+        wickRejectionRatio: v.wickRejectionRatio != null ? String(v.wickRejectionRatio) : undefined,
+        wickMaWindow: v.wickMaWindow != null ? Number(v.wickMaWindow) : undefined,
+        wickEntryBlockScore: v.wickEntryBlockScore != null ? Number(v.wickEntryBlockScore) : undefined,
+        wickExitScore: v.wickExitScore != null ? Number(v.wickExitScore) : undefined,
+        wickHoldProfitScore: v.wickHoldProfitScore != null ? Number(v.wickHoldProfitScore) : undefined,
+        wickUseBinanceVolume: v.wickUseBinanceVolume === true,
+        wickVolumeSpikeRatio: v.wickVolumeSpikeRatio != null ? String(v.wickVolumeSpikeRatio) : undefined,
         ...(barrierOn ? {
           entryProb: v.entryProb != null ? String(v.entryProb) : undefined,
           entryEdge: v.entryEdge != null ? String(v.entryEdge) : undefined,
@@ -1400,6 +1484,27 @@ const CryptoTailStrategyList: React.FC = () => {
                   >
                     <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
                   </Form.Item>
+                  <Form.Item style={{ marginBottom: 12 }}>
+                    <Typography.Text strong>入场过滤增强</Typography.Text>
+                  </Form.Item>
+                  <Form.Item name="minSafeRatio" label="safeRatio 下限" rules={[{ required: true }]}>
+                    <InputNumber min={0} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                  <Form.Item name="minSafeRatioUp" label="UP safeRatio 下限" rules={[{ required: true }]}>
+                    <InputNumber min={0} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                  <Form.Item name="minSafeRatioDown" label="DOWN safeRatio 下限" rules={[{ required: true }]}>
+                    <InputNumber min={0} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                  <Form.Item name="highPriceThreshold" label="高价保护阈值" rules={[{ required: true }]}>
+                    <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                  <Form.Item name="highPriceMinPWin" label="高价保护 pWin 下限" rules={[{ required: true }]}>
+                    <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                  <Form.Item name="highPriceMinSafeRatio" label="高价保护 safeRatio 下限" rules={[{ required: true }]}>
+                    <InputNumber min={0} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
                 </>
               )}
               {isBarrierMode && (
@@ -1491,6 +1596,78 @@ const CryptoTailStrategyList: React.FC = () => {
                   <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
                 </Form.Item>
               )}
+              <Form.Item style={{ marginBottom: 12 }}>
+                <Typography.Text strong>持仓退出 / 止损止盈</Typography.Text>
+              </Form.Item>
+              <Form.Item name="enableExitManager" label="启用持仓退出" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="maxLossPct" label="最大亏损比例">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="exitPWin" label="模型失效 pWin">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="exitSafeRatio" label="模型失效 safeRatio">
+                <InputNumber min={0} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="exitConfirmTicks" label="连续确认次数">
+                <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="takeProfitDelta1" label="第一档止盈价差">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="takeProfitSellPct1" label="第一档卖出比例">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="takeProfitBid2" label="第二档止盈 bestBid">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="takeProfitSellPct2" label="第二档卖出比例">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="emergencyExitOnModelFlip" label="模型方向反转立即退出" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="emergencyExitOnGapFlip" label="gap 反转立即退出" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="exitPollIntervalMs" label="退出检查间隔(ms)">
+                <InputNumber min={500} step={500} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 12 }}>
+                <Typography.Text strong>影线 / 反转过滤</Typography.Text>
+              </Form.Item>
+              <Form.Item name="enableWickFilter" label="启用影线过滤" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="wickLookbackMinutes" label="回看分钟数">
+                <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="wickMinBodyRatio" label="实体最小比例">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="wickRejectionRatio" label="影线反转比例">
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="wickMaWindow" label="短均线窗口">
+                <InputNumber min={1} max={20} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="wickEntryBlockScore" label="入场禁止分数">
+                <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="wickExitScore" label="退出分数">
+                <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="wickHoldProfitScore" label="止盈暂缓分数">
+                <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="wickUseBinanceVolume" label="使用 Binance 成交量辅助" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="wickVolumeSpikeRatio" label="成交量尖峰倍数">
+                <InputNumber min={1} step={0.1} style={{ width: '100%' }} stringMode />
+              </Form.Item>
               <Form.Item
                 name="dailyLossLimitUsdc"
                 label={

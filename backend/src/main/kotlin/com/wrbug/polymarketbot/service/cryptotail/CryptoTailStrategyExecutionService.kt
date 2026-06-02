@@ -90,7 +90,8 @@ class CryptoTailStrategyExecutionService(
     private val cryptoTailRiskService: CryptoTailRiskService,
     private val decisionRecorder: CryptoTailDecisionRecorder,
     private val periodPriceProvider: PeriodPriceProvider,
-    private val calibrationService: CryptoTailCalibrationService
+    private val calibrationService: CryptoTailCalibrationService,
+    private val wickSignalService: CryptoTailWickSignalService
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailStrategyExecutionService::class.java)
@@ -197,7 +198,7 @@ class CryptoTailStrategyExecutionService(
     private fun requiredEntryEdge(strategy: CryptoTailStrategy): BigDecimal {
         return when (strategy.mode) {
             TradingMode.BARRIER_HOLD -> strategy.entryEdge
-            TradingMode.BRACKET_DYNAMIC -> strategy.bracketEntryEdge
+            TradingMode.BRACKET_DYNAMIC -> probabilityEntryEdge(strategy)
             TradingMode.LEGACY_SPREAD -> BigDecimal.ZERO
         }
     }
@@ -205,9 +206,23 @@ class CryptoTailStrategyExecutionService(
     private fun entryPriceCap(strategy: CryptoTailStrategy): BigDecimal {
         return when (strategy.mode) {
             TradingMode.BARRIER_HOLD -> strategy.maxEntryPrice
-            TradingMode.BRACKET_DYNAMIC -> strategy.bracketMaxEntryPrice
+            TradingMode.BRACKET_DYNAMIC -> probabilityMaxEntryPrice(strategy)
             TradingMode.LEGACY_SPREAD -> BigDecimal(TRIGGER_FIXED_PRICE)
         }
+    }
+
+    private fun probabilityEntryProb(strategy: CryptoTailStrategy): BigDecimal =
+        if (strategy.mode == TradingMode.BRACKET_DYNAMIC) strategy.entryProb.max(strategy.bracketEntryProb) else strategy.entryProb
+
+    private fun probabilityEntryEdge(strategy: CryptoTailStrategy): BigDecimal =
+        if (strategy.mode == TradingMode.BRACKET_DYNAMIC) strategy.entryEdge.max(strategy.bracketEntryEdge) else strategy.entryEdge
+
+    private fun probabilityMaxEntryPrice(strategy: CryptoTailStrategy): BigDecimal =
+        if (strategy.mode == TradingMode.BRACKET_DYNAMIC) strategy.maxEntryPrice.min(strategy.bracketMaxEntryPrice) else strategy.maxEntryPrice
+
+    private fun requiredSafeRatio(strategy: CryptoTailStrategy, outcomeIndex: Int): BigDecimal {
+        val directional = if (outcomeIndex == 0) strategy.minSafeRatioUp else strategy.minSafeRatioDown
+        return strategy.minSafeRatio.max(directional)
     }
 
     private fun computeFakPricing(
@@ -508,7 +523,7 @@ class CryptoTailStrategyExecutionService(
             effectiveCost = rawEffectiveCost,
             edge = edge
         )
-        val snapshot = mapOf(
+        val payload = mutableMapOf<String, Any>(
             "gap" to gap.toPlainString(),
             "open" to openP.toPlainString(),
             "close" to closeP.toPlainString(),
@@ -528,22 +543,46 @@ class CryptoTailStrategyExecutionService(
             "edge" to edge.toPlainString(),
             "entryProb" to strategy.entryProb.toPlainString(),
             "entryEdge" to strategy.entryEdge.toPlainString(),
-            "barrierMinMarketProb" to strategy.barrierMinMarketProb.toPlainString()
-        ).toJson()
+            "barrierMinMarketProb" to strategy.barrierMinMarketProb.toPlainString(),
+            "minSafeRatio" to strategy.minSafeRatio.toPlainString(),
+            "minSafeRatioUp" to strategy.minSafeRatioUp.toPlainString(),
+            "minSafeRatioDown" to strategy.minSafeRatioDown.toPlainString(),
+            "highPriceThreshold" to strategy.highPriceThreshold.toPlainString(),
+            "highPriceMinPWin" to strategy.highPriceMinPWin.toPlainString(),
+            "highPriceMinSafeRatio" to strategy.highPriceMinSafeRatio.toPlainString()
+        )
+        fun snapshot(): String = payload.toJson()
 
         if (r.side != outcomeIndex) {
-            return BarrierEval(false, "DIRECTION", "模型方向=${r.side}与当前outcome=${outcomeIndex}不一致", snapshot, metrics)
+            return BarrierEval(false, "DIRECTION", "模型方向=${r.side}与当前outcome=${outcomeIndex}不一致", snapshot(), metrics)
         }
         if (r.pWin < strategy.entryProb) {
-            return BarrierEval(false, "PWIN", "pWin=${r.pWin.toPlainString()}<entryProb=${strategy.entryProb.toPlainString()}", snapshot, metrics)
+            return BarrierEval(false, "PWIN", "pWin=${r.pWin.toPlainString()}<entryProb=${strategy.entryProb.toPlainString()}", snapshot(), metrics)
+        }
+        val safeRatioRequired = requiredSafeRatio(strategy, outcomeIndex)
+        if (r.safeRatio < safeRatioRequired) {
+            return BarrierEval(false, "SAFE_RATIO", "safeRatio=${r.safeRatio.toPlainString()}<required=${safeRatioRequired.toPlainString()}", snapshot(), metrics)
         }
         if (strategy.barrierMinMarketProb > BigDecimal.ZERO && bestBid < strategy.barrierMinMarketProb) {
-            return BarrierEval(false, "MARKET_PROB", "市场概率=${bestBid.toPlainString()}<下限=${strategy.barrierMinMarketProb.toPlainString()}", snapshot, metrics)
+            return BarrierEval(false, "MARKET_PROB", "市场概率=${bestBid.toPlainString()}<下限=${strategy.barrierMinMarketProb.toPlainString()}", snapshot(), metrics)
+        }
+        if (rawEffectiveCost > strategy.maxEntryPrice) {
+            return BarrierEval(false, "MAX_ENTRY_PRICE", "有效成本=${rawEffectiveCost.toPlainString()}>maxEntryPrice=${strategy.maxEntryPrice.toPlainString()}", snapshot(), metrics)
         }
         if (edge < strategy.entryEdge) {
-            return BarrierEval(false, "EV", "扣费edge=${edge.toPlainString()}<entryEdge=${strategy.entryEdge.toPlainString()}", snapshot, metrics)
+            return BarrierEval(false, "EV", "扣费edge=${edge.toPlainString()}<entryEdge=${strategy.entryEdge.toPlainString()}", snapshot(), metrics)
         }
-        return BarrierEval(true, "ALL", "通过全部障碍闸", snapshot, metrics)
+        if (rawEffectiveCost > strategy.highPriceThreshold &&
+            (r.pWin < strategy.highPriceMinPWin || r.safeRatio < strategy.highPriceMinSafeRatio)
+        ) {
+            return BarrierEval(false, "HIGH_PRICE", "高价入场保护: effectiveCost=${rawEffectiveCost.toPlainString()} pWin=${r.pWin.toPlainString()} safeRatio=${r.safeRatio.toPlainString()}", snapshot(), metrics)
+        }
+        val wick = wickSignalService.evaluate(strategy, outcomeIndex)
+        payload.putAll(wick.toPayload().mapValues { it.value ?: "" })
+        if (wick.available && wick.reversalScore >= strategy.wickEntryBlockScore) {
+            return BarrierEval(false, "WICK_REVERSAL", "影线反转分数=${wick.reversalScore}>=${strategy.wickEntryBlockScore}", snapshot(), metrics)
+        }
+        return BarrierEval(true, "ALL", "通过全部障碍闸", snapshot(), metrics)
     }
 
     /**
@@ -606,7 +645,10 @@ class CryptoTailStrategyExecutionService(
             effectiveCost = effectiveCost,
             edge = edge
         )
-        val snapshot = mapOf(
+        val entryProb = probabilityEntryProb(strategy)
+        val entryEdge = probabilityEntryEdge(strategy)
+        val maxEntryPrice = probabilityMaxEntryPrice(strategy)
+        val payload = mutableMapOf<String, Any>(
             "mode" to "BRACKET_DYNAMIC",
             "gap" to gap.toPlainString(),
             "open" to openP.toPlainString(),
@@ -625,22 +667,50 @@ class CryptoTailStrategyExecutionService(
             "edge" to edge.toPlainString(),
             "bracketEntryProb" to strategy.bracketEntryProb.toPlainString(),
             "bracketEntryEdge" to strategy.bracketEntryEdge.toPlainString(),
-            "bracketMaxEntryPrice" to strategy.bracketMaxEntryPrice.toPlainString()
-        ).toJson()
+            "bracketMaxEntryPrice" to strategy.bracketMaxEntryPrice.toPlainString(),
+            "entryProb" to entryProb.toPlainString(),
+            "entryEdge" to entryEdge.toPlainString(),
+            "maxEntryPrice" to maxEntryPrice.toPlainString(),
+            "barrierMinMarketProb" to strategy.barrierMinMarketProb.toPlainString(),
+            "minSafeRatio" to strategy.minSafeRatio.toPlainString(),
+            "minSafeRatioUp" to strategy.minSafeRatioUp.toPlainString(),
+            "minSafeRatioDown" to strategy.minSafeRatioDown.toPlainString(),
+            "highPriceThreshold" to strategy.highPriceThreshold.toPlainString(),
+            "highPriceMinPWin" to strategy.highPriceMinPWin.toPlainString(),
+            "highPriceMinSafeRatio" to strategy.highPriceMinSafeRatio.toPlainString()
+        )
+        fun snapshot(): String = payload.toJson()
 
         if (r.side != outcomeIndex) {
-            return BarrierEval(false, "DIRECTION", "模型方向=${r.side}与当前outcome=${outcomeIndex}不一致", snapshot, metrics)
+            return BarrierEval(false, "DIRECTION", "模型方向=${r.side}与当前outcome=${outcomeIndex}不一致", snapshot(), metrics)
         }
-        if (r.pWin < strategy.bracketEntryProb) {
-            return BarrierEval(false, "PWIN", "pWin=${r.pWin.toPlainString()}<bracketEntryProb=${strategy.bracketEntryProb.toPlainString()}", snapshot, metrics)
+        if (r.pWin < entryProb) {
+            return BarrierEval(false, "PWIN", "pWin=${r.pWin.toPlainString()}<entryProb=${entryProb.toPlainString()}", snapshot(), metrics)
         }
-        if (effectiveCost > strategy.bracketMaxEntryPrice) {
-            return BarrierEval(false, "MAX_ENTRY_PRICE", "有效成本=${effectiveCost.toPlainString()}>bracketMaxEntryPrice=${strategy.bracketMaxEntryPrice.toPlainString()}", snapshot, metrics)
+        val safeRatioRequired = requiredSafeRatio(strategy, outcomeIndex)
+        if (r.safeRatio < safeRatioRequired) {
+            return BarrierEval(false, "SAFE_RATIO", "safeRatio=${r.safeRatio.toPlainString()}<required=${safeRatioRequired.toPlainString()}", snapshot(), metrics)
         }
-        if (edge < strategy.bracketEntryEdge) {
-            return BarrierEval(false, "EV", "扣费edge=${edge.toPlainString()}<bracketEntryEdge=${strategy.bracketEntryEdge.toPlainString()}", snapshot, metrics)
+        if (strategy.barrierMinMarketProb > BigDecimal.ZERO && bestBid < strategy.barrierMinMarketProb) {
+            return BarrierEval(false, "MARKET_PROB", "市场概率=${bestBid.toPlainString()}<下限=${strategy.barrierMinMarketProb.toPlainString()}", snapshot(), metrics)
         }
-        return BarrierEval(true, "ALL", "通过全部阶梯入场闸", snapshot, metrics)
+        if (effectiveCost > maxEntryPrice) {
+            return BarrierEval(false, "MAX_ENTRY_PRICE", "有效成本=${effectiveCost.toPlainString()}>maxEntryPrice=${maxEntryPrice.toPlainString()}", snapshot(), metrics)
+        }
+        if (edge < entryEdge) {
+            return BarrierEval(false, "EV", "扣费edge=${edge.toPlainString()}<entryEdge=${entryEdge.toPlainString()}", snapshot(), metrics)
+        }
+        if (effectiveCost > strategy.highPriceThreshold &&
+            (r.pWin < strategy.highPriceMinPWin || r.safeRatio < strategy.highPriceMinSafeRatio)
+        ) {
+            return BarrierEval(false, "HIGH_PRICE", "高价入场保护: effectiveCost=${effectiveCost.toPlainString()} pWin=${r.pWin.toPlainString()} safeRatio=${r.safeRatio.toPlainString()}", snapshot(), metrics)
+        }
+        val wick = wickSignalService.evaluate(strategy, outcomeIndex)
+        payload.putAll(wick.toPayload().mapValues { it.value ?: "" })
+        if (wick.available && wick.reversalScore >= strategy.wickEntryBlockScore) {
+            return BarrierEval(false, "WICK_REVERSAL", "影线反转分数=${wick.reversalScore}>=${strategy.wickEntryBlockScore}", snapshot(), metrics)
+        }
+        return BarrierEval(true, "ALL", "通过全部阶梯入场闸", snapshot(), metrics)
     }
 
     /** 记录障碍闸结果（每周期每结果去重，避免每个 tick 刷库） */
@@ -1208,7 +1278,8 @@ class CryptoTailStrategyExecutionService(
                 triggerType = "AUTO",
                 tokenId = tokenId,
                 finalLimitPrice = price,
-                retryOrderBuilder = retryBuilder
+                retryOrderBuilder = retryBuilder,
+                metrics = metrics
             )
             return
         }
@@ -1228,7 +1299,8 @@ class CryptoTailStrategyExecutionService(
         triggerType: String = "AUTO",
         tokenId: String? = null,
         finalLimitPrice: BigDecimal? = null,
-        retryOrderBuilder: (suspend () -> FakOrderAttempt?)? = null
+        retryOrderBuilder: (suspend () -> FakOrderAttempt?)? = null,
+        metrics: BarrierMetrics? = null
     ) {
         var result = submitFakAttempt(clobApi, orderRequest)
         var usedLimitPrice = finalLimitPrice
@@ -1245,7 +1317,8 @@ class CryptoTailStrategyExecutionService(
         val filledAmount = result.filledAmount
         val realFill = filledSize != null && filledAmount != null &&
                 filledSize > BigDecimal.ZERO && filledAmount > BigDecimal.ZERO
-        val isBracketFilled = realFill && strategy.mode == TradingMode.BRACKET_DYNAMIC
+        val isManagedFilled = realFill && strategy.mode != TradingMode.LEGACY_SPREAD && strategy.enableExitManager
+        val entryFillPrice = avgFillPrice(filledSize, filledAmount)
         saveTriggerRecord(
             strategy,
             periodStartUnix,
@@ -1261,13 +1334,20 @@ class CryptoTailStrategyExecutionService(
             tokenId = tokenId,
             filledSize = result.filledSize,
             filledAmount = result.filledAmount,
-            remainingSize = if (isBracketFilled) filledSize else null,
-            exitStatus = if (isBracketFilled) ExitStatus.OPEN.name else ExitStatus.NONE.name,
+            remainingSize = if (isManagedFilled) filledSize else null,
+            exitStatus = if (isManagedFilled) ExitStatus.OPEN.name else ExitStatus.NONE.name,
             finalLimitPrice = usedLimitPrice,
-            retryCount = retryCount
+            retryCount = retryCount,
+            entryFillPrice = entryFillPrice,
+            entryModelSide = metrics?.side,
+            entryPWin = metrics?.pWin,
+            entrySafeRatio = metrics?.safeRatio,
+            entryGap = metrics?.gap,
+            entryRemainingSeconds = metrics?.remaining?.toInt(),
+            peakBid = triggerPrice
         )
         when (result.status) {
-            "success" -> logger.info("加密价差策略下单成交: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, outcomeIndex=$outcomeIndex, orderId=${result.orderId}, filledSize=${result.filledSize?.toPlainString()}, filledAmount=${result.filledAmount?.toPlainString()}, retryCount=$retryCount, triggerType=$triggerType, mode=${strategy.mode.name}, exitStatus=${if (isBracketFilled) "OPEN" else "NONE"}")
+            "success" -> logger.info("加密价差策略下单成交: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, outcomeIndex=$outcomeIndex, orderId=${result.orderId}, filledSize=${result.filledSize?.toPlainString()}, filledAmount=${result.filledAmount?.toPlainString()}, retryCount=$retryCount, triggerType=$triggerType, mode=${strategy.mode.name}, exitStatus=${if (isManagedFilled) "OPEN" else "NONE"}")
             "unfilled" -> logger.warn("加密价差策略下单零成交(unfilled): strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, orderId=${result.orderId}, retryCount=$retryCount, reason=${result.failReason}")
             else -> logger.error("加密价差策略下单失败: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, retryCount=$retryCount, reason=${result.failReason}")
         }
@@ -1572,7 +1652,8 @@ class CryptoTailStrategyExecutionService(
             amountUsdc,
             orderRequest,
             finalLimitPrice = price,
-            retryOrderBuilder = retryBuilder
+            retryOrderBuilder = retryBuilder,
+            metrics = metrics
         )
     }
 
@@ -1612,12 +1693,19 @@ class CryptoTailStrategyExecutionService(
         filledAmount: BigDecimal? = null,
         orderType: String? = null,
         tokenId: String? = null,
-        /** 仅 BRACKET_DYNAMIC 入场成交后由调用方传入：=filledSize；其他模式保持 null */
+        /** 启用退出管理的概率模式入场成交后由调用方传入：=filledSize；其他模式保持 null */
         remainingSize: BigDecimal? = null,
-        /** 仅 BRACKET_DYNAMIC 入场成交后由调用方传入：=OPEN；其他模式保持默认 NONE */
+        /** 启用退出管理的概率模式入场成交后由调用方传入：=OPEN；其他模式保持默认 NONE */
         exitStatus: String = ExitStatus.NONE.name,
         finalLimitPrice: BigDecimal? = null,
-        retryCount: Int = 0
+        retryCount: Int = 0,
+        entryFillPrice: BigDecimal? = null,
+        entryModelSide: Int? = null,
+        entryPWin: BigDecimal? = null,
+        entrySafeRatio: BigDecimal? = null,
+        entryGap: BigDecimal? = null,
+        entryRemainingSeconds: Int? = null,
+        peakBid: BigDecimal? = null
     ): CryptoTailStrategyTrigger {
         val record = CryptoTailStrategyTrigger(
             strategyId = strategy.id!!,
@@ -1637,7 +1725,14 @@ class CryptoTailStrategyExecutionService(
             // 冗余冻结当时模式：避免后续修改策略表 mode 字段污染历史触发的语义
             mode = strategy.mode,
             remainingSize = remainingSize,
-            exitStatus = exitStatus
+            exitStatus = exitStatus,
+            entryFillPrice = entryFillPrice,
+            entryModelSide = entryModelSide,
+            entryPWin = entryPWin,
+            entrySafeRatio = entrySafeRatio,
+            entryGap = entryGap,
+            entryRemainingSeconds = entryRemainingSeconds,
+            peakBid = peakBid
         )
         val saved = triggerRepository.save(record)
         // 非旧价差模式（BARRIER/BRACKET）记录下单结果到决策日志（链路终点锚点）
@@ -1798,8 +1893,9 @@ class CryptoTailStrategyExecutionService(
                     val filledAmount = body.makingAmount?.toSafeBigDecimal() ?: BigDecimal.ZERO
                     val realFill = filledSize > BigDecimal.ZERO && filledAmount > BigDecimal.ZERO
                     val finalStatus = if (realFill) "success" else "unfilled"
-                    // 阶梯模式手动下单成交后也进入持仓状态机（语义自洽：模式即合约）
-                    val isBracketFilled = realFill && strategy.mode == TradingMode.BRACKET_DYNAMIC
+                    // 概率模式手动下单成交后也进入统一持仓状态机（旧价差模式不接入）
+                    val isManagedFilled = realFill && strategy.mode != TradingMode.LEGACY_SPREAD && strategy.enableExitManager
+                    val manualEntryFillPrice = avgFillPrice(if (realFill) filledSize else null, if (realFill) filledAmount else null)
                     saveTriggerRecord(
                         strategy,
                         periodStartUnix,
@@ -1814,8 +1910,10 @@ class CryptoTailStrategyExecutionService(
                         filledSize = if (realFill) filledSize else null,
                         filledAmount = if (realFill) filledAmount else null,
                         orderType = orderRequest.orderType,
-                        remainingSize = if (isBracketFilled) filledSize else null,
-                        exitStatus = if (isBracketFilled) ExitStatus.OPEN.name else ExitStatus.NONE.name
+                        remainingSize = if (isManagedFilled) filledSize else null,
+                        exitStatus = if (isManagedFilled) ExitStatus.OPEN.name else ExitStatus.NONE.name,
+                        entryFillPrice = manualEntryFillPrice,
+                        peakBid = price
                     )
                     if (realFill) {
                         logger.info("手动下单成交: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, outcomeIndex=$outcomeIndex, orderId=${body.orderId}, filledSize=${filledSize.toPlainString()}, filledAmount=${filledAmount.toPlainString()}, mode=${strategy.mode.name}")
@@ -2033,13 +2131,23 @@ class CryptoTailStrategyExecutionService(
         newOrderId: String? = null,
         newOrderType: String? = null
     ) {
+        val managedFill = status == "success" &&
+                strategy.mode != TradingMode.LEGACY_SPREAD &&
+                strategy.enableExitManager &&
+                (filledSize ?: trigger.filledSize ?: BigDecimal.ZERO) > BigDecimal.ZERO
+        val finalFilledSize = filledSize ?: trigger.filledSize
+        val finalFilledAmount = filledAmount ?: trigger.filledAmount
         val updated = trigger.copy(
             status = status,
-            filledSize = filledSize ?: trigger.filledSize,
-            filledAmount = filledAmount ?: trigger.filledAmount,
+            filledSize = finalFilledSize,
+            filledAmount = finalFilledAmount,
             failReason = reason ?: trigger.failReason,
             orderId = newOrderId ?: trigger.orderId,
-            orderType = newOrderType ?: trigger.orderType
+            orderType = newOrderType ?: trigger.orderType,
+            remainingSize = if (managedFill) finalFilledSize else trigger.remainingSize,
+            exitStatus = if (managedFill && trigger.exitStatus == ExitStatus.NONE.name) ExitStatus.OPEN.name else trigger.exitStatus,
+            entryFillPrice = if (managedFill) avgFillPrice(finalFilledSize, finalFilledAmount) else trigger.entryFillPrice,
+            peakBid = if (managedFill) trigger.triggerPrice else trigger.peakBid
         )
         triggerRepository.save(updated)
         if (strategy.mode != TradingMode.LEGACY_SPREAD) {

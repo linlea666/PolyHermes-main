@@ -14,6 +14,14 @@ import java.util.concurrent.ConcurrentHashMap
  * 由 [PeriodPriceProviderRouter] 按系统配置选择其一。旧 spread 模式仍直接用 BinanceKlineService，不走此抽象。
  */
 interface PeriodPriceProvider {
+    data class Ohlc1m(
+        val minuteStartUnix: Long,
+        val open: BigDecimal,
+        val high: BigDecimal,
+        val low: BigDecimal,
+        val close: BigDecimal
+    )
+
     /** 该市场价源是否可用（凭证 + feedID / 连接 + 数据就绪） */
     fun isAvailable(marketSlugPrefix: String): Boolean
 
@@ -22,6 +30,9 @@ interface PeriodPriceProvider {
 
     /** 结算用 (期初价, 期末价)；任一缺失返回 null */
     fun getFinalOpenClose(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>?
+
+    /** 最近 1m OHLC，按时间升序返回；价源不支持时返回空列表。 */
+    fun getRecentOhlc1m(marketSlugPrefix: String, minutes: Int, nowSeconds: Long = System.currentTimeMillis() / 1000): List<Ohlc1m> = emptyList()
 
     /**
      * 每 √秒 波动率 σ_per_√s。outcomeIndex 仅为兼容接口（终值波动率与方向无关，实现忽略之）。
@@ -69,6 +80,29 @@ class ChainlinkPeriodPriceProvider(
         val open = chainlink.getPriceAtTimestamp(marketSlugPrefix, periodStartUnix) ?: return null
         val close = chainlink.getPriceAtTimestamp(marketSlugPrefix, periodStartUnix + intervalSeconds) ?: return null
         return open to close
+    }
+
+    override fun getRecentOhlc1m(marketSlugPrefix: String, minutes: Int, nowSeconds: Long): List<PeriodPriceProvider.Ohlc1m> {
+        if (minutes <= 0) return emptyList()
+        val result = ArrayList<PeriodPriceProvider.Ohlc1m>(minutes)
+        val endMinute = nowSeconds - (nowSeconds % 60)
+        for (i in minutes downTo 1) {
+            val start = endMinute - i * 60L
+            val points = (0..59 step 5).mapNotNull { offset ->
+                chainlink.getPriceAtTimestamp(marketSlugPrefix, start + offset)
+            }
+            if (points.isEmpty()) continue
+            result.add(
+                PeriodPriceProvider.Ohlc1m(
+                    minuteStartUnix = start,
+                    open = points.first(),
+                    high = points.maxOrNull() ?: points.first(),
+                    low = points.minOrNull() ?: points.first(),
+                    close = points.last()
+                )
+            )
+        }
+        return result
     }
 
     override fun getSigmaPerSqrtS(
