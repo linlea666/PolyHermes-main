@@ -1,5 +1,8 @@
 package com.wrbug.polymarketbot.entity
 
+import com.wrbug.polymarketbot.enums.ExitStatus
+import com.wrbug.polymarketbot.enums.TradingMode
+import com.wrbug.polymarketbot.enums.TradingModeConverter
 import jakarta.persistence.*
 import java.math.BigDecimal
 import com.wrbug.polymarketbot.util.toSafeBigDecimal
@@ -74,6 +77,19 @@ data class CryptoTailStrategyTrigger(
 
     @Column(name = "trigger_type", nullable = false, length = 20)
     val triggerType: String = "AUTO",
+
+    /** 冗余冻结当时模式（V52 引入）：避免后续修改策略表 mode 字段污染历史触发的语义 */
+    @Convert(converter = TradingModeConverter::class)
+    @Column(name = "mode", nullable = false, columnDefinition = "TINYINT")
+    val mode: TradingMode = TradingMode.LEGACY_SPREAD,
+
+    /** 部分卖出后剩余 shares（仅 BRACKET_DYNAMIC 使用）；NULL=未填充, 0=已全部退出 */
+    @Column(name = "remaining_size", precision = 20, scale = 8)
+    val remainingSize: BigDecimal? = null,
+
+    /** 退出状态机（仅 BRACKET_DYNAMIC 使用，其他模式恒为 NONE） */
+    @Column(name = "exit_status", nullable = false, length = 20)
+    val exitStatus: String = ExitStatus.NONE.name,
 
     @Column(name = "created_at", nullable = false)
     val createdAt: Long = System.currentTimeMillis(),

@@ -4,6 +4,8 @@ import com.wrbug.polymarketbot.enums.SpreadDirection
 import com.wrbug.polymarketbot.enums.SpreadDirectionConverter
 import com.wrbug.polymarketbot.enums.SpreadMode
 import com.wrbug.polymarketbot.enums.SpreadModeConverter
+import com.wrbug.polymarketbot.enums.TradingMode
+import com.wrbug.polymarketbot.enums.TradingModeConverter
 import jakarta.persistence.*
 import java.math.BigDecimal
 
@@ -62,9 +64,76 @@ data class CryptoTailStrategy(
     @Column(name = "spread_direction", nullable = false, columnDefinition = "TINYINT")
     val spreadDirection: SpreadDirection = SpreadDirection.MIN,
 
-    /** 障碍（终值概率）模式开关；false 时完全走旧逻辑，旧行为不变 */
+    /** 障碍（终值概率）模式开关；false 时完全走旧逻辑，旧行为不变。
+     *  注：自 V52 起新增 [mode] 字段统一承载三种模式，本字段保留作为兼容字段（前端不再写入），
+     *  但 mode/barrierEnabled 在历史数据迁移后保持一致：mode==BARRIER_HOLD ⇔ barrierEnabled=true。 */
     @Column(name = "barrier_enabled", nullable = false)
     val barrierEnabled: Boolean = false,
+
+    /** 交易模式（V52 引入）：0=LEGACY_SPREAD 旧价差, 1=BARRIER_HOLD 障碍持有, 2=BRACKET_DYNAMIC 概率阶梯止盈 */
+    @Convert(converter = TradingModeConverter::class)
+    @Column(name = "mode", nullable = false, columnDefinition = "TINYINT")
+    val mode: TradingMode = TradingMode.LEGACY_SPREAD,
+
+    /** 阶梯模式进场胜率阈值 pWin>=此值才进场，默认 0.80（高于障碍模式默认 0.55，更严苛） */
+    @Column(name = "bracket_entry_prob", nullable = false, precision = 20, scale = 8)
+    val bracketEntryProb: BigDecimal = BigDecimal("0.80"),
+
+    /** 阶梯模式扣费 EV 边际阈值 edge=pWin-有效成本>=此值，默认 0.04 */
+    @Column(name = "bracket_entry_edge", nullable = false, precision = 20, scale = 8)
+    val bracketEntryEdge: BigDecimal = BigDecimal("0.04"),
+
+    /** 阶梯模式入场最高买价（封顶 bestAsk/有效成本），默认 0.90 */
+    @Column(name = "bracket_max_entry_price", nullable = false, precision = 20, scale = 8)
+    val bracketMaxEntryPrice: BigDecimal = BigDecimal("0.90"),
+
+    /** 止盈1: bestBid 价格阈值；bestBid>=此值且 pWin<tp1HoldPwin 触发卖出 tp1Ratio 的剩余仓位 */
+    @Column(name = "tp1_price", nullable = false, precision = 20, scale = 8)
+    val tp1Price: BigDecimal = BigDecimal("0.90"),
+
+    /** 止盈1: 卖出剩余仓位比例 0~1，默认 0.50（卖一半） */
+    @Column(name = "tp1_ratio", nullable = false, precision = 20, scale = 8)
+    val tp1Ratio: BigDecimal = BigDecimal("0.50"),
+
+    /** 止盈1跳过条件: pWin>=此值则不卖（系统认为还能涨，继续持有），默认 0.95 */
+    @Column(name = "tp1_hold_pwin", nullable = false, precision = 20, scale = 8)
+    val tp1HoldPwin: BigDecimal = BigDecimal("0.95"),
+
+    /** 止盈2: bestBid 价格阈值，默认 0.95 */
+    @Column(name = "tp2_price", nullable = false, precision = 20, scale = 8)
+    val tp2Price: BigDecimal = BigDecimal("0.95"),
+
+    /** 止盈2: 卖出剩余仓位比例，默认 1.00（全部清仓） */
+    @Column(name = "tp2_ratio", nullable = false, precision = 20, scale = 8)
+    val tp2Ratio: BigDecimal = BigDecimal("1.00"),
+
+    /** 止盈2跳过条件: pWin>=此值则不卖（极高概率冲到 0.99），默认 0.99 */
+    @Column(name = "tp2_hold_pwin", nullable = false, precision = 20, scale = 8)
+    val tp2HoldPwin: BigDecimal = BigDecimal("0.99"),
+
+    /** 持有到结算的 pWin 阈值；pWin>=此值且剩余时间 <=holdToSettleSeconds 才允许放弃 TP/STOP 拿到结算 */
+    @Column(name = "hold_to_settle_pwin", nullable = false, precision = 20, scale = 8)
+    val holdToSettlePwin: BigDecimal = BigDecimal("0.97"),
+
+    /** 持有到结算允许的剩余秒数阈值，默认 30s */
+    @Column(name = "hold_to_settle_seconds", nullable = false)
+    val holdToSettleSeconds: Int = 30,
+
+    /** 止损 pWin 阈值: pWin<=此值触发 FAK 平仓（与 stopPrice OR 关系），默认 0.55 */
+    @Column(name = "stop_prob", nullable = false, precision = 20, scale = 8)
+    val stopProb: BigDecimal = BigDecimal("0.55"),
+
+    /** 止损价格阈值: bestBid<=此值触发 FAK 平仓（与 stopProb OR 关系），默认 0.70 */
+    @Column(name = "stop_price", nullable = false, precision = 20, scale = 8)
+    val stopPrice: BigDecimal = BigDecimal("0.70"),
+
+    /** 距结算 N 秒未触发任何 exit 时强制 FAK 平仓（避免尾盘流动性枯竭被困死），默认 15s */
+    @Column(name = "force_exit_before_settle_seconds", nullable = false)
+    val forceExitBeforeSettleSeconds: Int = 15,
+
+    /** 退出订单类型: FAK=吃单(默认,确保成交); MAKER=挂单(可省滑点,需配合超时回退) */
+    @Column(name = "exit_order_type", nullable = false, length = 8)
+    val exitOrderType: String = "FAK",
 
     /**
      * 进场胜率阈值 pWin≥entryProb 才进场（0~1），默认 0.55。
@@ -118,6 +187,15 @@ data class CryptoTailStrategy(
     /** 进场订单类型: FAK=吃单(taker, 默认, 与原行为一致)；MAKER=挂单(GTC+postOnly@bid+offset, 赚返佣/省价差) */
     @Column(name = "entry_order_type", nullable = false, length = 8)
     val entryOrderType: String = "FAK",
+
+    /**
+     * FAK 进场限价滑点（V53 引入）：limit = effectiveCost + entryFakSlippage（封顶 maxEntryPrice/bracketMaxEntryPrice）。
+     * 解决 BARRIER/BRACKET 模式下 limit 紧贴 bestAsk 在 0.5–1.5s 网络延迟内被吃空 → FAK KILL 的根因。
+     * 仅作用于 limit 价格，FAK 实际成交价由对手盘决定（多吸一档防 KILL）；EV 闸口径不变。
+     * 取值范围 [0, 0.10]，默认 0.02。高流动性档位可调到 0.01；低流动性可上调到 0.03。
+     */
+    @Column(name = "entry_fak_slippage", nullable = false, precision = 20, scale = 8)
+    val entryFakSlippage: BigDecimal = BigDecimal("0.02"),
 
     /** maker 挂单相对 bestBid 的价格偏移(可负)，挂单价=bestBid+offset(不越过bestAsk 以保持 maker, 并封顶 maxEntryPrice)，默认 0=平 bestBid */
     @Column(name = "maker_price_offset", nullable = false, precision = 20, scale = 8)

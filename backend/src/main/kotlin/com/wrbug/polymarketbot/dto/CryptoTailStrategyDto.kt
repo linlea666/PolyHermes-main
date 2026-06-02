@@ -48,6 +48,8 @@ data class CryptoTailStrategyCreateRequest(
     val gasCostUsdc: String? = null,
     /** 进场订单类型: FAK / MAKER */
     val entryOrderType: String? = null,
+    /** FAK 进场限价滑点（V53）：limit = effectiveCost + 此值, 封顶 maxEntryPrice/bracketMaxEntryPrice，默认 0.02 */
+    val entryFakSlippage: String? = null,
     /** maker 挂单相对 bestBid 价格偏移(可负) */
     val makerPriceOffset: String? = null,
     /** maker 距结算多少秒未成交触发撤单决策 */
@@ -69,7 +71,25 @@ data class CryptoTailStrategyCreateRequest(
     /** 分数 Kelly 动态仓位开关 */
     val kellyEnabled: Boolean? = null,
     /** Kelly 分数 0~1 */
-    val kellyFraction: String? = null
+    val kellyFraction: String? = null,
+    /** 交易模式: 0=LEGACY_SPREAD, 1=BARRIER_HOLD, 2=BRACKET_DYNAMIC（V52） */
+    val mode: Int? = null,
+    val bracketEntryProb: String? = null,
+    val bracketEntryEdge: String? = null,
+    val bracketMaxEntryPrice: String? = null,
+    val tp1Price: String? = null,
+    val tp1Ratio: String? = null,
+    val tp1HoldPwin: String? = null,
+    val tp2Price: String? = null,
+    val tp2Ratio: String? = null,
+    val tp2HoldPwin: String? = null,
+    val holdToSettlePwin: String? = null,
+    val holdToSettleSeconds: Int? = null,
+    val stopProb: String? = null,
+    val stopPrice: String? = null,
+    val forceExitBeforeSettleSeconds: Int? = null,
+    /** 退出订单类型: FAK / MAKER */
+    val exitOrderType: String? = null
 )
 
 /**
@@ -105,6 +125,8 @@ data class CryptoTailStrategyUpdateRequest(
     val makerRebateBps: Int? = null,
     val gasCostUsdc: String? = null,
     val entryOrderType: String? = null,
+    /** FAK 进场限价滑点（V53） */
+    val entryFakSlippage: String? = null,
     val makerPriceOffset: String? = null,
     val makerCancelBeforeSettleSeconds: Int? = null,
     val makerFallbackTaker: Boolean? = null,
@@ -115,7 +137,24 @@ data class CryptoTailStrategyUpdateRequest(
     val sigmaMethod: String? = null,
     val ewmaLambda: String? = null,
     val kellyEnabled: Boolean? = null,
-    val kellyFraction: String? = null
+    val kellyFraction: String? = null,
+    /** 交易模式: 0/1/2（V52） */
+    val mode: Int? = null,
+    val bracketEntryProb: String? = null,
+    val bracketEntryEdge: String? = null,
+    val bracketMaxEntryPrice: String? = null,
+    val tp1Price: String? = null,
+    val tp1Ratio: String? = null,
+    val tp1HoldPwin: String? = null,
+    val tp2Price: String? = null,
+    val tp2Ratio: String? = null,
+    val tp2HoldPwin: String? = null,
+    val holdToSettlePwin: String? = null,
+    val holdToSettleSeconds: Int? = null,
+    val stopProb: String? = null,
+    val stopPrice: String? = null,
+    val forceExitBeforeSettleSeconds: Int? = null,
+    val exitOrderType: String? = null
 )
 
 /**
@@ -164,6 +203,8 @@ data class CryptoTailStrategyDto(
     val gasCostUsdc: String = "0",
     /** 进场订单类型: FAK吃单 / MAKER挂单 */
     val entryOrderType: String = "FAK",
+    /** FAK 进场限价滑点（V53）：limit = effectiveCost + 此值, 封顶 maxEntryPrice/bracketMaxEntryPrice */
+    val entryFakSlippage: String = "0.02",
     /** maker 挂单相对 bestBid 价格偏移 */
     val makerPriceOffset: String = "0",
     /** maker 距结算多少秒未成交触发撤单决策 */
@@ -186,6 +227,24 @@ data class CryptoTailStrategyDto(
     val kellyEnabled: Boolean = false,
     /** Kelly 分数 0~1 */
     val kellyFraction: String = "0.25",
+    /** 交易模式: 0=LEGACY_SPREAD, 1=BARRIER_HOLD, 2=BRACKET_DYNAMIC */
+    val mode: Int = 0,
+    val bracketEntryProb: String = "0.80",
+    val bracketEntryEdge: String = "0.04",
+    val bracketMaxEntryPrice: String = "0.90",
+    val tp1Price: String = "0.90",
+    val tp1Ratio: String = "0.50",
+    val tp1HoldPwin: String = "0.95",
+    val tp2Price: String = "0.95",
+    val tp2Ratio: String = "1.00",
+    val tp2HoldPwin: String = "0.99",
+    val holdToSettlePwin: String = "0.97",
+    val holdToSettleSeconds: Int = 30,
+    val stopProb: String = "0.55",
+    val stopPrice: String = "0.70",
+    val forceExitBeforeSettleSeconds: Int = 15,
+    /** 退出订单类型: FAK / MAKER */
+    val exitOrderType: String = "FAK",
     val lastTriggerAt: Long? = null,
     /** 已实现总收益 USDC（已结算订单的 realizedPnl 之和） */
     val totalRealizedPnl: String? = null,
@@ -254,7 +313,13 @@ data class CryptoTailStrategyTriggerDto(
     /** 市场赢家 outcome 索引（结算后有值） */
     val winnerOutcomeIndex: Int? = null,
     val settledAt: Long? = null,
-    val createdAt: Long = 0L
+    val createdAt: Long = 0L,
+    /** 触发时模式: 0=LEGACY_SPREAD, 1=BARRIER_HOLD, 2=BRACKET_DYNAMIC（V52） */
+    val mode: Int = 0,
+    /** 阶梯模式剩余仓位（shares），其他模式为 null */
+    val remainingSize: String? = null,
+    /** 阶梯模式仓位状态: NONE/OPEN/PARTIAL_EXIT/FULLY_EXITED/HELD_TO_SETTLE */
+    val exitStatus: String = "NONE"
 )
 
 /**
@@ -416,4 +481,45 @@ data class CryptoTailPnlCurveResponse(
     /** 最大回撤 USDC（正数表示回撤幅度） */
     val maxDrawdown: String? = null,
     val curveData: List<CryptoTailPnlCurvePoint> = emptyList()
+)
+
+/**
+ * 阶梯模式退出明细查询请求（按 trigger 维度展开）
+ */
+data class CryptoTailStrategyExitListRequest(
+    val triggerId: Long = 0L
+)
+
+/**
+ * 单条退出明细
+ */
+data class CryptoTailStrategyExitDto(
+    val id: Long = 0L,
+    val triggerId: Long = 0L,
+    val strategyId: Long = 0L,
+    /** 退出类型: TP1/TP2/STOP/FORCE/SETTLE */
+    val exitKind: String = "",
+    val targetSize: String = "0",
+    val filledSize: String? = null,
+    val filledAmount: String? = null,
+    val exitPrice: String? = null,
+    val orderId: String? = null,
+    val orderType: String? = null,
+    /** 状态: pending/success/failed/cancelled/unfilled */
+    val status: String = "pending",
+    val pwinAtDecision: String? = null,
+    val bestBidAtDecision: String? = null,
+    val remainingSeconds: Int? = null,
+    val decisionReason: String? = null,
+    val failReason: String? = null,
+    val createdAt: Long = 0L,
+    val settledAt: Long? = null
+)
+
+/**
+ * 阶梯模式退出明细查询响应
+ */
+data class CryptoTailStrategyExitListResponse(
+    val triggerId: Long = 0L,
+    val list: List<CryptoTailStrategyExitDto> = emptyList()
 )

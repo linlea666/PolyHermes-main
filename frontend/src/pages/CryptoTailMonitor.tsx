@@ -84,7 +84,11 @@ const CryptoTailMonitor: React.FC = () => {
   const [sigmaRec, setSigmaRec] = useState<CryptoTailRecommendSigmaScaleResponse | null>(null)
   const [sigmaRecLoading, setSigmaRecLoading] = useState(false)
   const selectedStrategy = strategies.find(s => s.id === selectedStrategyId)
-  const barrierEnabled = selectedStrategy?.barrierEnabled === true
+  const selectedMode = typeof selectedStrategy?.mode === 'number'
+    ? selectedStrategy?.mode
+    : (selectedStrategy?.barrierEnabled === true ? 1 : 0)
+  // 障碍模式与阶梯模式共用 pWin/校准/决策日志等监控面板（barrierEnabled 字段保持兼容）
+  const barrierEnabled = selectedMode === 1 || selectedMode === 2
 
   // 导出单笔成交分析快照 CSV（用于离线回测/复盘）
   const handleExportSnapshots = async () => {

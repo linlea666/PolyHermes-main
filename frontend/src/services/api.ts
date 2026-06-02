@@ -560,6 +560,25 @@ export const apiService = {
       maxConcurrentPositions?: number | null
       kellyEnabled?: boolean
       kellyFraction?: string
+      /** FAK 进场限价滑点（V53），BARRIER + BRACKET 共用 */
+      entryFakSlippage?: string
+      // 阶梯模式（V52）
+      mode?: number
+      bracketEntryProb?: string
+      bracketEntryEdge?: string
+      bracketMaxEntryPrice?: string
+      tp1Price?: string
+      tp1Ratio?: string
+      tp1HoldPwin?: string
+      tp2Price?: string
+      tp2Ratio?: string
+      tp2HoldPwin?: string
+      holdToSettlePwin?: string
+      holdToSettleSeconds?: number
+      stopProb?: string
+      stopPrice?: string
+      forceExitBeforeSettleSeconds?: number
+      exitOrderType?: string
     }) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/create', data),
     update: (data: {
@@ -586,6 +605,25 @@ export const apiService = {
       maxConcurrentPositions?: number | null
       kellyEnabled?: boolean
       kellyFraction?: string
+      /** FAK 进场限价滑点（V53），BARRIER + BRACKET 共用 */
+      entryFakSlippage?: string
+      // 阶梯模式（V52）
+      mode?: number
+      bracketEntryProb?: string
+      bracketEntryEdge?: string
+      bracketMaxEntryPrice?: string
+      tp1Price?: string
+      tp1Ratio?: string
+      tp1HoldPwin?: string
+      tp2Price?: string
+      tp2Ratio?: string
+      tp2HoldPwin?: string
+      holdToSettlePwin?: string
+      holdToSettleSeconds?: number
+      stopProb?: string
+      stopPrice?: string
+      forceExitBeforeSettleSeconds?: number
+      exitOrderType?: string
     }) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/update', data),
     delete: (data: { strategyId: number }) =>
@@ -599,6 +637,9 @@ export const apiService = {
       endDate?: number
     }) =>
       apiClient.post<ApiResponse<{ list: import('../types').CryptoTailStrategyTriggerDto[]; total: number }>>('/crypto-tail-strategy/triggers', data),
+    /** 阶梯模式退出明细（按 triggerId） */
+    exits: (data: { triggerId: number }) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailStrategyExitListResponse>>('/crypto-tail-strategy/exits', data),
     pnlCurve: (data: import('../types').CryptoTailPnlCurveRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailPnlCurveResponse>>('/crypto-tail-strategy/pnl-curve', data),
     calibration: (data: import('../types').CryptoTailCalibrationRequest) =>

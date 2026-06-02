@@ -1472,6 +1472,8 @@ export interface CryptoTailStrategyDto {
   gasCostUsdc?: string
   /** 进场订单类型: FAK吃单 / MAKER挂单 */
   entryOrderType?: string
+  /** FAK 进场限价滑点（V53）：limit = effectiveCost + 此值, 封顶 maxEntryPrice/bracketMaxEntryPrice */
+  entryFakSlippage?: string
   /** maker 挂单相对 bestBid 价格偏移(可负) */
   makerPriceOffset?: string
   /** maker 距结算多少秒未成交触发撤单决策 */
@@ -1494,6 +1496,38 @@ export interface CryptoTailStrategyDto {
   kellyEnabled?: boolean
   /** Kelly 分数 0~1 */
   kellyFraction?: string
+  /** 交易模式（V52）: 0=LEGACY_SPREAD 旧价差, 1=BARRIER_HOLD 障碍, 2=BRACKET_DYNAMIC 概率阶梯止盈 */
+  mode?: number
+  /** 阶梯模式入场胜率阈值 */
+  bracketEntryProb?: string
+  /** 阶梯模式入场扣费 EV 阈值 */
+  bracketEntryEdge?: string
+  /** 阶梯模式入场最高买价 */
+  bracketMaxEntryPrice?: string
+  /** 止盈1: bestBid 阈值 */
+  tp1Price?: string
+  /** 止盈1: 卖出剩余比例 0~1 */
+  tp1Ratio?: string
+  /** 止盈1跳过条件: pWin>=此值则不卖 */
+  tp1HoldPwin?: string
+  /** 止盈2: bestBid 阈值 */
+  tp2Price?: string
+  /** 止盈2: 卖出剩余比例 0~1 */
+  tp2Ratio?: string
+  /** 止盈2跳过条件: pWin>=此值则不卖 */
+  tp2HoldPwin?: string
+  /** 持有到结算的 pWin 阈值 */
+  holdToSettlePwin?: string
+  /** 持有到结算的剩余秒数阈值 */
+  holdToSettleSeconds?: number
+  /** 止损 pWin 阈值 */
+  stopProb?: string
+  /** 止损价格阈值 */
+  stopPrice?: string
+  /** 距结算 N 秒未触发任何 exit 则强制平仓 */
+  forceExitBeforeSettleSeconds?: number
+  /** 退出订单类型: FAK / MAKER */
+  exitOrderType?: string
   lastTriggerAt?: number
   /** 已实现总收益 USDC */
   totalRealizedPnl?: string
@@ -1673,6 +1707,42 @@ export interface CryptoTailStrategyTriggerDto {
   winnerOutcomeIndex?: number
   settledAt?: number
   createdAt: number
+  /** 触发时模式: 0=LEGACY_SPREAD, 1=BARRIER_HOLD, 2=BRACKET_DYNAMIC */
+  mode?: number
+  /** 阶梯模式剩余仓位（shares） */
+  remainingSize?: string
+  /** 阶梯模式仓位状态: NONE/OPEN/PARTIAL_EXIT/FULLY_EXITED/HELD_TO_SETTLE */
+  exitStatus?: string
+}
+
+/** 阶梯模式单条退出明细 */
+export interface CryptoTailStrategyExitDto {
+  id: number
+  triggerId: number
+  strategyId: number
+  /** 退出类型: TP1/TP2/STOP/FORCE/SETTLE */
+  exitKind: string
+  targetSize: string
+  filledSize?: string | null
+  filledAmount?: string | null
+  exitPrice?: string | null
+  orderId?: string | null
+  orderType?: string | null
+  /** pending/success/failed/cancelled/unfilled */
+  status: string
+  pwinAtDecision?: string | null
+  bestBidAtDecision?: string | null
+  remainingSeconds?: number | null
+  decisionReason?: string | null
+  failReason?: string | null
+  createdAt: number
+  settledAt?: number | null
+}
+
+/** 阶梯模式退出明细查询响应 */
+export interface CryptoTailStrategyExitListResponse {
+  triggerId: number
+  list: CryptoTailStrategyExitDto[]
 }
 
 /** 收益曲线请求 */

@@ -168,6 +168,7 @@ const CryptoTailStrategyList: React.FC = () => {
       windowStartMinutes: 0,
       windowStartSeconds: 0,
       barrierEnabled: false,
+      mode: 0,
       entryProb: '0.55',
       entryEdge: '0.02',
       maxEntryPrice: '0.99',
@@ -180,6 +181,7 @@ const CryptoTailStrategyList: React.FC = () => {
       makerRebateBps: 0,
       gasCostUsdc: '0',
       entryOrderType: 'FAK',
+      entryFakSlippage: '0.02',
       makerPriceOffset: '0',
       makerCancelBeforeSettleSeconds: 5,
       makerFallbackTaker: false,
@@ -190,7 +192,23 @@ const CryptoTailStrategyList: React.FC = () => {
       sigmaMethod: 'GARMAN_KLASS',
       ewmaLambda: '0.94',
       kellyEnabled: false,
-      kellyFraction: '0.25'
+      kellyFraction: '0.25',
+      // 阶梯模式默认值（与后端 V52 默认一致）
+      bracketEntryProb: '0.80',
+      bracketEntryEdge: '0.04',
+      bracketMaxEntryPrice: '0.90',
+      tp1Price: '0.90',
+      tp1Ratio: '0.50',
+      tp1HoldPwin: '0.95',
+      tp2Price: '0.95',
+      tp2Ratio: '1.00',
+      tp2HoldPwin: '0.99',
+      holdToSettlePwin: '0.97',
+      holdToSettleSeconds: 30,
+      stopProb: '0.55',
+      stopPrice: '0.70',
+      forceExitBeforeSettleSeconds: 15,
+      exitOrderType: 'FAK'
     })
     setFormModalOpen(true)
   }
@@ -214,6 +232,7 @@ const CryptoTailStrategyList: React.FC = () => {
       spreadDirection: record.spreadDirection ?? 'MIN',
       enabled: record.enabled,
       barrierEnabled: record.barrierEnabled ?? false,
+      mode: typeof record.mode === 'number' ? record.mode : (record.barrierEnabled ? 1 : 0),
       entryProb: record.entryProb ?? '0.55',
       entryEdge: record.entryEdge ?? '0.02',
       maxEntryPrice: record.maxEntryPrice ?? '0.99',
@@ -226,6 +245,7 @@ const CryptoTailStrategyList: React.FC = () => {
       makerRebateBps: record.makerRebateBps ?? 0,
       gasCostUsdc: record.gasCostUsdc ?? '0',
       entryOrderType: record.entryOrderType ?? 'FAK',
+      entryFakSlippage: record.entryFakSlippage ?? '0.02',
       makerPriceOffset: record.makerPriceOffset ?? '0',
       makerCancelBeforeSettleSeconds: record.makerCancelBeforeSettleSeconds ?? 5,
       makerFallbackTaker: record.makerFallbackTaker ?? false,
@@ -236,7 +256,23 @@ const CryptoTailStrategyList: React.FC = () => {
       sigmaMethod: record.sigmaMethod ?? 'GARMAN_KLASS',
       ewmaLambda: record.ewmaLambda ?? '0.94',
       kellyEnabled: record.kellyEnabled ?? false,
-      kellyFraction: record.kellyFraction ?? '0.25'
+      kellyFraction: record.kellyFraction ?? '0.25',
+      // 阶梯模式
+      bracketEntryProb: record.bracketEntryProb ?? '0.80',
+      bracketEntryEdge: record.bracketEntryEdge ?? '0.04',
+      bracketMaxEntryPrice: record.bracketMaxEntryPrice ?? '0.90',
+      tp1Price: record.tp1Price ?? '0.90',
+      tp1Ratio: record.tp1Ratio ?? '0.50',
+      tp1HoldPwin: record.tp1HoldPwin ?? '0.95',
+      tp2Price: record.tp2Price ?? '0.95',
+      tp2Ratio: record.tp2Ratio ?? '1.00',
+      tp2HoldPwin: record.tp2HoldPwin ?? '0.99',
+      holdToSettlePwin: record.holdToSettlePwin ?? '0.97',
+      holdToSettleSeconds: record.holdToSettleSeconds ?? 30,
+      stopProb: record.stopProb ?? '0.55',
+      stopPrice: record.stopPrice ?? '0.70',
+      forceExitBeforeSettleSeconds: record.forceExitBeforeSettleSeconds ?? 15,
+      exitOrderType: record.exitOrderType ?? 'FAK'
     })
     setFormModalOpen(true)
   }
@@ -309,9 +345,29 @@ const CryptoTailStrategyList: React.FC = () => {
         message.error(t('cryptoTailStrategy.form.timeWindowExceed'))
         return
       }
-      const barrierOn = v.barrierEnabled === true
-      // 障碍模式：旧价格区间/价差闸不生效，统一存默认值；改由障碍闸把关
+      const resolvedMode: number = typeof v.mode === 'number' ? v.mode : (v.barrierEnabled === true ? 1 : 0)
+      const barrierOn = resolvedMode === 1 || resolvedMode === 2
+      const bracketOn = resolvedMode === 2
+      // 障碍/阶梯模式：旧价格区间/价差闸不生效，统一存默认值
+      const bracketParams = bracketOn ? {
+        bracketEntryProb: v.bracketEntryProb != null ? String(v.bracketEntryProb) : undefined,
+        bracketEntryEdge: v.bracketEntryEdge != null ? String(v.bracketEntryEdge) : undefined,
+        bracketMaxEntryPrice: v.bracketMaxEntryPrice != null ? String(v.bracketMaxEntryPrice) : undefined,
+        tp1Price: v.tp1Price != null ? String(v.tp1Price) : undefined,
+        tp1Ratio: v.tp1Ratio != null ? String(v.tp1Ratio) : undefined,
+        tp1HoldPwin: v.tp1HoldPwin != null ? String(v.tp1HoldPwin) : undefined,
+        tp2Price: v.tp2Price != null ? String(v.tp2Price) : undefined,
+        tp2Ratio: v.tp2Ratio != null ? String(v.tp2Ratio) : undefined,
+        tp2HoldPwin: v.tp2HoldPwin != null ? String(v.tp2HoldPwin) : undefined,
+        holdToSettlePwin: v.holdToSettlePwin != null ? String(v.holdToSettlePwin) : undefined,
+        holdToSettleSeconds: v.holdToSettleSeconds != null ? Number(v.holdToSettleSeconds) : undefined,
+        stopProb: v.stopProb != null ? String(v.stopProb) : undefined,
+        stopPrice: v.stopPrice != null ? String(v.stopPrice) : undefined,
+        forceExitBeforeSettleSeconds: v.forceExitBeforeSettleSeconds != null ? Number(v.forceExitBeforeSettleSeconds) : undefined,
+        exitOrderType: v.exitOrderType != null ? String(v.exitOrderType) : undefined
+      } : {}
       const barrierParams = {
+        mode: resolvedMode,
         barrierEnabled: barrierOn,
         entryProb: v.entryProb != null ? String(v.entryProb) : undefined,
         entryEdge: v.entryEdge != null ? String(v.entryEdge) : undefined,
@@ -325,6 +381,7 @@ const CryptoTailStrategyList: React.FC = () => {
         makerRebateBps: v.makerRebateBps != null ? Number(v.makerRebateBps) : undefined,
         gasCostUsdc: v.gasCostUsdc != null ? String(v.gasCostUsdc) : undefined,
         entryOrderType: v.entryOrderType != null ? String(v.entryOrderType) : undefined,
+        entryFakSlippage: v.entryFakSlippage != null ? String(v.entryFakSlippage) : undefined,
         makerPriceOffset: v.makerPriceOffset != null ? String(v.makerPriceOffset) : undefined,
         makerCancelBeforeSettleSeconds: v.makerCancelBeforeSettleSeconds != null ? Number(v.makerCancelBeforeSettleSeconds) : undefined,
         makerFallbackTaker: v.makerFallbackTaker === true,
@@ -335,7 +392,8 @@ const CryptoTailStrategyList: React.FC = () => {
         sigmaMethod: v.sigmaMethod != null ? String(v.sigmaMethod) : undefined,
         ewmaLambda: v.ewmaLambda != null ? String(v.ewmaLambda) : undefined,
         kellyEnabled: v.kellyEnabled === true,
-        kellyFraction: v.kellyFraction != null ? String(v.kellyFraction) : undefined
+        kellyFraction: v.kellyFraction != null ? String(v.kellyFraction) : undefined,
+        ...bracketParams
       }
       const payload = {
         accountId: v.accountId as number,
@@ -645,13 +703,27 @@ const CryptoTailStrategyList: React.FC = () => {
       title: t('cryptoTailStrategy.list.strategyName'),
       dataIndex: 'name',
       key: 'name',
-      width: isMobile ? 100 : 140,
+      width: isMobile ? 100 : 160,
       ellipsis: true,
-      render: (name: string | undefined, r: CryptoTailStrategyDto) => (
-        <Typography.Text strong style={{ wordBreak: 'break-word', whiteSpace: 'normal' }}>
-          {name || (r.marketTitle ?? r.marketSlugPrefix) || '-'}
-        </Typography.Text>
-      )
+      render: (name: string | undefined, r: CryptoTailStrategyDto) => {
+        const recordMode = typeof r.mode === 'number' ? r.mode : (r.barrierEnabled ? 1 : 0)
+        const tagColor = recordMode === 2 ? 'purple' : recordMode === 1 ? 'geekblue' : 'default'
+        const tagKey = recordMode === 2
+          ? 'cryptoTailStrategy.form.modeBracket'
+          : recordMode === 1
+            ? 'cryptoTailStrategy.form.modeBarrier'
+            : 'cryptoTailStrategy.form.modeLegacy'
+        return (
+          <Space size={4} direction="vertical" style={{ display: 'inline-flex', maxWidth: '100%' }}>
+            <Typography.Text strong style={{ wordBreak: 'break-word', whiteSpace: 'normal' }}>
+              {name || (r.marketTitle ?? r.marketSlugPrefix) || '-'}
+            </Typography.Text>
+            <Tag color={tagColor} style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: '16px', padding: '0 6px' }}>
+              {t(tagKey)}
+            </Tag>
+          </Space>
+        )
+      }
     },
     {
       title: t('cryptoTailStrategy.list.account'),
@@ -816,7 +888,10 @@ const CryptoTailStrategyList: React.FC = () => {
   ]
 
   const selectedMarket = Form.useWatch('marketSlugPrefix', form)
-  const barrierEnabled = Form.useWatch('barrierEnabled', form)
+  const mode = Form.useWatch('mode', form) as number | undefined
+  const isBarrierMode = mode === 1
+  const isBracketMode = mode === 2
+  const barrierEnabled = isBarrierMode || isBracketMode
   const entryOrderType = Form.useWatch('entryOrderType', form)
   const calibrationGateEnabled = Form.useWatch('calibrationGateEnabled', form)
   const sigmaMethod = Form.useWatch('sigmaMethod', form)
@@ -1129,18 +1204,25 @@ const CryptoTailStrategyList: React.FC = () => {
             </>
           )}
           <Form.Item
-            name="barrierEnabled"
-            valuePropName="checked"
+            name="mode"
             label={
               <Space size={4}>
-                <span>{t('cryptoTailStrategy.form.barrierEnabled')}</span>
-                <Tooltip title={t('cryptoTailStrategy.form.barrierEnabledTip')}>
+                <span>{t('cryptoTailStrategy.form.mode')}</span>
+                <Tooltip title={t('cryptoTailStrategy.form.modeTip')}>
                   <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
                 </Tooltip>
               </Space>
             }
+            rules={[{ required: true }]}
           >
-            <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
+            <Radio.Group>
+              <Radio value={0}>{t('cryptoTailStrategy.form.modeLegacy')}</Radio>
+              <Radio value={1}>{t('cryptoTailStrategy.form.modeBarrier')}</Radio>
+              <Radio value={2}>{t('cryptoTailStrategy.form.modeBracket')}</Radio>
+            </Radio.Group>
+          </Form.Item>
+          <Form.Item name="barrierEnabled" hidden valuePropName="checked">
+            <Switch />
           </Form.Item>
           {!barrierEnabled && (
             <>
@@ -1470,6 +1552,31 @@ const CryptoTailStrategyList: React.FC = () => {
                   ]}
                 />
               </Form.Item>
+              <Form.Item
+                name="entryFakSlippage"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.entryFakSlippage')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.entryFakSlippageTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+                rules={[
+                  {
+                    validator: (_, value) => {
+                      if (value == null || value === '') return Promise.resolve()
+                      const n = Number(value)
+                      if (Number.isNaN(n) || n < 0 || n > 0.1) {
+                        return Promise.reject(new Error(t('cryptoTailStrategy.form.entryFakSlippageTip')))
+                      }
+                      return Promise.resolve()
+                    }
+                  }
+                ]}
+              >
+                <InputNumber min={0} max={0.1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
               {entryOrderType === 'MAKER' && (
                 <>
                   <Form.Item
@@ -1645,6 +1752,215 @@ const CryptoTailStrategyList: React.FC = () => {
                   <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
                 </Form.Item>
               )}
+            </>
+          )}
+          {isBracketMode && (
+            <>
+              <Alert type="info" showIcon style={{ marginBottom: 16 }} message={t('cryptoTailStrategy.form.bracketInfo')} />
+              <Form.Item
+                name="bracketEntryProb"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.bracketEntryProb')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.bracketEntryProbTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+                rules={[{ required: true }]}
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="bracketEntryEdge"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.bracketEntryEdge')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.bracketEntryEdgeTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+                rules={[{ required: true }]}
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="bracketMaxEntryPrice"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.bracketMaxEntryPrice')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.bracketMaxEntryPriceTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+                rules={[{ required: true }]}
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="tp1Price"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.tp1Price')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.tp1PriceTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="tp1Ratio"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.tp1Ratio')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.tp1RatioTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="tp1HoldPwin"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.tp1HoldPwin')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.tp1HoldPwinTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="tp2Price"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.tp2Price')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.tp2PriceTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="tp2Ratio"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.tp2Ratio')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.tp2RatioTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="tp2HoldPwin"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.tp2HoldPwin')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.tp2HoldPwinTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="holdToSettlePwin"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.holdToSettlePwin')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.holdToSettlePwinTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="holdToSettleSeconds"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.holdToSettleSeconds')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.holdToSettleSecondsTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item
+                name="stopProb"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.stopProb')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.stopProbTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="stopPrice"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.stopPrice')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.stopPriceTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="forceExitBeforeSettleSeconds"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.forceExitBeforeSettleSeconds')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.forceExitBeforeSettleSecondsTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item
+                name="exitOrderType"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.exitOrderType')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.exitOrderTypeTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Select
+                  options={[
+                    { value: 'FAK', label: t('cryptoTailStrategy.form.exitOrderTypeFak') },
+                    { value: 'GTC', label: t('cryptoTailStrategy.form.exitOrderTypeGtc') },
+                    { value: 'MAKER', label: t('cryptoTailStrategy.form.exitOrderTypeMaker') }
+                  ]}
+                />
+              </Form.Item>
             </>
           )}
           <Form.Item name="enabled" valuePropName="checked">

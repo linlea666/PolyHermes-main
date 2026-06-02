@@ -4,6 +4,7 @@ import com.wrbug.polymarketbot.api.GammaEventBySlugResponse
 import com.wrbug.polymarketbot.constants.PolymarketConstants
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.enums.SpreadMode
+import com.wrbug.polymarketbot.enums.TradingMode
 import com.wrbug.polymarketbot.event.CryptoTailStrategyChangedEvent
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.service.binance.BinanceKlineAutoSpreadService
@@ -44,7 +45,8 @@ class CryptoTailOrderbookWsService(
     private val retrofitFactory: RetrofitFactory,
     private val binanceKlineAutoSpreadService: BinanceKlineAutoSpreadService,
     private val binanceKlineService: BinanceKlineService,
-    private val periodPriceProvider: PeriodPriceProvider
+    private val periodPriceProvider: PeriodPriceProvider,
+    private val bracketExitService: CryptoTailBracketExitService
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailOrderbookWsService::class.java)
@@ -216,20 +218,43 @@ class CryptoTailOrderbookWsService(
         for (e in entries) {
             val windowStart = e.periodStartUnix + e.strategy.windowStartSeconds
             val windowEnd = e.periodStartUnix + e.strategy.windowEndSeconds
-            if (nowSeconds < windowStart || nowSeconds >= windowEnd) continue
-            scope.launch {
-                try {
-                    executionService.tryTriggerWithPriceFromWs(
-                        strategy = e.strategy,
-                        periodStartUnix = e.periodStartUnix,
-                        marketTitle = e.marketTitle,
-                        tokenIds = e.tokenIds,
-                        outcomeIndex = e.outcomeIndex,
-                        bestBid = bestBid,
-                        bestAsk = bestAsk
-                    )
-                } catch (ex: Exception) {
-                    logger.error("WS 触发下单异常: strategyId=${e.strategy.id}, ${ex.message}", ex)
+            val inEntryWindow = nowSeconds >= windowStart && nowSeconds < windowEnd
+
+            // 入场分支：仅在时间窗内评估（旧行为不变）
+            if (inEntryWindow) {
+                scope.launch {
+                    try {
+                        executionService.tryTriggerWithPriceFromWs(
+                            strategy = e.strategy,
+                            periodStartUnix = e.periodStartUnix,
+                            marketTitle = e.marketTitle,
+                            tokenIds = e.tokenIds,
+                            outcomeIndex = e.outcomeIndex,
+                            bestBid = bestBid,
+                            bestAsk = bestAsk
+                        )
+                    } catch (ex: Exception) {
+                        logger.error("WS 触发下单异常: strategyId=${e.strategy.id}, ${ex.message}", ex)
+                    }
+                }
+            }
+
+            // 退出分支：仅 BRACKET_DYNAMIC 模式启用，且不受时间窗限制
+            //  - 持仓监听整个周期内都需活跃，包括 forceExitBeforeSettleSeconds 兜底窗口
+            //  - 跨周期由 SettlementService 兜底（HELD_TO_SETTLE）
+            if (e.strategy.mode == TradingMode.BRACKET_DYNAMIC) {
+                scope.launch {
+                    try {
+                        bracketExitService.evaluatePeriodOutcome(
+                            strategy = e.strategy,
+                            periodStartUnix = e.periodStartUnix,
+                            outcomeIndex = e.outcomeIndex,
+                            bestBid = bestBid,
+                            nowSeconds = nowSeconds
+                        )
+                    } catch (ex: Exception) {
+                        logger.error("WS 阶梯退出评估异常: strategyId=${e.strategy.id}, ${ex.message}", ex)
+                    }
                 }
             }
         }
@@ -335,15 +360,17 @@ class CryptoTailOrderbookWsService(
      * AUTO 模式：在周期开始（刷新订阅）时预拉历史 30 根 K 线并计算该周期价差，触发时直接用缓存。
      */
     private fun precomputeAutoSpreadForCurrentPeriods(newMap: Map<String, List<WsBookEntry>>) {
+        // V53 修正：预热触发条件按 mode 派生，包含 BARRIER_HOLD 和 BRACKET_DYNAMIC（两者都依赖 Chainlink 期初/σ）。
+        // 此前用 strategy.barrierEnabled 会漏掉 BRACKET 模式（barrierEnabled=false），导致热路径首个 tick 同步阻塞拉链上价。
         val autoPeriods = newMap.values.asSequence().flatten()
-            .filter { it.strategy.spreadMode == SpreadMode.AUTO || it.strategy.barrierEnabled }
+            .filter { it.strategy.spreadMode == SpreadMode.AUTO || it.strategy.mode != TradingMode.LEGACY_SPREAD }
             .distinctBy { "${it.strategy.marketSlugPrefix}-${it.strategy.intervalSeconds}-${it.periodStartUnix}" }
             .map { Triple(it.strategy.marketSlugPrefix, it.strategy.intervalSeconds, it.periodStartUnix) }
             .toList()
         if (autoPeriods.isEmpty()) return
-        // 障碍模式：周期开始预热 Chainlink 价源（期初/当前/σ），让 WS 热路径命中缓存，避免首个 tick 阻塞拉取
+        // 障碍/阶梯模式：周期开始预热 Chainlink 价源（期初/当前/σ），让 WS 热路径命中缓存，避免首个 tick 阻塞拉取
         val barrierPeriods = newMap.values.asSequence().flatten()
-            .filter { it.strategy.barrierEnabled }
+            .filter { it.strategy.mode != TradingMode.LEGACY_SPREAD }
             .distinctBy { "${it.strategy.marketSlugPrefix}-${it.strategy.intervalSeconds}-${it.periodStartUnix}" }
             .map {
                 Triple(it.strategy.marketSlugPrefix, it.strategy.intervalSeconds, it.periodStartUnix) to
@@ -431,8 +458,16 @@ class CryptoTailOrderbookWsService(
             val interval = strategy.intervalSeconds
             val periodStartUnix = (nowSeconds / interval) * interval
             val windowEnd = periodStartUnix + strategy.windowEndSeconds
-            if (nowSeconds >= windowEnd) {
-                logger.debug("加密价差策略跳过（已过时间窗口）: strategyId=${strategy.id}, slug=${strategy.marketSlugPrefix}, windowEnd=$windowEnd")
+            val periodEnd = periodStartUnix + interval
+            // V53 修正：BRACKET_DYNAMIC 退出依赖 WS bestBid 全周期监听，须订阅到 periodEnd（不能在 windowEnd 即停）。
+            // BARRIER/LEGACY 仅入场期需要价格监听，windowEnd 后即可释放订阅。
+            val needFullPeriodMonitor = strategy.mode == TradingMode.BRACKET_DYNAMIC
+            val cutoff = if (needFullPeriodMonitor) periodEnd else windowEnd
+            if (nowSeconds >= cutoff) {
+                logger.debug(
+                    "加密价差策略跳过（已过订阅窗口）: strategyId=${strategy.id}, slug=${strategy.marketSlugPrefix}, " +
+                        "mode=${strategy.mode.name}, cutoff=$cutoff (windowEnd=$windowEnd, periodEnd=$periodEnd)"
+                )
                 continue
             }
             val slug = "${strategy.marketSlugPrefix}-$periodStartUnix"

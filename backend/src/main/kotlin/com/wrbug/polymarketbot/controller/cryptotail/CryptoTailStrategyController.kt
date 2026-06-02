@@ -6,6 +6,8 @@ import com.wrbug.polymarketbot.dto.CryptoTailStrategyDeleteRequest
 import com.wrbug.polymarketbot.dto.CryptoTailStrategyDto
 import com.wrbug.polymarketbot.dto.CryptoTailStrategyListRequest
 import com.wrbug.polymarketbot.dto.CryptoTailStrategyListResponse
+import com.wrbug.polymarketbot.dto.CryptoTailStrategyExitListRequest
+import com.wrbug.polymarketbot.dto.CryptoTailStrategyExitListResponse
 import com.wrbug.polymarketbot.dto.CryptoTailStrategyTriggerListRequest
 import com.wrbug.polymarketbot.dto.CryptoTailStrategyTriggerListResponse
 import com.wrbug.polymarketbot.dto.CryptoTailStrategyUpdateRequest
@@ -222,6 +224,29 @@ class CryptoTailStrategyController(
             )
         } catch (e: Exception) {
             logger.error("查询触发记录异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
+    /**
+     * 阶梯模式退出明细：按 triggerId 查询某次入场后的多档退出记录
+     */
+    @PostMapping("/exits")
+    fun getStrategyExits(@RequestBody request: CryptoTailStrategyExitListRequest): ResponseEntity<ApiResponse<CryptoTailStrategyExitListResponse>> {
+        return try {
+            if (request.triggerId <= 0L) {
+                return ResponseEntity.ok(ApiResponse.error(ErrorCode.PARAM_ERROR, messageSource = messageSource))
+            }
+            val result = cryptoTailStrategyService.getStrategyExits(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("查询阶梯退出明细失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("查询阶梯退出明细异常: ${e.message}", e)
             ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
         }
     }

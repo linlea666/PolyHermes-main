@@ -8,6 +8,7 @@ import com.wrbug.polymarketbot.enums.ErrorCode
 import com.wrbug.polymarketbot.enums.SpreadMode
 import com.wrbug.polymarketbot.enums.SpreadDirection
 import com.wrbug.polymarketbot.repository.CryptoTailDecisionEventRepository
+import com.wrbug.polymarketbot.repository.CryptoTailStrategyExitRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
 import com.wrbug.polymarketbot.repository.CryptoTailTradeSnapshotRepository
@@ -31,7 +32,8 @@ class CryptoTailStrategyService(
     private val decisionEventRepository: CryptoTailDecisionEventRepository,
     private val tradeSnapshotRepository: CryptoTailTradeSnapshotRepository,
     private val calibrationService: CryptoTailCalibrationService,
-    private val eventPublisher: ApplicationEventPublisher
+    private val eventPublisher: ApplicationEventPublisher,
+    private val exitRepository: CryptoTailStrategyExitRepository
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailStrategyService::class.java)
@@ -102,6 +104,7 @@ class CryptoTailStrategyService(
             val makerRebateBps = request.makerRebateBps ?: 0
             val gasCostUsdc = request.gasCostUsdc?.toSafeBigDecimal() ?: BigDecimal.ZERO
             val entryOrderType = (request.entryOrderType ?: "FAK").trim().uppercase()
+            val entryFakSlippage = request.entryFakSlippage?.toSafeBigDecimal() ?: BigDecimal("0.02")
             val makerPriceOffset = request.makerPriceOffset?.toSafeBigDecimal() ?: BigDecimal.ZERO
             val makerCancelBeforeSettleSeconds = request.makerCancelBeforeSettleSeconds ?: 5
             val makerFallbackTaker = request.makerFallbackTaker ?: false
@@ -113,7 +116,38 @@ class CryptoTailStrategyService(
             val ewmaLambda = request.ewmaLambda?.toSafeBigDecimal() ?: BigDecimal("0.94")
             val kellyEnabled = request.kellyEnabled ?: false
             val kellyFraction = request.kellyFraction?.toSafeBigDecimal() ?: BigDecimal("0.25")
-            if (request.barrierEnabled && !isBarrierParamsValid(entryProb, entryEdge, maxEntryPrice, costBuffer, barrierMinMarketProb, sigmaScale, dailyLossLimitUsdc, maxConcurrentPositions, takerFeeBps, makerRebateBps, gasCostUsdc, entryOrderType, makerPriceOffset, makerCancelBeforeSettleSeconds, interval, probeAmountUsdc, calibrationMinSamples, calibrationMaxError, sigmaMethod, ewmaLambda, kellyFraction)) {
+
+            // V52：mode 字段优先；request.mode 缺失时回退 barrierEnabled 兼容（旧前端不带 mode 也能运行）
+            val resolvedMode = when {
+                request.mode != null -> com.wrbug.polymarketbot.enums.TradingMode.fromValueOrDefault(request.mode)
+                request.barrierEnabled -> com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD
+                else -> com.wrbug.polymarketbot.enums.TradingMode.LEGACY_SPREAD
+            }
+            // 阶梯专属字段：用默认值兜底（与 V52 SQL 默认值一致）
+            val bracketEntryProb = request.bracketEntryProb?.toSafeBigDecimal() ?: BigDecimal("0.80")
+            val bracketEntryEdge = request.bracketEntryEdge?.toSafeBigDecimal() ?: BigDecimal("0.04")
+            val bracketMaxEntryPrice = request.bracketMaxEntryPrice?.toSafeBigDecimal() ?: BigDecimal("0.90")
+            val tp1Price = request.tp1Price?.toSafeBigDecimal() ?: BigDecimal("0.90")
+            val tp1Ratio = request.tp1Ratio?.toSafeBigDecimal() ?: BigDecimal("0.50")
+            val tp1HoldPwin = request.tp1HoldPwin?.toSafeBigDecimal() ?: BigDecimal("0.95")
+            val tp2Price = request.tp2Price?.toSafeBigDecimal() ?: BigDecimal("0.95")
+            val tp2Ratio = request.tp2Ratio?.toSafeBigDecimal() ?: BigDecimal("1.00")
+            val tp2HoldPwin = request.tp2HoldPwin?.toSafeBigDecimal() ?: BigDecimal("0.99")
+            val holdToSettlePwin = request.holdToSettlePwin?.toSafeBigDecimal() ?: BigDecimal("0.97")
+            val holdToSettleSeconds = request.holdToSettleSeconds ?: 30
+            val stopProb = request.stopProb?.toSafeBigDecimal() ?: BigDecimal("0.55")
+            val stopPrice = request.stopPrice?.toSafeBigDecimal() ?: BigDecimal("0.70")
+            val forceExitBeforeSettleSeconds = request.forceExitBeforeSettleSeconds ?: 15
+            val exitOrderType = (request.exitOrderType ?: "FAK").trim().uppercase()
+
+            if (resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD &&
+                !isBarrierParamsValid(entryProb, entryEdge, maxEntryPrice, costBuffer, barrierMinMarketProb, sigmaScale, dailyLossLimitUsdc, maxConcurrentPositions, takerFeeBps, makerRebateBps, gasCostUsdc, entryOrderType, entryFakSlippage, makerPriceOffset, makerCancelBeforeSettleSeconds, interval, probeAmountUsdc, calibrationMinSamples, calibrationMaxError, sigmaMethod, ewmaLambda, kellyFraction)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
+            }
+            if (resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.BRACKET_DYNAMIC &&
+                !isBracketParamsValid(bracketEntryProb, bracketEntryEdge, bracketMaxEntryPrice,
+                    tp1Price, tp1Ratio, tp1HoldPwin, tp2Price, tp2Ratio, tp2HoldPwin,
+                    holdToSettlePwin, holdToSettleSeconds, stopProb, stopPrice, forceExitBeforeSettleSeconds, exitOrderType, entryFakSlippage)) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
             }
 
@@ -132,7 +166,6 @@ class CryptoTailStrategyService(
                 spreadValue = spreadValue,
                 spreadDirection = spreadDirection,
                 enabled = request.enabled,
-                barrierEnabled = request.barrierEnabled,
                 entryProb = entryProb,
                 entryEdge = entryEdge,
                 maxEntryPrice = maxEntryPrice,
@@ -145,6 +178,7 @@ class CryptoTailStrategyService(
                 makerRebateBps = makerRebateBps,
                 gasCostUsdc = gasCostUsdc,
                 entryOrderType = entryOrderType,
+                entryFakSlippage = entryFakSlippage,
                 makerPriceOffset = makerPriceOffset,
                 makerCancelBeforeSettleSeconds = makerCancelBeforeSettleSeconds,
                 makerFallbackTaker = makerFallbackTaker,
@@ -155,7 +189,25 @@ class CryptoTailStrategyService(
                 sigmaMethod = sigmaMethod,
                 ewmaLambda = ewmaLambda,
                 kellyEnabled = kellyEnabled,
-                kellyFraction = kellyFraction
+                kellyFraction = kellyFraction,
+                mode = resolvedMode,
+                // 同步 barrierEnabled 兼容字段：mode==BARRIER_HOLD ⇔ barrierEnabled=true
+                barrierEnabled = resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD,
+                bracketEntryProb = bracketEntryProb,
+                bracketEntryEdge = bracketEntryEdge,
+                bracketMaxEntryPrice = bracketMaxEntryPrice,
+                tp1Price = tp1Price,
+                tp1Ratio = tp1Ratio,
+                tp1HoldPwin = tp1HoldPwin,
+                tp2Price = tp2Price,
+                tp2Ratio = tp2Ratio,
+                tp2HoldPwin = tp2HoldPwin,
+                holdToSettlePwin = holdToSettlePwin,
+                holdToSettleSeconds = holdToSettleSeconds,
+                stopProb = stopProb,
+                stopPrice = stopPrice,
+                forceExitBeforeSettleSeconds = forceExitBeforeSettleSeconds,
+                exitOrderType = exitOrderType
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -212,7 +264,6 @@ class CryptoTailStrategyService(
                 existing.spreadDirection
             }
 
-            val newBarrierEnabled = request.barrierEnabled ?: existing.barrierEnabled
             val newEntryProb = request.entryProb?.toSafeBigDecimal() ?: existing.entryProb
             val newEntryEdge = request.entryEdge?.toSafeBigDecimal() ?: existing.entryEdge
             val newMaxEntryPrice = request.maxEntryPrice?.toSafeBigDecimal() ?: existing.maxEntryPrice
@@ -225,6 +276,7 @@ class CryptoTailStrategyService(
             val newMakerRebateBps = request.makerRebateBps ?: existing.makerRebateBps
             val newGasCostUsdc = request.gasCostUsdc?.toSafeBigDecimal() ?: existing.gasCostUsdc
             val newEntryOrderType = (request.entryOrderType?.trim()?.uppercase()) ?: existing.entryOrderType
+            val newEntryFakSlippage = request.entryFakSlippage?.toSafeBigDecimal() ?: existing.entryFakSlippage
             val newMakerPriceOffset = request.makerPriceOffset?.toSafeBigDecimal() ?: existing.makerPriceOffset
             val newMakerCancelBeforeSettleSeconds = request.makerCancelBeforeSettleSeconds ?: existing.makerCancelBeforeSettleSeconds
             val newMakerFallbackTaker = request.makerFallbackTaker ?: existing.makerFallbackTaker
@@ -236,7 +288,38 @@ class CryptoTailStrategyService(
             val newEwmaLambda = request.ewmaLambda?.toSafeBigDecimal() ?: existing.ewmaLambda
             val newKellyEnabled = request.kellyEnabled ?: existing.kellyEnabled
             val newKellyFraction = request.kellyFraction?.toSafeBigDecimal() ?: existing.kellyFraction
-            if (newBarrierEnabled && !isBarrierParamsValid(newEntryProb, newEntryEdge, newMaxEntryPrice, newCostBuffer, newBarrierMinMarketProb, newSigmaScale, newDailyLossLimitUsdc, newMaxConcurrentPositions, newTakerFeeBps, newMakerRebateBps, newGasCostUsdc, newEntryOrderType, newMakerPriceOffset, newMakerCancelBeforeSettleSeconds, existing.intervalSeconds, newProbeAmountUsdc, newCalibrationMinSamples, newCalibrationMaxError, newSigmaMethod, newEwmaLambda, newKellyFraction)) {
+
+            // V52：mode 字段优先；缺失时按 barrierEnabled 兼容
+            val newMode = when {
+                request.mode != null -> com.wrbug.polymarketbot.enums.TradingMode.fromValueOrDefault(request.mode)
+                request.barrierEnabled != null && request.barrierEnabled -> com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD
+                request.barrierEnabled != null && !request.barrierEnabled -> com.wrbug.polymarketbot.enums.TradingMode.LEGACY_SPREAD
+                else -> existing.mode
+            }
+            val newBracketEntryProb = request.bracketEntryProb?.toSafeBigDecimal() ?: existing.bracketEntryProb
+            val newBracketEntryEdge = request.bracketEntryEdge?.toSafeBigDecimal() ?: existing.bracketEntryEdge
+            val newBracketMaxEntryPrice = request.bracketMaxEntryPrice?.toSafeBigDecimal() ?: existing.bracketMaxEntryPrice
+            val newTp1Price = request.tp1Price?.toSafeBigDecimal() ?: existing.tp1Price
+            val newTp1Ratio = request.tp1Ratio?.toSafeBigDecimal() ?: existing.tp1Ratio
+            val newTp1HoldPwin = request.tp1HoldPwin?.toSafeBigDecimal() ?: existing.tp1HoldPwin
+            val newTp2Price = request.tp2Price?.toSafeBigDecimal() ?: existing.tp2Price
+            val newTp2Ratio = request.tp2Ratio?.toSafeBigDecimal() ?: existing.tp2Ratio
+            val newTp2HoldPwin = request.tp2HoldPwin?.toSafeBigDecimal() ?: existing.tp2HoldPwin
+            val newHoldToSettlePwin = request.holdToSettlePwin?.toSafeBigDecimal() ?: existing.holdToSettlePwin
+            val newHoldToSettleSeconds = request.holdToSettleSeconds ?: existing.holdToSettleSeconds
+            val newStopProb = request.stopProb?.toSafeBigDecimal() ?: existing.stopProb
+            val newStopPrice = request.stopPrice?.toSafeBigDecimal() ?: existing.stopPrice
+            val newForceExitBeforeSettleSeconds = request.forceExitBeforeSettleSeconds ?: existing.forceExitBeforeSettleSeconds
+            val newExitOrderType = (request.exitOrderType?.trim()?.uppercase()) ?: existing.exitOrderType
+
+            if (newMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD &&
+                !isBarrierParamsValid(newEntryProb, newEntryEdge, newMaxEntryPrice, newCostBuffer, newBarrierMinMarketProb, newSigmaScale, newDailyLossLimitUsdc, newMaxConcurrentPositions, newTakerFeeBps, newMakerRebateBps, newGasCostUsdc, newEntryOrderType, newEntryFakSlippage, newMakerPriceOffset, newMakerCancelBeforeSettleSeconds, existing.intervalSeconds, newProbeAmountUsdc, newCalibrationMinSamples, newCalibrationMaxError, newSigmaMethod, newEwmaLambda, newKellyFraction)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
+            }
+            if (newMode == com.wrbug.polymarketbot.enums.TradingMode.BRACKET_DYNAMIC &&
+                !isBracketParamsValid(newBracketEntryProb, newBracketEntryEdge, newBracketMaxEntryPrice,
+                    newTp1Price, newTp1Ratio, newTp1HoldPwin, newTp2Price, newTp2Ratio, newTp2HoldPwin,
+                    newHoldToSettlePwin, newHoldToSettleSeconds, newStopProb, newStopPrice, newForceExitBeforeSettleSeconds, newExitOrderType, newEntryFakSlippage)) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
             }
 
@@ -252,7 +335,6 @@ class CryptoTailStrategyService(
                 spreadValue = newSpreadValue,
                 spreadDirection = newSpreadDirection,
                 enabled = request.enabled ?: existing.enabled,
-                barrierEnabled = newBarrierEnabled,
                 entryProb = newEntryProb,
                 entryEdge = newEntryEdge,
                 maxEntryPrice = newMaxEntryPrice,
@@ -265,6 +347,7 @@ class CryptoTailStrategyService(
                 makerRebateBps = newMakerRebateBps,
                 gasCostUsdc = newGasCostUsdc,
                 entryOrderType = newEntryOrderType,
+                entryFakSlippage = newEntryFakSlippage,
                 makerPriceOffset = newMakerPriceOffset,
                 makerCancelBeforeSettleSeconds = newMakerCancelBeforeSettleSeconds,
                 makerFallbackTaker = newMakerFallbackTaker,
@@ -276,6 +359,23 @@ class CryptoTailStrategyService(
                 ewmaLambda = newEwmaLambda,
                 kellyEnabled = newKellyEnabled,
                 kellyFraction = newKellyFraction,
+                mode = newMode,
+                barrierEnabled = newMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD,
+                bracketEntryProb = newBracketEntryProb,
+                bracketEntryEdge = newBracketEntryEdge,
+                bracketMaxEntryPrice = newBracketMaxEntryPrice,
+                tp1Price = newTp1Price,
+                tp1Ratio = newTp1Ratio,
+                tp1HoldPwin = newTp1HoldPwin,
+                tp2Price = newTp2Price,
+                tp2Ratio = newTp2Ratio,
+                tp2HoldPwin = newTp2HoldPwin,
+                holdToSettlePwin = newHoldToSettlePwin,
+                holdToSettleSeconds = newHoldToSettleSeconds,
+                stopProb = newStopProb,
+                stopPrice = newStopPrice,
+                forceExitBeforeSettleSeconds = newForceExitBeforeSettleSeconds,
+                exitOrderType = newExitOrderType,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -425,6 +525,47 @@ class CryptoTailStrategyService(
     }
 
     fun getStrategy(strategyId: Long): CryptoTailStrategy? = strategyRepository.findById(strategyId).orElse(null)
+
+    /**
+     * 阶梯模式退出明细列表（按 trigger 维度），用于前端展开行展示分档退出过程。
+     * 任意 trigger 都可调用，非 BRACKET trigger 返回空列表。
+     */
+    fun getStrategyExits(request: CryptoTailStrategyExitListRequest): Result<CryptoTailStrategyExitListResponse> {
+        return try {
+            if (request.triggerId <= 0L) {
+                return Result.failure(IllegalArgumentException(ErrorCode.PARAM_ERROR.messageKey))
+            }
+            val rows = exitRepository.findByTriggerIdOrderByCreatedAtAsc(request.triggerId)
+            val list = rows.map { e ->
+                CryptoTailStrategyExitDto(
+                    id = e.id ?: 0L,
+                    triggerId = e.triggerId,
+                    strategyId = e.strategyId,
+                    exitKind = e.exitKind,
+                    targetSize = e.targetSize.toPlainString(),
+                    filledSize = e.filledSize?.toPlainString(),
+                    filledAmount = e.filledAmount?.toPlainString(),
+                    exitPrice = e.exitPrice?.toPlainString(),
+                    orderId = e.orderId,
+                    orderType = e.orderType,
+                    status = e.status,
+                    pwinAtDecision = e.pwinAtDecision?.toPlainString(),
+                    bestBidAtDecision = e.bestBidAtDecision?.toPlainString(),
+                    remainingSeconds = e.remainingSeconds,
+                    decisionReason = e.decisionReason,
+                    failReason = e.failReason,
+                    createdAt = e.createdAt,
+                    settledAt = e.settledAt
+                )
+            }
+            Result.success(CryptoTailStrategyExitListResponse(triggerId = request.triggerId, list = list))
+        } catch (e: IllegalArgumentException) {
+            Result.failure(e)
+        } catch (e: Exception) {
+            logger.error("查询阶梯退出明细失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
 
     /** 查询全链路决策日志（分页，按时间倒序） */
     fun getDecisionLog(request: CryptoTailDecisionLogListRequest): Result<CryptoTailDecisionLogListResponse> {
@@ -677,6 +818,11 @@ class CryptoTailStrategyService(
         updatedAt = updatedAt
     )
 
+    /** entryFakSlippage 通用校验：[0, 0.10] */
+    private fun isEntryFakSlippageValid(slippage: BigDecimal): Boolean {
+        return slippage >= BigDecimal.ZERO && slippage <= BigDecimal("0.10")
+    }
+
     /** 障碍模式参数合法性校验（仅 barrierEnabled=true 时强制） */
     private fun isBarrierParamsValid(
         entryProb: BigDecimal,
@@ -691,6 +837,7 @@ class CryptoTailStrategyService(
         makerRebateBps: Int,
         gasCostUsdc: BigDecimal,
         entryOrderType: String,
+        entryFakSlippage: BigDecimal,
         makerPriceOffset: BigDecimal,
         makerCancelBeforeSettleSeconds: Int,
         intervalSeconds: Int,
@@ -717,6 +864,8 @@ class CryptoTailStrategyService(
         if (gasCostUsdc < zero) return false
         // 进场订单类型仅 FAK / MAKER
         if (entryOrderType != "FAK" && entryOrderType != "MAKER") return false
+        // V53: FAK 进场限价滑点合法范围
+        if (!isEntryFakSlippageValid(entryFakSlippage)) return false
         // maker 价格偏移须在 (-1,1) 区间，避免越界
         if (makerPriceOffset <= one.negate() || makerPriceOffset >= one) return false
         // maker 撤单提前秒数须在 [0, interval) 内，至少留出成交窗口
@@ -730,6 +879,68 @@ class CryptoTailStrategyService(
         if (ewmaLambda <= zero || ewmaLambda >= one) return false
         // 分数 Kelly：fraction 须在 (0,1]
         if (kellyFraction <= zero || kellyFraction > one) return false
+        return true
+    }
+
+    /**
+     * 概率阶梯止盈模式参数合法性校验。要求：
+     *  - 概率/比率/价格类字段在 [0,1] 内（部分严格 (0,1)）
+     *  - 止盈阈值递增：tp1Price <= tp2Price，TP1 跳过阈值不应高于 TP2（更紧的持有标准应在更晚阶段）
+     *  - 强制平仓窗口必须严格小于持有到结算窗口（否则强平不会触发）
+     *  - 止损概率必须严格低于入场概率（否则一进就止损）
+     *  - 时间字段非负
+     *  - exitOrderType 限定 FAK/MAKER
+     *  - entryFakSlippage 在 [0, 0.10]
+     */
+    private fun isBracketParamsValid(
+        bracketEntryProb: BigDecimal,
+        bracketEntryEdge: BigDecimal,
+        bracketMaxEntryPrice: BigDecimal,
+        tp1Price: BigDecimal,
+        tp1Ratio: BigDecimal,
+        tp1HoldPwin: BigDecimal,
+        tp2Price: BigDecimal,
+        tp2Ratio: BigDecimal,
+        tp2HoldPwin: BigDecimal,
+        holdToSettlePwin: BigDecimal,
+        holdToSettleSeconds: Int,
+        stopProb: BigDecimal,
+        stopPrice: BigDecimal,
+        forceExitBeforeSettleSeconds: Int,
+        exitOrderType: String,
+        entryFakSlippage: BigDecimal
+    ): Boolean {
+        val one = BigDecimal.ONE
+        val zero = BigDecimal.ZERO
+        if (bracketEntryProb <= zero || bracketEntryProb > one) return false
+        if (bracketEntryEdge < zero || bracketEntryEdge >= one) return false
+        if (bracketMaxEntryPrice <= zero || bracketMaxEntryPrice > one) return false
+        if (tp1Price <= zero || tp1Price > one) return false
+        if (tp2Price <= zero || tp2Price > one) return false
+        if (tp1Price > tp2Price) return false
+        if (tp1Ratio < zero || tp1Ratio > one) return false
+        if (tp2Ratio < zero || tp2Ratio > one) return false
+        if (tp1HoldPwin < zero || tp1HoldPwin > one) return false
+        if (tp2HoldPwin < zero || tp2HoldPwin > one) return false
+        if (holdToSettlePwin < zero || holdToSettlePwin > one) return false
+        if (stopProb < zero || stopProb > one) return false
+        if (stopPrice <= zero || stopPrice > one) return false
+        if (holdToSettleSeconds < 0) return false
+        if (forceExitBeforeSettleSeconds < 0) return false
+        if (exitOrderType != "FAK" && exitOrderType != "MAKER") return false
+        // V53: FAK 进场限价滑点合法范围
+        if (!isEntryFakSlippageValid(entryFakSlippage)) return false
+        // 入场最高价应高于止损价（否则一进就止损）
+        if (bracketMaxEntryPrice <= stopPrice) return false
+        // 止损 pWin 应低于持有 pWin（否则没有"持有"区间）
+        if (stopProb >= holdToSettlePwin) return false
+        // V53 新增不变量：
+        // (1) TP1 跳过阈值不应高于 TP2 跳过阈值（更早的止盈档位"放手得更早"，递增更严格的持有标准）
+        if (tp1HoldPwin > tp2HoldPwin) return false
+        // (2) 强制平仓窗口必须严格小于持有到结算窗口（否则在 hold 阶段强平窗口已生效，逻辑矛盾）
+        if (forceExitBeforeSettleSeconds >= holdToSettleSeconds) return false
+        // (3) 止损概率必须严格低于入场概率（避免入场即止损的死循环）
+        if (stopProb >= bracketEntryProb) return false
         return true
     }
 
@@ -777,6 +988,7 @@ class CryptoTailStrategyService(
             makerRebateBps = e.makerRebateBps,
             gasCostUsdc = e.gasCostUsdc.toPlainString(),
             entryOrderType = e.entryOrderType,
+            entryFakSlippage = e.entryFakSlippage.toPlainString(),
             makerPriceOffset = e.makerPriceOffset.toPlainString(),
             makerCancelBeforeSettleSeconds = e.makerCancelBeforeSettleSeconds,
             makerFallbackTaker = e.makerFallbackTaker,
@@ -788,6 +1000,22 @@ class CryptoTailStrategyService(
             ewmaLambda = e.ewmaLambda.toPlainString(),
             kellyEnabled = e.kellyEnabled,
             kellyFraction = e.kellyFraction.toPlainString(),
+            mode = e.mode.value,
+            bracketEntryProb = e.bracketEntryProb.toPlainString(),
+            bracketEntryEdge = e.bracketEntryEdge.toPlainString(),
+            bracketMaxEntryPrice = e.bracketMaxEntryPrice.toPlainString(),
+            tp1Price = e.tp1Price.toPlainString(),
+            tp1Ratio = e.tp1Ratio.toPlainString(),
+            tp1HoldPwin = e.tp1HoldPwin.toPlainString(),
+            tp2Price = e.tp2Price.toPlainString(),
+            tp2Ratio = e.tp2Ratio.toPlainString(),
+            tp2HoldPwin = e.tp2HoldPwin.toPlainString(),
+            holdToSettlePwin = e.holdToSettlePwin.toPlainString(),
+            holdToSettleSeconds = e.holdToSettleSeconds,
+            stopProb = e.stopProb.toPlainString(),
+            stopPrice = e.stopPrice.toPlainString(),
+            forceExitBeforeSettleSeconds = e.forceExitBeforeSettleSeconds,
+            exitOrderType = e.exitOrderType,
             lastTriggerAt = lastTriggerAt,
             totalRealizedPnl = totalPnl?.toPlainString(),
             settledCount = settledCount,
@@ -816,6 +1044,9 @@ class CryptoTailStrategyService(
         realizedPnl = t.realizedPnl?.toPlainString(),
         winnerOutcomeIndex = t.winnerOutcomeIndex,
         settledAt = t.settledAt,
-        createdAt = t.createdAt
+        createdAt = t.createdAt,
+        mode = t.mode.value,
+        remainingSize = t.remainingSize?.toPlainString(),
+        exitStatus = t.exitStatus
     )
 }

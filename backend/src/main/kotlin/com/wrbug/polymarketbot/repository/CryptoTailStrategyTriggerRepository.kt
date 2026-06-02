@@ -62,4 +62,19 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
         @Param("start") start: Long,
         @Param("end") end: Long
     ): List<CryptoTailStrategyTrigger>
+
+    /**
+     * BRACKET_DYNAMIC 持仓退出扫描：查找指定策略+周期下所有 OPEN/PARTIAL_EXIT 状态的触发记录。
+     * 由 WS onBestBid 回调驱动 BracketExitService 评估退出。
+     * 注：未指定 mode=BRACKET_DYNAMIC 是因为 ExitStatus.OPEN/PARTIAL_EXIT 仅由 BRACKET 入场写入，等价过滤。
+     */
+    @Query(
+        "SELECT t FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId " +
+            "AND t.periodStartUnix = :periodStartUnix " +
+            "AND t.exitStatus IN ('OPEN', 'PARTIAL_EXIT')"
+    )
+    fun findOpenForBracket(
+        @Param("strategyId") strategyId: Long,
+        @Param("periodStartUnix") periodStartUnix: Long
+    ): List<CryptoTailStrategyTrigger>
 }

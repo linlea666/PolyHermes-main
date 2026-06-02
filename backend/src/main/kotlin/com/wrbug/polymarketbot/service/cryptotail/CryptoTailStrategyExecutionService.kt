@@ -10,8 +10,10 @@ import com.wrbug.polymarketbot.entity.Account
 import com.wrbug.polymarketbot.entity.CryptoTailDecisionEvent
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.entity.CryptoTailStrategyTrigger
+import com.wrbug.polymarketbot.enums.ExitStatus
 import com.wrbug.polymarketbot.enums.SpreadMode
 import com.wrbug.polymarketbot.enums.SpreadDirection
+import com.wrbug.polymarketbot.enums.TradingMode
 import com.wrbug.polymarketbot.repository.AccountRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
@@ -224,8 +226,10 @@ class CryptoTailStrategyExecutionService(
         bestAsk: BigDecimal? = null
     ) {
         if (outcomeIndex < 0 || outcomeIndex >= tokenIds.size) return
-        // 旧模式：价格区间过滤；障碍模式跳过此过滤，改由 barrierMinMarketProb 等闸把关
-        if (!strategy.barrierEnabled && (bestBid < strategy.minPrice || bestBid > strategy.maxPrice)) return
+        // 仅旧价差模式走价格区间预过滤；
+        //  - BARRIER_HOLD: 由 barrierMinMarketProb 等闸把关
+        //  - BRACKET_DYNAMIC: 由 bracketMaxEntryPrice 在闸内把关，且 bestBid 还需用于持仓退出监听
+        if (strategy.mode == TradingMode.LEGACY_SPREAD && (bestBid < strategy.minPrice || bestBid > strategy.maxPrice)) return
 
         val mutex = getTriggerMutex(strategy.id!!, periodStartUnix)
         mutex.withLock {
@@ -237,8 +241,9 @@ class CryptoTailStrategyExecutionService(
             val logKey = triggerLockKey(strategy.id!!, periodStartUnix)
             if (conditionLoggedCache.getIfPresent(logKey) == null) {
                 conditionLoggedCache.put(logKey, periodStartUnix + strategy.intervalSeconds)
-                // 障碍模式优先用与结算同源的 Chainlink/RTDS 取价，冷启动回退币安；旧模式仍用币安
-                val oc = (if (strategy.barrierEnabled)
+                // V53 修正：障碍/阶梯模式优先用与结算同源的 Chainlink/RTDS 取价（不限于 BARRIER），冷启动回退币安；旧模式仍用币安。
+                // 此前用 strategy.barrierEnabled 会让 BRACKET 退化到币安取价，与结算源不一致。
+                val oc = (if (strategy.mode != TradingMode.LEGACY_SPREAD)
                     periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
                 else null)
                     ?: binanceKlineService.getCurrentOpenClose(
@@ -257,7 +262,11 @@ class CryptoTailStrategyExecutionService(
                 val modelSide = if (openP != null && closeP != null) {
                     if (closeP >= openP) "Up(涨)" else "Down(跌)"
                 } else "未知(价源未就绪)"
-                val modeStr = if (strategy.barrierEnabled) "障碍模式" else if (strategy.spreadDirection == SpreadDirection.MAX) "最大价差" else "最小价差"
+                val modeStr = when (strategy.mode) {
+                    TradingMode.BARRIER_HOLD -> "障碍模式"
+                    TradingMode.BRACKET_DYNAMIC -> "概率阶梯止盈"
+                    TradingMode.LEGACY_SPREAD -> if (strategy.spreadDirection == SpreadDirection.MAX) "最大价差" else "最小价差"
+                }
                 logger.info(
                     "加密价差策略首次满足条件: strategyName=$strategyName, strategyId=${strategy.id}, " +
                             "openPrice=$openPrice, closePrice=$closePrice, marketPrice=${bestBid.toPlainString()}, " +
@@ -265,30 +274,49 @@ class CryptoTailStrategyExecutionService(
                 )
             }
 
-            if (strategy.barrierEnabled) {
-                val eval = evaluateBarrierGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk)
-                recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
-                if (!eval.pass) return@withLock
-                // 风控闸（日亏/并发敞口）
-                val risk = cryptoTailRiskService.checkRiskGate(strategy)
-                if (!risk.passed) {
-                    recordDecisionOncePerPeriod(
-                        strategy.id!!, periodStartUnix, "GATE_FAILED-${risk.gateName}", outcomeIndex,
-                        eventType = "GATE_FAILED", gateName = risk.gateName, passed = false, reason = risk.reason,
-                        payloadJson = eval.payloadJson, triggerId = null
-                    )
-                    return@withLock
+            when (strategy.mode) {
+                TradingMode.BARRIER_HOLD -> {
+                    val eval = evaluateBarrierGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk)
+                    recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
+                    if (!eval.pass) return@withLock
+                    val risk = cryptoTailRiskService.checkRiskGate(strategy)
+                    if (!risk.passed) {
+                        recordDecisionOncePerPeriod(
+                            strategy.id!!, periodStartUnix, "GATE_FAILED-${risk.gateName}", outcomeIndex,
+                            eventType = "GATE_FAILED", gateName = risk.gateName, passed = false, reason = risk.reason,
+                            payloadJson = eval.payloadJson, triggerId = null
+                        )
+                        return@withLock
+                    }
+                    val scaling = calibrationService.evaluateScalingGate(strategy)
+                    val amountOverride = if (scaling.useProbe) strategy.probeAmountUsdc else null
+                    recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, eval.metrics, bestBid, bestAsk, scaling, amountOverride)
+                    ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
+                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride, eval.metrics?.pWin, eval.metrics?.effectiveCost)
                 }
-                // 放量闸：校准未达标期间钳制为小额(probeAmountUsdc)，达标后才放大到 amountValue
-                val scaling = calibrationService.evaluateScalingGate(strategy)
-                val amountOverride = if (scaling.useProbe) strategy.probeAmountUsdc else null
-                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, eval.metrics, bestBid, bestAsk, scaling, amountOverride)
-                ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
-                placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride, eval.metrics?.pWin, eval.metrics?.effectiveCost)
-            } else {
-                if (!passSpreadCheck(strategy, periodStartUnix, outcomeIndex)) return@withLock
-                ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
-                placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, null)
+                TradingMode.BRACKET_DYNAMIC -> {
+                    val eval = evaluateBracketEntryGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk)
+                    recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
+                    if (!eval.pass) return@withLock
+                    val risk = cryptoTailRiskService.checkRiskGate(strategy)
+                    if (!risk.passed) {
+                        recordDecisionOncePerPeriod(
+                            strategy.id!!, periodStartUnix, "GATE_FAILED-${risk.gateName}", outcomeIndex,
+                            eventType = "GATE_FAILED", gateName = risk.gateName, passed = false, reason = risk.reason,
+                            payloadJson = eval.payloadJson, triggerId = null
+                        )
+                        return@withLock
+                    }
+                    // 阶梯模式不参与放量闸/校准（独立模式，校准样本来自 BARRIER）
+                    recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, eval.metrics, bestBid, bestAsk)
+                    ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
+                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, null, eval.metrics?.pWin, eval.metrics?.effectiveCost)
+                }
+                TradingMode.LEGACY_SPREAD -> {
+                    if (!passSpreadCheck(strategy, periodStartUnix, outcomeIndex)) return@withLock
+                    ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
+                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, null)
+                }
             }
         }
     }
@@ -422,6 +450,103 @@ class CryptoTailStrategyExecutionService(
         return BarrierEval(true, "ALL", "通过全部障碍闸", snapshot, metrics)
     }
 
+    /**
+     * 概率阶梯止盈模式入场闸（BRACKET_DYNAMIC）：与 BARRIER 共用 pWin/EV/方向计算，但闸阈值独立。
+     * 决策：
+     *  - 方向一致：模型 side == outcomeIndex
+     *  - pWin >= bracketEntryProb（默认 0.80，比障碍 0.55 严苛）
+     *  - 扣费 edge >= bracketEntryEdge（默认 0.04，比障碍 0.02 严苛）
+     *  - 有效成本 <= bracketMaxEntryPrice（避免高位接盘）
+     * 阶梯模式强制 FAK 进场，因此有效成本=bestAsk(缺则 bestBid+costBuffer) + taker 费。
+     */
+    private fun evaluateBracketEntryGates(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        bestBid: BigDecimal,
+        bestAsk: BigDecimal?
+    ): BarrierEval {
+        if (!periodPriceProvider.isAvailable(strategy.marketSlugPrefix)) {
+            return BarrierEval(false, "PRICE_SOURCE", "价源未就绪(未连接或最新价过期，启动后请稍候自动恢复)", null)
+        }
+        val oc = periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
+            ?: return BarrierEval(false, "PRICE_SOURCE", "期初价未就绪(价源刚启动，期初价回看超出缓存；本周期跳过，下一周期将自动恢复)", null)
+        val (openP, closeP) = oc
+        val gap = closeP.subtract(openP)
+        val nowSeconds = System.currentTimeMillis() / 1000
+        val remaining = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toDouble()
+        val sideByGap = if (gap.signum() >= 0) 0 else 1
+        val preSigmaSnapshot = mapOf(
+            "open" to openP.toPlainString(),
+            "close" to closeP.toPlainString(),
+            "gap" to gap.toPlainString(),
+            "remainingSeconds" to remaining,
+            "modelSideByGap" to sideByGap,
+            "modelSideByGapText" to (if (sideByGap == 0) "Up(涨)" else "Down(跌)"),
+            "evalOutcomeIndex" to outcomeIndex
+        ).toJson()
+        val sigma = periodPriceProvider.getSigmaPerSqrtS(
+            strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix, outcomeIndex, strategy.sigmaScale,
+            strategy.sigmaMethod, strategy.ewmaLambda
+        ) ?: return BarrierEval(false, "PWIN", "σ基准不可用(价源历史样本不足，冷启动需累积若干周期后自动恢复)", preSigmaSnapshot)
+        val r = BarrierProbability.winProbTerminal(gap, sigma, remaining)
+            ?: return BarrierEval(false, "PWIN", "无法计算pWin(剩余时间或σ无效)", null)
+
+        // BRACKET 模式强制 FAK 进场：有效成本 = bestAsk(缺则 bestBid+costBuffer) + taker 费
+        val rawPrice = bestAsk ?: bestBid.add(strategy.costBuffer)
+        val feePerShare = rawPrice.multiply(BigDecimal(strategy.takerFeeBps))
+            .divide(BigDecimal(10000), 8, RoundingMode.HALF_UP)
+        val effectiveCost = rawPrice.add(feePerShare)
+        val edge = r.pWin.subtract(effectiveCost)
+        val metrics = BarrierMetrics(
+            gap = gap,
+            open = openP,
+            close = closeP,
+            sigma = sigma,
+            remaining = remaining,
+            pWin = r.pWin,
+            side = r.side,
+            safeRatio = r.safeRatio,
+            effectiveCost = effectiveCost,
+            edge = edge
+        )
+        val snapshot = mapOf(
+            "mode" to "BRACKET_DYNAMIC",
+            "gap" to gap.toPlainString(),
+            "open" to openP.toPlainString(),
+            "close" to closeP.toPlainString(),
+            "sigmaPerSqrtS" to sigma.toPlainString(),
+            "remainingSeconds" to remaining,
+            "pWin" to r.pWin.toPlainString(),
+            "modelSide" to r.side,
+            "safeRatio" to r.safeRatio.toPlainString(),
+            "bestBid" to bestBid.toPlainString(),
+            "bestAsk" to (bestAsk?.toPlainString() ?: ""),
+            "rawPrice" to rawPrice.toPlainString(),
+            "takerFeeBps" to strategy.takerFeeBps,
+            "feePerShare" to feePerShare.toPlainString(),
+            "effectiveCost" to effectiveCost.toPlainString(),
+            "edge" to edge.toPlainString(),
+            "bracketEntryProb" to strategy.bracketEntryProb.toPlainString(),
+            "bracketEntryEdge" to strategy.bracketEntryEdge.toPlainString(),
+            "bracketMaxEntryPrice" to strategy.bracketMaxEntryPrice.toPlainString()
+        ).toJson()
+
+        if (r.side != outcomeIndex) {
+            return BarrierEval(false, "DIRECTION", "模型方向=${r.side}与当前outcome=${outcomeIndex}不一致", snapshot, metrics)
+        }
+        if (r.pWin < strategy.bracketEntryProb) {
+            return BarrierEval(false, "PWIN", "pWin=${r.pWin.toPlainString()}<bracketEntryProb=${strategy.bracketEntryProb.toPlainString()}", snapshot, metrics)
+        }
+        if (effectiveCost > strategy.bracketMaxEntryPrice) {
+            return BarrierEval(false, "MAX_ENTRY_PRICE", "有效成本=${effectiveCost.toPlainString()}>bracketMaxEntryPrice=${strategy.bracketMaxEntryPrice.toPlainString()}", snapshot, metrics)
+        }
+        if (edge < strategy.bracketEntryEdge) {
+            return BarrierEval(false, "EV", "扣费edge=${edge.toPlainString()}<bracketEntryEdge=${strategy.bracketEntryEdge.toPlainString()}", snapshot, metrics)
+        }
+        return BarrierEval(true, "ALL", "通过全部阶梯入场闸", snapshot, metrics)
+    }
+
     /** 记录障碍闸结果（每周期每结果去重，避免每个 tick 刷库） */
     private fun recordBarrierDecision(strategy: CryptoTailStrategy, periodStartUnix: Long, outcomeIndex: Int, eval: BarrierEval) {
         if (eval.pass) {
@@ -491,6 +616,65 @@ class CryptoTailStrategyExecutionService(
             strategy.id!!, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
             eventType = "ORDER_SUBMITTED", gateName = null, passed = null,
             reason = "已提交下单 目标价=${targetPrice.toPlainString()} 剩余=${metrics.remaining.toLong()}s$scalingNote",
+            payloadJson = payload, triggerId = null
+        )
+    }
+
+    /**
+     * 阶梯模式入场单提交快照：与 [recordOrderSubmitted] 同形但写入 bracket* 阈值与全部止盈/止损配置，
+     * 便于后续复盘"当时阈值是什么"。
+     */
+    private fun recordBracketOrderSubmitted(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        metrics: BarrierMetrics?,
+        bestBid: BigDecimal,
+        bestAsk: BigDecimal?
+    ) {
+        if (metrics == null) return
+        val targetPrice = computeBuyPrice(strategy, bestBid, bestAsk)
+        val mid = bestAsk?.let { bestBid.add(it).divide(BigDecimal(2), 8, RoundingMode.HALF_UP) } ?: bestBid
+        val payload = mapOf(
+            "mode" to "BRACKET_DYNAMIC",
+            "marketSlug" to strategy.marketSlugPrefix,
+            "intervalSeconds" to strategy.intervalSeconds,
+            "gap" to metrics.gap.toPlainString(),
+            "open" to metrics.open.toPlainString(),
+            "close" to metrics.close.toPlainString(),
+            "sigmaPerSqrtS" to metrics.sigma.toPlainString(),
+            "remainingSeconds" to metrics.remaining.toLong().toString(),
+            "pWin" to metrics.pWin.toPlainString(),
+            "modelSide" to metrics.side.toString(),
+            "safeRatio" to metrics.safeRatio.toPlainString(),
+            "bestBid" to bestBid.toPlainString(),
+            "bestAsk" to (bestAsk?.toPlainString() ?: ""),
+            "mid" to mid.toPlainString(),
+            "effectiveCost" to metrics.effectiveCost.toPlainString(),
+            "edge" to metrics.edge.toPlainString(),
+            "bracketEntryProb" to strategy.bracketEntryProb.toPlainString(),
+            "bracketEntryEdge" to strategy.bracketEntryEdge.toPlainString(),
+            "bracketMaxEntryPrice" to strategy.bracketMaxEntryPrice.toPlainString(),
+            "tp1Price" to strategy.tp1Price.toPlainString(),
+            "tp1Ratio" to strategy.tp1Ratio.toPlainString(),
+            "tp1HoldPwin" to strategy.tp1HoldPwin.toPlainString(),
+            "tp2Price" to strategy.tp2Price.toPlainString(),
+            "tp2Ratio" to strategy.tp2Ratio.toPlainString(),
+            "tp2HoldPwin" to strategy.tp2HoldPwin.toPlainString(),
+            "holdToSettlePwin" to strategy.holdToSettlePwin.toPlainString(),
+            "holdToSettleSeconds" to strategy.holdToSettleSeconds,
+            "stopProb" to strategy.stopProb.toPlainString(),
+            "stopPrice" to strategy.stopPrice.toPlainString(),
+            "forceExitBeforeSettleSeconds" to strategy.forceExitBeforeSettleSeconds,
+            "exitOrderType" to strategy.exitOrderType,
+            "orderType" to "FAK",
+            "targetPrice" to targetPrice.toPlainString(),
+            "effectiveAmountUsdc" to strategy.amountValue.toPlainString()
+        ).toJson()
+        recordDecisionOncePerPeriod(
+            strategy.id!!, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
+            eventType = "ORDER_SUBMITTED", gateName = null, passed = null,
+            reason = "已提交阶梯入场单 目标价=${targetPrice.toPlainString()} 剩余=${metrics.remaining.toLong()}s",
             payloadJson = payload, triggerId = null
         )
     }
@@ -607,18 +791,35 @@ class CryptoTailStrategyExecutionService(
 
     /**
      * 计算买入限价：
-     * - 障碍模式：有效成本 = bestAsk（缺失则 bestBid+costBuffer），向上取整到 4 位后封顶 maxEntryPrice。
+     * - 障碍模式：有效成本 = bestAsk（缺失则 bestBid+costBuffer），加 entryFakSlippage（V53）后向上取整到 4 位，封顶 maxEntryPrice。
+     * - 阶梯模式：同障碍但封顶用 bracketMaxEntryPrice（独立阈值，避免与障碍互相影响）。
      * - 旧模式：最大价差 = 触发价+0.02；否则固定 0.99（保持原行为）。
+     *
+     * V53 引入 entryFakSlippage 的原因：BARRIER/BRACKET 此前直接拿 bestAsk 当 limit，
+     * 在 0.5–1.5s 网络/签名延迟内对手盘消失即被 FAK 整单 KILL（参见 sellPosition 的 -0.02 滑点已是对称设计）。
+     * 此滑点仅作用于 limit price，FAK 实际成交价由对手盘决定（多吸一档防 KILL，不影响 EV 闸口径）。
      */
     private fun computeBuyPrice(strategy: CryptoTailStrategy, triggerPrice: BigDecimal, bestAsk: BigDecimal?): BigDecimal {
-        if (strategy.barrierEnabled) {
-            val effectiveCost = bestAsk ?: triggerPrice.add(strategy.costBuffer)
-            return effectiveCost.setScale(4, RoundingMode.UP).min(strategy.maxEntryPrice)
-        }
-        return if (strategy.spreadDirection == SpreadDirection.MAX) {
-            triggerPrice.add(BigDecimal(SPREAD_MAX_PRICE_ADJUSTMENT)).setScale(8, RoundingMode.HALF_UP)
-        } else {
-            BigDecimal(TRIGGER_FIXED_PRICE)
+        return when (strategy.mode) {
+            TradingMode.BARRIER_HOLD -> {
+                val effectiveCost = bestAsk ?: triggerPrice.add(strategy.costBuffer)
+                effectiveCost.add(strategy.entryFakSlippage)
+                    .setScale(4, RoundingMode.UP)
+                    .min(strategy.maxEntryPrice)
+            }
+            TradingMode.BRACKET_DYNAMIC -> {
+                val effectiveCost = bestAsk ?: triggerPrice.add(strategy.costBuffer)
+                effectiveCost.add(strategy.entryFakSlippage)
+                    .setScale(4, RoundingMode.UP)
+                    .min(strategy.bracketMaxEntryPrice)
+            }
+            TradingMode.LEGACY_SPREAD -> {
+                if (strategy.spreadDirection == SpreadDirection.MAX) {
+                    triggerPrice.add(BigDecimal(SPREAD_MAX_PRICE_ADJUSTMENT)).setScale(8, RoundingMode.HALF_UP)
+                } else {
+                    BigDecimal(TRIGGER_FIXED_PRICE)
+                }
+            }
         }
     }
 
@@ -663,8 +864,11 @@ class CryptoTailStrategyExecutionService(
 
         if (ctx != null) {
             var availableBalanceForRatio = BigDecimal.ZERO
-            // 优先级：放量闸 probe（安全优先） > 分数 Kelly（已校准且 kellyEnabled） > 原 amountMode
-            val useKelly = amountOverrideUsdc == null && strategy.barrierEnabled && strategy.kellyEnabled &&
+            // 优先级：放量闸 probe（安全优先） > 分数 Kelly（仅 BARRIER 模式适用） > 原 amountMode
+            // V53 注：Kelly 仅对 BARRIER 二元收益结构有效；BRACKET 阶梯收益非二元，公式不适用，强制走原 amountMode。
+            val useKelly = amountOverrideUsdc == null &&
+                    strategy.mode == TradingMode.BARRIER_HOLD &&
+                    strategy.kellyEnabled &&
                     pWin != null && effectiveCost != null
             var kellyBankroll = BigDecimal.ZERO
             var amountUsdc = when {
@@ -734,7 +938,8 @@ class CryptoTailStrategyExecutionService(
             }
 
             // 障碍模式 MAKER：GTC + postOnly 挂单进场（@bestBid+offset，postOnly 兜底保证 maker），生命周期由对账服务管理
-            if (strategy.barrierEnabled && strategy.entryOrderType.uppercase() == "MAKER") {
+            // 注：阶梯模式 BRACKET_DYNAMIC 强制 FAK 进场，避免"边买边判断卖出"竞态，因此不进入 maker 分支
+            if (strategy.mode == TradingMode.BARRIER_HOLD && strategy.entryOrderType.uppercase() == "MAKER") {
                 val makerPrice = computeMakerPrice(strategy, triggerPrice, bestAsk)
                 val makerSize = computeSize(amountUsdc, makerPrice)
                 val makerSignedOrder = orderSigningService.createAndSignOrder(
@@ -827,6 +1032,8 @@ class CryptoTailStrategyExecutionService(
                     // FAK 可能被接受但零成交（无对手盘）；零成交不可进结算，标记 unfilled
                     val realFill = filledSize > BigDecimal.ZERO && filledAmount > BigDecimal.ZERO
                     val finalStatus = if (realFill) "success" else "unfilled"
+                    // 阶梯模式 FAK 成交：把仓位数量与状态写入 trigger，作为持仓状态机的真相起点
+                    val isBracketFilled = realFill && strategy.mode == TradingMode.BRACKET_DYNAMIC
                     saveTriggerRecord(
                         strategy,
                         periodStartUnix,
@@ -841,10 +1048,12 @@ class CryptoTailStrategyExecutionService(
                         filledSize = if (realFill) filledSize else null,
                         filledAmount = if (realFill) filledAmount else null,
                         orderType = orderRequest.orderType,
-                        tokenId = tokenId
+                        tokenId = tokenId,
+                        remainingSize = if (isBracketFilled) filledSize else null,
+                        exitStatus = if (isBracketFilled) ExitStatus.OPEN.name else ExitStatus.NONE.name
                     )
                     if (realFill) {
-                        logger.info("加密价差策略下单成交: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, outcomeIndex=$outcomeIndex, orderId=${body.orderId}, filledSize=${filledSize.toPlainString()}, filledAmount=${filledAmount.toPlainString()}, triggerType=$triggerType")
+                        logger.info("加密价差策略下单成交: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, outcomeIndex=$outcomeIndex, orderId=${body.orderId}, filledSize=${filledSize.toPlainString()}, filledAmount=${filledAmount.toPlainString()}, triggerType=$triggerType, mode=${strategy.mode.name}, exitStatus=${if (isBracketFilled) "OPEN" else "NONE"}")
                     } else {
                         logger.warn("加密价差策略下单被接受但零成交(unfilled): strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, orderId=${body.orderId}, status=${body.status}")
                     }
@@ -1139,7 +1348,11 @@ class CryptoTailStrategyExecutionService(
         filledSize: BigDecimal? = null,
         filledAmount: BigDecimal? = null,
         orderType: String? = null,
-        tokenId: String? = null
+        tokenId: String? = null,
+        /** 仅 BRACKET_DYNAMIC 入场成交后由调用方传入：=filledSize；其他模式保持 null */
+        remainingSize: BigDecimal? = null,
+        /** 仅 BRACKET_DYNAMIC 入场成交后由调用方传入：=OPEN；其他模式保持默认 NONE */
+        exitStatus: String = ExitStatus.NONE.name
     ): CryptoTailStrategyTrigger {
         val record = CryptoTailStrategyTrigger(
             strategyId = strategy.id!!,
@@ -1155,11 +1368,15 @@ class CryptoTailStrategyExecutionService(
             orderId = orderId,
             status = status,
             failReason = failReason,
-            triggerType = triggerType
+            triggerType = triggerType,
+            // 冗余冻结当时模式：避免后续修改策略表 mode 字段污染历史触发的语义
+            mode = strategy.mode,
+            remainingSize = remainingSize,
+            exitStatus = exitStatus
         )
         val saved = triggerRepository.save(record)
-        // 障碍模式下记录下单结果到决策日志（链路终点锚点）
-        if (strategy.barrierEnabled) {
+        // 非旧价差模式（BARRIER/BRACKET）记录下单结果到决策日志（链路终点锚点）
+        if (strategy.mode != TradingMode.LEGACY_SPREAD) {
             recordDecisionOncePerPeriod(
                 strategy.id!!, periodStartUnix, "ORDER_RESULT-$status", outcomeIndex,
                 eventType = "ORDER_RESULT", gateName = null, passed = status == "success",
@@ -1313,6 +1530,8 @@ class CryptoTailStrategyExecutionService(
                     val filledAmount = body.makingAmount?.toSafeBigDecimal() ?: BigDecimal.ZERO
                     val realFill = filledSize > BigDecimal.ZERO && filledAmount > BigDecimal.ZERO
                     val finalStatus = if (realFill) "success" else "unfilled"
+                    // 阶梯模式手动下单成交后也进入持仓状态机（语义自洽：模式即合约）
+                    val isBracketFilled = realFill && strategy.mode == TradingMode.BRACKET_DYNAMIC
                     saveTriggerRecord(
                         strategy,
                         periodStartUnix,
@@ -1326,10 +1545,12 @@ class CryptoTailStrategyExecutionService(
                         triggerType = "MANUAL",
                         filledSize = if (realFill) filledSize else null,
                         filledAmount = if (realFill) filledAmount else null,
-                        orderType = orderRequest.orderType
+                        orderType = orderRequest.orderType,
+                        remainingSize = if (isBracketFilled) filledSize else null,
+                        exitStatus = if (isBracketFilled) ExitStatus.OPEN.name else ExitStatus.NONE.name
                     )
                     if (realFill) {
-                        logger.info("手动下单成交: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, outcomeIndex=$outcomeIndex, orderId=${body.orderId}, filledSize=${filledSize.toPlainString()}, filledAmount=${filledAmount.toPlainString()}")
+                        logger.info("手动下单成交: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, outcomeIndex=$outcomeIndex, orderId=${body.orderId}, filledSize=${filledSize.toPlainString()}, filledAmount=${filledAmount.toPlainString()}, mode=${strategy.mode.name}")
                         Result.success(body.orderId)
                     } else {
                         logger.warn("手动下单被接受但零成交(unfilled): strategyId=${strategy.id}, orderId=${body.orderId}, status=${body.status}")
@@ -1553,7 +1774,7 @@ class CryptoTailStrategyExecutionService(
             orderType = newOrderType ?: trigger.orderType
         )
         triggerRepository.save(updated)
-        if (strategy.barrierEnabled) {
+        if (strategy.mode != TradingMode.LEGACY_SPREAD) {
             recordDecisionOncePerPeriod(
                 strategy.id!!, trigger.periodStartUnix, "ORDER_RESULT-$status", trigger.outcomeIndex,
                 eventType = "ORDER_RESULT", gateName = null, passed = status == "success",

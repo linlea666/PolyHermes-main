@@ -5,7 +5,10 @@ import com.wrbug.polymarketbot.api.PolymarketDataApi
 import com.wrbug.polymarketbot.entity.CryptoTailDecisionEvent
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.entity.CryptoTailStrategyTrigger
+import com.wrbug.polymarketbot.enums.ExitStatus
+import com.wrbug.polymarketbot.enums.TradingMode
 import com.wrbug.polymarketbot.repository.AccountRepository
+import com.wrbug.polymarketbot.repository.CryptoTailStrategyExitRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
 import com.wrbug.polymarketbot.service.binance.BinanceKlineAutoSpreadService
@@ -45,13 +48,21 @@ class CryptoTailSettlementService(
     private val decisionRecorder: CryptoTailDecisionRecorder,
     private val binanceKlineService: BinanceKlineService,
     private val binanceKlineAutoSpreadService: BinanceKlineAutoSpreadService,
-    private val periodPriceProvider: PeriodPriceProvider
+    private val periodPriceProvider: PeriodPriceProvider,
+    private val exitRepository: CryptoTailStrategyExitRepository
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailSettlementService::class.java)
 
     private val triggerFixedPrice = BigDecimal("0.99")
     private val pnlScale = 8
+
+    /**
+     * V53 BRACKET dust 容差：当剩余 size <= 0.01（与 Polymarket size 精度 setScale(2) 对齐）时
+     * 视为已全部退出，走情况 A（无须链上 condition 兜底）。避免入场 8 位精度 vs 退出 2 位精度
+     * 残差导致 FULLY_EXITED 永远不可达 + 强行走链上结算的损耗。
+     */
+    private val BRACKET_DUST_THRESHOLD: BigDecimal = BigDecimal("0.01")
 
     private val settlementScopeJob = SupervisorJob()
     private val settlementScope = CoroutineScope(Dispatchers.IO + settlementScopeJob)
@@ -116,6 +127,11 @@ class CryptoTailSettlementService(
     private suspend fun settleOne(trigger: CryptoTailStrategyTrigger): Boolean {
         if (trigger.resolved) return false
         val strategy = strategyRepository.findById(trigger.strategyId).orElse(null) ?: return false
+        // 阶梯模式独立结算路径：FULLY_EXITED 直接根据 exits 求和；
+        // 部分平仓 / HELD_TO_SETTLE 等到周期结束后取 condition + exits 合并结算
+        if (trigger.mode == TradingMode.BRACKET_DYNAMIC) {
+            return settleBracketTrigger(trigger, strategy)
+        }
         val conditionId = resolveConditionId(strategy, trigger) ?: return false
         // 成交量/成本优先用下单响应的真实成交（最权威、即时、不依赖 Activity WS）；其次 Activity；都无则回退
         val activityFill = fetchActivityFill(trigger, strategy, conditionId)
@@ -176,8 +192,9 @@ class CryptoTailSettlementService(
         triggerRepository.save(updated)
         logger.debug("加密价差策略结算已更新: triggerId=${trigger.id}, winnerOutcomeIndex=$winnerIndex, won=$won, pnl=$pnl")
 
-        // 障碍模式：记录结算结果到全链路决策日志（链路终点），并携带最终 K 线用于反转判定与复盘
-        if (strategy.barrierEnabled) {
+        // V53 修正：BARRIER + BRACKET（任意非 LEGACY 模式）都记录结算结果到全链路决策日志（链路终点），
+        // 并携带最终 K 线用于反转判定与复盘。此前用 strategy.barrierEnabled 会让 BRACKET 完全丢失 SETTLED 日志。
+        if (strategy.mode != TradingMode.LEGACY_SPREAD) {
             val finalOc = getFinalOpenClose(strategy, trigger.periodStartUnix)
             val settleSource = resolved?.source ?: "FALLBACK"
             val payload = mutableMapOf<String, Any?>(
@@ -192,14 +209,15 @@ class CryptoTailSettlementService(
                 "fillPrice" to newTriggerPrice.toPlainString(),
                 "fillSize" to (resolved?.size?.toPlainString() ?: ""),
                 "settleTs" to now.toString(),
-                "settleSource" to settleSource
+                "settleSource" to settleSource,
+                "mode" to strategy.mode.name
             )
             if (finalOc != null) {
                 val (fOpen, fClose) = finalOc
                 payload["finalOpen"] = fOpen.toPlainString()
                 payload["finalClose"] = fClose.toPlainString()
                 payload["finalGap"] = fClose.subtract(fOpen).toPlainString()
-                payload["finalPriceSource"] = if (strategy.barrierEnabled) "CHAINLINK" else "BINANCE"
+                payload["finalPriceSource"] = if (strategy.mode != TradingMode.LEGACY_SPREAD) "CHAINLINK" else "BINANCE"
             }
             decisionRecorder.record(
                 CryptoTailDecisionEvent(
@@ -219,13 +237,236 @@ class CryptoTailSettlementService(
         return true
     }
 
+    /** 退出费用按笔细分（V53 修正口径） */
+    private data class ExitFeeBreakdown(
+        val exitCount: Int,
+        val makerCount: Int,
+        val takerCount: Int,
+        /** maker 返佣总额（正数），未发生为 0 */
+        val makerRebateTotal: BigDecimal,
+        /** taker 手续费总额（正数），未发生为 0 */
+        val takerFeeTotal: BigDecimal,
+        /** 累计 gas（正数 = exitCount × gasCostUsdc） */
+        val gasTotal: BigDecimal
+    ) {
+        /** 净费用调整：maker 返佣 - taker 手续费 - gas（与 PnL 直接相加） */
+        val totalAdjustment: BigDecimal
+            get() = makerRebateTotal.subtract(takerFeeTotal).subtract(gasTotal)
+    }
+
+    /**
+     * 按笔遍历 success exits，区分 maker(GTC*) / taker(FAK 或其它) 计费，并累计每笔 gas。
+     * 修正 V53 之前 settleBracketTrigger 对所有 exit 强制按 takerFeeBps 一次性扣 + 漏算 N−1 次 gas 的口径错误。
+     */
+    private fun computeExitFeeBreakdown(
+        strategy: CryptoTailStrategy,
+        exits: List<com.wrbug.polymarketbot.entity.CryptoTailStrategyExit>
+    ): ExitFeeBreakdown {
+        var makerCount = 0
+        var takerCount = 0
+        var makerRebate = BigDecimal.ZERO
+        var takerFee = BigDecimal.ZERO
+        for (e in exits) {
+            val amount = e.filledAmount ?: BigDecimal.ZERO
+            if (amount <= BigDecimal.ZERO) continue
+            // 统一以 orderType.startsWith("GTC") 判定 maker（含 GTC_POST_ONLY 等变体），与 feeAdjustment 一致
+            val isMaker = (e.orderType ?: "").uppercase().startsWith("GTC")
+            if (isMaker) {
+                makerCount++
+                makerRebate = makerRebate.add(
+                    amount.multiply(BigDecimal(strategy.makerRebateBps))
+                        .divide(BigDecimal(10000), pnlScale, RoundingMode.HALF_UP)
+                )
+            } else {
+                takerCount++
+                takerFee = takerFee.add(
+                    amount.multiply(BigDecimal(strategy.takerFeeBps))
+                        .divide(BigDecimal(10000), pnlScale, RoundingMode.HALF_UP)
+                )
+            }
+        }
+        val exitCount = makerCount + takerCount
+        // 每笔 exit 都触发一次 gas（与 BARRIER 单笔结算同口径），累计 N 笔
+        val gasTotal = strategy.gasCostUsdc.multiply(BigDecimal(exitCount))
+            .setScale(pnlScale, RoundingMode.HALF_UP)
+        return ExitFeeBreakdown(exitCount, makerCount, takerCount, makerRebate, takerFee, gasTotal)
+    }
+
+    /**
+     * 阶梯模式结算：
+     *  - 入场 cost = trigger.filledAmount（USDC，必有，因为入场成交才会走到此路径）
+     *  - exits 合计 cost = sum(filled_amount of success exits)，盈亏即 exits - 入场对应的 cost 部分
+     *  - 三种情况：
+     *      A. FULLY_EXITED：全部通过盘口卖出，无需链上 condition；realizedPnl = sumExits - cost + 费用调整
+     *      B. PARTIAL_EXIT/OPEN/HELD_TO_SETTLE 且周期已结束：剩余 remainingSize 走 condition 结算，
+     *         合并 exits 部分；同时把 exitStatus 写为 HELD_TO_SETTLE
+     *      C. PARTIAL_EXIT/OPEN 且周期未结束：暂不结算（等 BracketExitService/对账继续推进）
+     *
+     * V53 费用口径修正：exits 按笔遍历区分 maker 返佣 / taker 手续费 + 每笔单独一次 gas。
+     */
+    private suspend fun settleBracketTrigger(trigger: CryptoTailStrategyTrigger, strategy: CryptoTailStrategy): Boolean {
+        val triggerId = trigger.id ?: return false
+        val originalSize = trigger.filledSize ?: return false
+        val originalCost = trigger.filledAmount ?: return false
+        if (originalSize <= BigDecimal.ZERO || originalCost <= BigDecimal.ZERO) return false
+
+        val now = System.currentTimeMillis()
+        val periodEndMs = (trigger.periodStartUnix + strategy.intervalSeconds) * 1000L
+
+        val successExits = exitRepository.findByTriggerIdAndStatus(triggerId, "success")
+        val sumExitFilledSize = successExits.fold(BigDecimal.ZERO) { acc, e ->
+            acc.add(e.filledSize ?: BigDecimal.ZERO)
+        }
+        val sumExitFilledAmount = successExits.fold(BigDecimal.ZERO) { acc, e ->
+            acc.add(e.filledAmount ?: BigDecimal.ZERO)
+        }
+        val effectiveRemaining = originalSize.subtract(sumExitFilledSize).max(BigDecimal.ZERO)
+        val exitBreakdown = computeExitFeeBreakdown(strategy, successExits)
+
+        // 情况 A：全部从盘口退出（含 dust 容差，由 dust-fully-exited 任务统一处理）
+        if (effectiveRemaining <= BRACKET_DUST_THRESHOLD || trigger.exitStatus == ExitStatus.FULLY_EXITED.name) {
+            val grossPnl = sumExitFilledAmount.subtract(originalCost).setScale(pnlScale, RoundingMode.HALF_UP)
+            val entryFeeAdj = feeAdjustment(strategy, trigger, originalCost)
+            val exitFeeAdj = exitBreakdown.totalAdjustment
+            val pnl = grossPnl.add(entryFeeAdj).add(exitFeeAdj).setScale(pnlScale, RoundingMode.HALF_UP)
+            val updated = trigger.copy(
+                resolved = true,
+                winnerOutcomeIndex = null,
+                realizedPnl = pnl,
+                settledAt = now,
+                remainingSize = BigDecimal.ZERO,
+                exitStatus = ExitStatus.FULLY_EXITED.name
+            )
+            triggerRepository.save(updated)
+            recordBracketSettled(strategy, updated, won = null, grossPnl, pnl, entryFeeAdj.add(exitFeeAdj),
+                source = "EXITS_ONLY", sumExitFilledSize, sumExitFilledAmount, effectiveRemaining,
+                exitBreakdown = exitBreakdown, entryFeeAdj = entryFeeAdj)
+            logger.info(
+                "阶梯结算(全部盘口退出): triggerId=$triggerId pnl=${pnl.toPlainString()} " +
+                    "sumExits=${sumExitFilledAmount.toPlainString()} cost=${originalCost.toPlainString()} " +
+                    "exitCount=${exitBreakdown.exitCount} maker=${exitBreakdown.makerCount} taker=${exitBreakdown.takerCount}"
+            )
+            return true
+        }
+
+        // 情况 C：周期未结束，等待
+        if (now < periodEndMs) {
+            return false
+        }
+
+        // 情况 B：周期已结束 + 还有 remainingSize → 链上 condition 结算 + 合并 exits
+        val conditionId = resolveConditionId(strategy, trigger) ?: return false
+        val (_, payouts) = blockchainService.getCondition(conditionId).getOrNull() ?: return false
+        if (payouts.isEmpty()) return false
+        val winnerIndex = payouts.indexOfFirst { it == java.math.BigInteger.ONE }
+        if (winnerIndex < 0) return false
+        val won = trigger.outcomeIndex == winnerIndex
+
+        // 残余成本按入场均价比例分摊
+        val avgEntryPrice = originalCost.divide(originalSize, pnlScale, RoundingMode.HALF_UP)
+        val remainingCost = effectiveRemaining.multiply(avgEntryPrice).setScale(pnlScale, RoundingMode.HALF_UP)
+        val onChainGross = if (won) effectiveRemaining.subtract(remainingCost) else remainingCost.negate()
+
+        // exits 部分 PnL：sumExitFilledAmount(USDC收入) - exits 对应的入场成本
+        val exitsCost = originalCost.subtract(remainingCost).max(BigDecimal.ZERO)
+        val exitsGross = sumExitFilledAmount.subtract(exitsCost)
+        val grossPnl = onChainGross.add(exitsGross).setScale(pnlScale, RoundingMode.HALF_UP)
+
+        // 入场费 + exits 按笔费用（区分 maker/taker + 每笔 gas）
+        val entryFeeAdj = feeAdjustment(strategy, trigger, originalCost)
+        val exitFeeAdj = exitBreakdown.totalAdjustment
+        val pnl = grossPnl.add(entryFeeAdj).add(exitFeeAdj).setScale(pnlScale, RoundingMode.HALF_UP)
+
+        val updated = trigger.copy(
+            conditionId = conditionId,
+            resolved = true,
+            winnerOutcomeIndex = winnerIndex,
+            realizedPnl = pnl,
+            settledAt = now,
+            remainingSize = effectiveRemaining,
+            exitStatus = ExitStatus.HELD_TO_SETTLE.name
+        )
+        triggerRepository.save(updated)
+        recordBracketSettled(strategy, updated, won, grossPnl, pnl, entryFeeAdj.add(exitFeeAdj),
+            source = "EXITS+ONCHAIN", sumExitFilledSize, sumExitFilledAmount, effectiveRemaining,
+            exitBreakdown = exitBreakdown, entryFeeAdj = entryFeeAdj)
+        logger.info(
+            "阶梯结算(残余链上+盘口): triggerId=$triggerId pnl=${pnl.toPlainString()} won=$won " +
+                "remaining=${effectiveRemaining.toPlainString()} sumExits=${sumExitFilledAmount.toPlainString()} " +
+                "exitCount=${exitBreakdown.exitCount} maker=${exitBreakdown.makerCount} taker=${exitBreakdown.takerCount}"
+        )
+        return true
+    }
+
+    /** 阶梯模式结算决策日志（与 BARRIER 的 SETTLED 同 type，payload 携带阶梯特有字段 + V53 exitFeeBreakdown） */
+    private fun recordBracketSettled(
+        strategy: CryptoTailStrategy,
+        trigger: CryptoTailStrategyTrigger,
+        won: Boolean?,
+        grossPnl: BigDecimal,
+        pnl: BigDecimal,
+        feeAdj: BigDecimal,
+        source: String,
+        sumExitFilledSize: BigDecimal,
+        sumExitFilledAmount: BigDecimal,
+        remainingSize: BigDecimal,
+        exitBreakdown: ExitFeeBreakdown,
+        entryFeeAdj: BigDecimal
+    ) {
+        val payload = mutableMapOf<String, Any?>(
+            "mode" to "BRACKET_DYNAMIC",
+            "won" to (won?.toString() ?: "n/a"),
+            "winnerOutcomeIndex" to (trigger.winnerOutcomeIndex?.toString() ?: ""),
+            "outcomeIndex" to trigger.outcomeIndex,
+            "realizedPnl" to pnl.toPlainString(),
+            "grossPnl" to grossPnl.toPlainString(),
+            "feeAdjustment" to feeAdj.toPlainString(),
+            "originalCost" to (trigger.filledAmount?.toPlainString() ?: ""),
+            "originalSize" to (trigger.filledSize?.toPlainString() ?: ""),
+            "sumExitFilledSize" to sumExitFilledSize.toPlainString(),
+            "sumExitFilledAmount" to sumExitFilledAmount.toPlainString(),
+            "remainingSize" to remainingSize.toPlainString(),
+            "exitStatus" to trigger.exitStatus,
+            "settleSource" to source,
+            // V53 新增：按笔细分的费用结构，便于事后复盘各档位 maker/taker 占比与 gas 影响
+            "exitFeeBreakdown" to mapOf(
+                "exitCount" to exitBreakdown.exitCount,
+                "makerCount" to exitBreakdown.makerCount,
+                "takerCount" to exitBreakdown.takerCount,
+                "makerRebateTotal" to exitBreakdown.makerRebateTotal.toPlainString(),
+                "takerFeeTotal" to exitBreakdown.takerFeeTotal.toPlainString(),
+                "gasTotal" to exitBreakdown.gasTotal.toPlainString(),
+                "totalAdjustment" to exitBreakdown.totalAdjustment.toPlainString(),
+                "entryFeeAdjustment" to entryFeeAdj.toPlainString()
+            )
+        )
+        decisionRecorder.record(
+            CryptoTailDecisionEvent(
+                strategyId = trigger.strategyId,
+                periodStartUnix = trigger.periodStartUnix,
+                correlationId = "${trigger.strategyId}-${trigger.periodStartUnix}",
+                eventType = "SETTLED",
+                gateName = null,
+                passed = won,
+                reason = when {
+                    won == true -> "阶梯结算获胜"
+                    won == false -> "阶梯结算失败"
+                    else -> "阶梯结算(全部盘口退出)"
+                },
+                payloadJson = payload.toJson(),
+                outcomeIndex = trigger.outcomeIndex,
+                triggerId = trigger.id
+            )
+        )
+    }
+
     /**
      * 取结算周期的最终 (open, close)。
-     * 障碍模式用 Chainlink（与 Polymarket 结算源一致，按精确时间戳取窗口期初/期末），不可用则返回 null（不造假、不回退币安）。
-     * 非障碍模式沿用币安进程内缓存/REST 兜底（旧逻辑不变）。
+     * V53 修正：障碍/阶梯模式（任意非 LEGACY）都用 Chainlink（与 Polymarket 结算源一致，按精确时间戳取窗口期初/期末），
+     * 不可用则返回 null（不造假、不回退币安）。LEGACY 模式沿用币安进程内缓存/REST 兜底。
      */
     private fun getFinalOpenClose(strategy: CryptoTailStrategy, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? {
-        if (strategy.barrierEnabled) {
+        if (strategy.mode != TradingMode.LEGACY_SPREAD) {
             return periodPriceProvider.getFinalOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
         }
         return binanceKlineService.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
