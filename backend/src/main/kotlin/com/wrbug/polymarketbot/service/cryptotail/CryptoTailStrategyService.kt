@@ -95,7 +95,7 @@ class CryptoTailStrategyService(
             val maxEntryPrice = request.maxEntryPrice?.toSafeBigDecimal() ?: BigDecimal("0.99")
             val costBuffer = request.costBuffer?.toSafeBigDecimal() ?: BigDecimal("0.02")
             val barrierMinMarketProb = request.barrierMinMarketProb?.toSafeBigDecimal() ?: BigDecimal.ZERO
-            val sigmaScale = request.sigmaScale?.toSafeBigDecimal() ?: BigDecimal("1.2533")
+            val sigmaScale = request.sigmaScale?.toSafeBigDecimal() ?: BigDecimal("1.0")
             val dailyLossLimitUsdc = request.dailyLossLimitUsdc?.toSafeBigDecimal()
             val maxConcurrentPositions = request.maxConcurrentPositions
             val takerFeeBps = request.takerFeeBps ?: 0
@@ -109,7 +109,7 @@ class CryptoTailStrategyService(
             val probeAmountUsdc = request.probeAmountUsdc?.toSafeBigDecimal() ?: BigDecimal.ONE
             val calibrationMinSamples = request.calibrationMinSamples ?: 30
             val calibrationMaxError = request.calibrationMaxError?.toSafeBigDecimal() ?: BigDecimal("0.10")
-            val sigmaMethod = (request.sigmaMethod ?: "MAD").trim().uppercase()
+            val sigmaMethod = (request.sigmaMethod ?: "GARMAN_KLASS").trim().uppercase()
             val ewmaLambda = request.ewmaLambda?.toSafeBigDecimal() ?: BigDecimal("0.94")
             val kellyEnabled = request.kellyEnabled ?: false
             val kellyFraction = request.kellyFraction?.toSafeBigDecimal() ?: BigDecimal("0.25")

@@ -86,9 +86,9 @@ data class CryptoTailStrategy(
     @Column(name = "barrier_min_market_prob", nullable = false, precision = 20, scale = 8)
     val barrierMinMarketProb: BigDecimal = BigDecimal.ZERO,
 
-    /** σ 校准系数：sigmaPerSqrtS = baseSpread * sigmaScale / √interval，默认 1.2533（√(π/2) 平均绝对位移→标准差修正） */
+    /** σ 校准系数：sigmaPerSqrtS = baseSpread * sigmaScale / √interval；GARMAN_KLASS/EWMA 已是标准差量纲建议 1.0，MAD 建议 1.2533（√(π/2) 平均绝对位移→标准差修正），默认 1.0 */
     @Column(name = "sigma_scale", nullable = false, precision = 20, scale = 8)
-    val sigmaScale: BigDecimal = BigDecimal("1.2533"),
+    val sigmaScale: BigDecimal = BigDecimal("1.0"),
 
     /** 当日已实现亏损熔断阈值 USDC（正数），null/<=0 = 关闭该闸 */
     @Column(name = "daily_loss_limit_usdc", precision = 20, scale = 8)
@@ -142,9 +142,9 @@ data class CryptoTailStrategy(
     @Column(name = "calibration_max_error", nullable = false, precision = 20, scale = 8)
     val calibrationMaxError: BigDecimal = BigDecimal("0.10"),
 
-    /** σ 估计方法: MAD=平均绝对位移(默认,与原口径一致)；EWMA=指数加权(更敏感)；GARMAN_KLASS=GK 区间估计(用币安OHLC作波动幅度代理) */
+    /** σ 估计方法: GARMAN_KLASS=GK 区间估计(用币安OHLC作波动幅度代理,历史深、冷启动即可用,默认)；MAD=平均绝对位移；EWMA=指数加权(更敏感)。注：MAD/EWMA 取边界价于价源内存历史，冷启动需累积多周期 */
     @Column(name = "sigma_method", nullable = false, length = 16)
-    val sigmaMethod: String = "MAD",
+    val sigmaMethod: String = "GARMAN_KLASS",
 
     /** EWMA 衰减系数 λ（0~1，越大越平滑），仅 sigmaMethod=EWMA 生效，默认 0.94（RiskMetrics 经典值） */
     @Column(name = "ewma_lambda", nullable = false, precision = 20, scale = 8)

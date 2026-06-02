@@ -28,6 +28,13 @@ class BarrierSigmaEstimator(
     private val sigmaLookbackPeriods = 20
     private val minSamples = 3
 
+    /** σ 日志按周期去重：同一 (市场-周期-方法-场景) 仅打一次，避免每个 WS tick 刷屏 */
+    private val loggedOnce = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private fun firstTime(key: String): Boolean {
+        if (loggedOnce.size > 5000) loggedOnce.clear()
+        return loggedOnce.add(key)
+    }
+
     /**
      * 计算 σ_per_√s。无法估计（样本不足/参数非法）返回 null。
      * @param priceAt 取指定 Unix 秒时间戳处价的函数（边界价）
@@ -48,18 +55,19 @@ class BarrierSigmaEstimator(
         val sqrtInterval = BigDecimal(sqrt(intervalSeconds.toDouble()))
         if (sqrtInterval <= BigDecimal.ZERO) return null
 
+        val keyBase = "$marketSlugPrefix-$intervalSeconds-$periodStartUnix-$method"
         // baseSpread：每周期价格位移的代表性幅度（价格单位），三法分别估计
         val baseSpread: BigDecimal? = when (method) {
-            "EWMA" -> computeEwmaBaseSpread(intervalSeconds, periodStartUnix, ewmaLambda, priceAt)
-            "GARMAN_KLASS" -> computeGarmanKlassBaseSpread(marketSlugPrefix, intervalSeconds, periodStartUnix, priceAt, currentPrice)
-            else -> computeMadBaseSpread(intervalSeconds, periodStartUnix, priceAt)
+            "EWMA" -> computeEwmaBaseSpread(keyBase, intervalSeconds, periodStartUnix, ewmaLambda, priceAt)
+            "GARMAN_KLASS" -> computeGarmanKlassBaseSpread(keyBase, marketSlugPrefix, intervalSeconds, periodStartUnix, priceAt, currentPrice)
+            else -> computeMadBaseSpread(keyBase, intervalSeconds, periodStartUnix, priceAt)
         }
         if (baseSpread == null || baseSpread <= BigDecimal.ZERO) {
-            logger.warn("障碍 σ 估计失败: market=$marketSlugPrefix interval=${intervalSeconds}s method=$method")
+            if (firstTime("$keyBase-fail")) logger.warn("障碍 σ 估计失败: market=$marketSlugPrefix interval=${intervalSeconds}s method=$method")
             return null
         }
         val sigma = baseSpread.multiply(sigmaScale).divide(sqrtInterval, 18, RoundingMode.HALF_UP)
-        logger.info("障碍 σ 已计算: market=$marketSlugPrefix interval=${intervalSeconds}s period=$periodStartUnix method=$method baseSpread=${baseSpread.toPlainString()} sigmaPerSqrtS=${sigma.toPlainString()}")
+        if (firstTime("$keyBase-ok")) logger.info("障碍 σ 已计算: market=$marketSlugPrefix interval=${intervalSeconds}s period=$periodStartUnix method=$method baseSpread=${baseSpread.toPlainString()} sigmaPerSqrtS=${sigma.toPlainString()}")
         return sigma
     }
 
@@ -75,10 +83,10 @@ class BarrierSigmaEstimator(
     }
 
     /** MAD：相邻周期绝对位移的 IQR 平均（原口径，sigmaScale 默认 √(π/2) 修正为标准差） */
-    private fun computeMadBaseSpread(intervalSeconds: Int, periodStartUnix: Long, priceAt: (Long) -> BigDecimal?): BigDecimal? {
+    private fun computeMadBaseSpread(keyBase: String, intervalSeconds: Int, periodStartUnix: Long, priceAt: (Long) -> BigDecimal?): BigDecimal? {
         val prices = sampleBoundaryPrices(intervalSeconds, periodStartUnix, priceAt)
         if (prices.size < minSamples + 1) {
-            logger.warn("障碍 σ(MAD) 样本不足: 样本=${prices.size}")
+            if (firstTime("$keyBase-insuf")) logger.warn("障碍 σ(MAD) 样本不足: 样本=${prices.size}（边界价取自价源内存历史，冷启动需累积多周期；建议改用 Garman-Klass）")
             return null
         }
         val displacements = ArrayList<BigDecimal>(prices.size - 1)
@@ -92,10 +100,10 @@ class BarrierSigmaEstimator(
      * EWMA：对相邻周期位移平方做指数加权（最新权重高），开方得 RMS 位移幅度（标准差量纲）。
      * σ²_t = λ·σ²_{t-1} + (1-λ)·r²_t；按时间从旧到新递推。EWMA 已是标准差量纲，sigmaScale 建议设 1.0。
      */
-    private fun computeEwmaBaseSpread(intervalSeconds: Int, periodStartUnix: Long, lambda: BigDecimal, priceAt: (Long) -> BigDecimal?): BigDecimal? {
+    private fun computeEwmaBaseSpread(keyBase: String, intervalSeconds: Int, periodStartUnix: Long, lambda: BigDecimal, priceAt: (Long) -> BigDecimal?): BigDecimal? {
         val prices = sampleBoundaryPrices(intervalSeconds, periodStartUnix, priceAt)
         if (prices.size < minSamples + 1) {
-            logger.warn("障碍 σ(EWMA) 样本不足: 样本=${prices.size}")
+            if (firstTime("$keyBase-insuf")) logger.warn("障碍 σ(EWMA) 样本不足: 样本=${prices.size}（边界价取自价源内存历史，冷启动需累积多周期；建议改用 Garman-Klass）")
             return null
         }
         val lam = lambda.toDouble().coerceIn(0.0, 0.999)
@@ -121,6 +129,7 @@ class BarrierSigmaEstimator(
      * 再乘当期参考价（期初价）换算为价格量纲。
      */
     private fun computeGarmanKlassBaseSpread(
+        keyBase: String,
         marketSlugPrefix: String,
         intervalSeconds: Int,
         periodStartUnix: Long,
@@ -129,7 +138,7 @@ class BarrierSigmaEstimator(
     ): BigDecimal? {
         val ohlcList = binanceKlineAutoSpreadService.fetchRecentOhlc(marketSlugPrefix, intervalSeconds, sigmaLookbackPeriods, periodStartUnix)
         if (ohlcList == null || ohlcList.size < minSamples) {
-            logger.warn("障碍 σ(GK) 币安OHLC样本不足: market=$marketSlugPrefix 样本=${ohlcList?.size ?: 0}")
+            if (firstTime("$keyBase-insuf")) logger.warn("障碍 σ(GK) 币安OHLC样本不足: market=$marketSlugPrefix 样本=${ohlcList?.size ?: 0}")
             return null
         }
         val twoLn2Minus1 = 2.0 * ln(2.0) - 1.0

@@ -237,20 +237,31 @@ class CryptoTailStrategyExecutionService(
             val logKey = triggerLockKey(strategy.id!!, periodStartUnix)
             if (conditionLoggedCache.getIfPresent(logKey) == null) {
                 conditionLoggedCache.put(logKey, periodStartUnix + strategy.intervalSeconds)
-                val oc = binanceKlineService.getCurrentOpenClose(
-                    strategy.marketSlugPrefix,
-                    strategy.intervalSeconds,
-                    periodStartUnix
-                )
-                val openPrice = oc?.first?.toPlainString() ?: "-"
-                val closePrice = oc?.second?.toPlainString() ?: "-"
+                // 障碍模式优先用与结算同源的 Chainlink/RTDS 取价，冷启动回退币安；旧模式仍用币安
+                val oc = (if (strategy.barrierEnabled)
+                    periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
+                else null)
+                    ?: binanceKlineService.getCurrentOpenClose(
+                        strategy.marketSlugPrefix,
+                        strategy.intervalSeconds,
+                        periodStartUnix
+                    )
+                val openP = oc?.first
+                val closeP = oc?.second
+                val openPrice = openP?.toPlainString() ?: "-"
+                val closePrice = closeP?.toPlainString() ?: "-"
                 val strategyName = strategy.name?.takeIf { it.isNotBlank() } ?: "加密价差策略-${strategy.marketSlugPrefix}"
-                val direction = if (outcomeIndex == 0) "Up" else "Down"
+                // 评估的是哪个 outcome token（仅标识被评估的方向，非模型预测）
+                val evalOutcome = if (outcomeIndex == 0) "Up" else "Down"
+                // 模型按 gap=close-open 的方向判定（close≥open→涨，否则跌）；价源未就绪则未知
+                val modelSide = if (openP != null && closeP != null) {
+                    if (closeP >= openP) "Up(涨)" else "Down(跌)"
+                } else "未知(价源未就绪)"
                 val modeStr = if (strategy.barrierEnabled) "障碍模式" else if (strategy.spreadDirection == SpreadDirection.MAX) "最大价差" else "最小价差"
                 logger.info(
                     "加密价差策略首次满足条件: strategyName=$strategyName, strategyId=${strategy.id}, " +
                             "openPrice=$openPrice, closePrice=$closePrice, marketPrice=${bestBid.toPlainString()}, " +
-                            "direction=$direction, outcomeIndex=$outcomeIndex, mode=$modeStr"
+                            "评估outcome=$evalOutcome, 模型方向(close vs open)=$modelSide, outcomeIndex=$outcomeIndex, mode=$modeStr"
                 )
             }
 
@@ -318,18 +329,29 @@ class CryptoTailStrategyExecutionService(
     ): BarrierEval {
         // 障碍模式价源必须与 Polymarket 结算源(Chainlink)一致；缺凭证/feedID 时安全跳过，绝不回退币安
         if (!periodPriceProvider.isAvailable(strategy.marketSlugPrefix)) {
-            return BarrierEval(false, "PRICE_SOURCE", "Chainlink价源未配置(缺API凭证或该币种feedID)", null)
+            return BarrierEval(false, "PRICE_SOURCE", "价源未就绪(未连接或最新价过期，启动后请稍候自动恢复)", null)
         }
         val oc = periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
-            ?: return BarrierEval(false, "PRICE_SOURCE", "Chainlink价未就绪(期初/当前价取价失败)", null)
+            ?: return BarrierEval(false, "PRICE_SOURCE", "期初价未就绪(价源刚启动，期初价回看超出缓存；本周期跳过，下一周期将自动恢复)", null)
         val (openP, closeP) = oc
         val gap = closeP.subtract(openP)
         val nowSeconds = System.currentTimeMillis() / 1000
         val remaining = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toDouble()
+        // 即便 σ 未就绪，也带上 open/close/gap 的方向快照，让决策日志能看出"模型按 gap 判定的方向"
+        val sideByGap = if (gap.signum() >= 0) 0 else 1
+        val preSigmaSnapshot = mapOf(
+            "open" to openP.toPlainString(),
+            "close" to closeP.toPlainString(),
+            "gap" to gap.toPlainString(),
+            "remainingSeconds" to remaining,
+            "modelSideByGap" to sideByGap,
+            "modelSideByGapText" to (if (sideByGap == 0) "Up(涨)" else "Down(跌)"),
+            "evalOutcomeIndex" to outcomeIndex
+        ).toJson()
         val sigma = periodPriceProvider.getSigmaPerSqrtS(
             strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix, outcomeIndex, strategy.sigmaScale,
             strategy.sigmaMethod, strategy.ewmaLambda
-        ) ?: return BarrierEval(false, "PWIN", "σ基准不可用(Chainlink历史样本不足)", null)
+        ) ?: return BarrierEval(false, "PWIN", "σ基准不可用(价源历史样本不足，冷启动需累积若干周期后自动恢复)", preSigmaSnapshot)
         val r = BarrierProbability.winProbTerminal(gap, sigma, remaining)
             ?: return BarrierEval(false, "PWIN", "无法计算pWin(剩余时间或σ无效)", null)
 

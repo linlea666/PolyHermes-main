@@ -51,10 +51,19 @@ class CryptoTailMonitorService(
     private val retrofitFactory: RetrofitFactory,
     private val binanceKlineService: BinanceKlineService,
     private val binanceKlineAutoSpreadService: BinanceKlineAutoSpreadService,
-    private val webSocketSubscriptionService: WebSocketSubscriptionService
+    private val webSocketSubscriptionService: WebSocketSubscriptionService,
+    private val periodPriceProvider: PeriodPriceProvider
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailMonitorService::class.java)
+
+    /**
+     * 监控展示用开盘价/当前价：优先用与结算同源的 Chainlink/RTDS（与 Polymarket 目标价一致），
+     * 未就绪（冷启动）时回退币安，保证页面不空。返回 (开盘价, 当前价)。
+     */
+    private fun resolveOpenClose(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? =
+        periodPriceProvider.getCurrentOpenClose(marketSlugPrefix, intervalSeconds, periodStartUnix)
+            ?: binanceKlineService.getCurrentOpenClose(marketSlugPrefix, intervalSeconds, periodStartUnix)
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     /** 当前周期 token 映射 */
@@ -156,8 +165,8 @@ class CryptoTailMonitorService(
             val market = event?.markets?.firstOrNull()
             val tokenIds = parseClobTokenIds(market?.clobTokenIds)
 
-            // 获取开盘价（币安 K 线 open = BTC 价格 USDC）
-            val openClose = binanceKlineService.getCurrentOpenClose(
+            // 获取开盘价（优先 Chainlink/RTDS，与结算同源；冷启动回退币安）
+            val openClose = resolveOpenClose(
                 strategy.marketSlugPrefix,
                 strategy.intervalSeconds,
                 periodStartUnix
@@ -476,7 +485,7 @@ class CryptoTailMonitorService(
         val strategies = strategyRepository.findAllById(strategyIds)
         for (strategy in strategies) {
             if (strategy.id == null) continue
-            val openClose = binanceKlineService.getCurrentOpenClose(
+            val openClose = resolveOpenClose(
                 strategy.marketSlugPrefix,
                 strategy.intervalSeconds,
                 periodStartUnix
@@ -711,8 +720,8 @@ class CryptoTailMonitorService(
         val windowEnd = periodStartUnix + strategy.windowEndSeconds
         val inTimeWindow = nowSeconds >= windowStart && nowSeconds < windowEnd
 
-        // 币安 K 线：open = 周期开盘价，close = 当前最新价（实时更新）
-        val openClose = binanceKlineService.getCurrentOpenClose(
+        // open = 周期开盘价，close = 当前最新价（优先 Chainlink/RTDS，与结算同源；冷启动回退币安）
+        val openClose = resolveOpenClose(
             strategy.marketSlugPrefix,
             strategy.intervalSeconds,
             periodStartUnix
