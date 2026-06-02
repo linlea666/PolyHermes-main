@@ -1260,16 +1260,23 @@ const CryptoTailStrategyList: React.FC = () => {
             }
           </Form.Item>
           {barrierEnabled && (
-            <Form.Item>
-              <Space size={8} wrap>
-                <Button size="small" onClick={fillRiskDefaults}>
-                  {t('cryptoTailStrategy.form.riskAutofillBtn')}
-                </Button>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('cryptoTailStrategy.form.riskAutofillHint')}
-                </Typography.Text>
-              </Space>
-            </Form.Item>
+            <>
+              {isBracketMode && (
+                <Form.Item style={{ marginBottom: 12 }}>
+                  <Typography.Text strong>{t('cryptoTailStrategy.form.probabilitySharedSection')}</Typography.Text>
+                </Form.Item>
+              )}
+              <Form.Item>
+                <Space size={8} wrap>
+                  <Button size="small" onClick={fillRiskDefaults}>
+                    {t('cryptoTailStrategy.form.riskAutofillBtn')}
+                  </Button>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('cryptoTailStrategy.form.riskAutofillHint')}
+                  </Typography.Text>
+                </Space>
+              </Form.Item>
+            </>
           )}
           {!barrierEnabled && (
             <>
@@ -1334,6 +1341,9 @@ const CryptoTailStrategyList: React.FC = () => {
             <>
               {isBarrierMode && (
                 <>
+                  <Form.Item style={{ marginBottom: 12 }}>
+                    <Typography.Text strong>{t('cryptoTailStrategy.form.barrierEntrySection')}</Typography.Text>
+                  </Form.Item>
                   <Alert type="info" showIcon style={{ marginBottom: 16 }} message={t('cryptoTailStrategy.form.barrierInfo')} />
                   <Form.Item
                     name="entryProb"
@@ -1391,6 +1401,11 @@ const CryptoTailStrategyList: React.FC = () => {
                     <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
                   </Form.Item>
                 </>
+              )}
+              {isBarrierMode && (
+                <Form.Item style={{ marginBottom: 12 }}>
+                  <Typography.Text strong>{t('cryptoTailStrategy.form.probabilitySharedSection')}</Typography.Text>
+                </Form.Item>
               )}
               <Form.Item
                 name="costBuffer"
@@ -1773,6 +1788,9 @@ const CryptoTailStrategyList: React.FC = () => {
           )}
           {isBracketMode && (
             <>
+              <Form.Item style={{ marginBottom: 12 }}>
+                <Typography.Text strong>{t('cryptoTailStrategy.form.bracketEntryExitSection')}</Typography.Text>
+              </Form.Item>
               <Alert type="info" showIcon style={{ marginBottom: 16 }} message={t('cryptoTailStrategy.form.bracketInfo')} />
               <Form.Item
                 name="bracketEntryProb"
