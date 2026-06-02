@@ -168,39 +168,39 @@ class ApiHealthCheckService(
                 .build()
 
             val startTime = System.currentTimeMillis()
-            val response = client.newCall(request).execute()
-            val responseTime = System.currentTimeMillis() - startTime
-
-            if (response.isSuccessful) {
-                // 检查响应体是否为有效的 JSON 数组（即使为空数组也可以）
-                val responseBody = response.body?.string()
-                if (responseBody != null && (responseBody.trim().startsWith("[") || responseBody.trim()
-                        .startsWith("{"))
-                ) {
-                    ApiHealthCheckDto(
-                        name = "Polymarket Gamma API",
-                        url = url,
-                        status = "success",
-                        message = "连接成功",
-                        responseTime = responseTime
-                    )
+            client.newCall(request).execute().use { response ->
+                val responseTime = System.currentTimeMillis() - startTime
+                if (response.isSuccessful) {
+                    // 检查响应体是否为有效的 JSON 数组（即使为空数组也可以）
+                    val responseBody = response.body?.string()
+                    if (responseBody != null && (responseBody.trim().startsWith("[") || responseBody.trim()
+                            .startsWith("{"))
+                    ) {
+                        ApiHealthCheckDto(
+                            name = "Polymarket Gamma API",
+                            url = url,
+                            status = "success",
+                            message = "连接成功",
+                            responseTime = responseTime
+                        )
+                    } else {
+                        ApiHealthCheckDto(
+                            name = "Polymarket Gamma API",
+                            url = url,
+                            status = "error",
+                            message = "响应格式不正确",
+                            responseTime = responseTime
+                        )
+                    }
                 } else {
                     ApiHealthCheckDto(
                         name = "Polymarket Gamma API",
                         url = url,
                         status = "error",
-                        message = "响应格式不正确",
+                        message = "HTTP ${response.code}: ${response.message}",
                         responseTime = responseTime
                     )
                 }
-            } else {
-                ApiHealthCheckDto(
-                    name = "Polymarket Gamma API",
-                    url = url,
-                    status = "error",
-                    message = "HTTP ${response.code}: ${response.message}",
-                    responseTime = responseTime
-                )
             }
         } catch (e: Exception) {
             logger.warn("检查 Polymarket Gamma API 失败", e)
@@ -492,25 +492,25 @@ class ApiHealthCheckService(
                 .build()
 
             val startTime = System.currentTimeMillis()
-            val response = client.newCall(request).execute()
-            val responseTime = System.currentTimeMillis() - startTime
-
-            if (response.isSuccessful) {
-                ApiHealthCheckDto(
-                    name = name,
-                    url = url,
-                    status = "success",
-                    message = "连接成功",
-                    responseTime = responseTime
-                )
-            } else {
-                ApiHealthCheckDto(
-                    name = name,
-                    url = url,
-                    status = "error",
-                    message = "HTTP ${response.code}: ${response.message}",
-                    responseTime = responseTime
-                )
+            client.newCall(request).execute().use { response ->
+                val responseTime = System.currentTimeMillis() - startTime
+                if (response.isSuccessful) {
+                    ApiHealthCheckDto(
+                        name = name,
+                        url = url,
+                        status = "success",
+                        message = "连接成功",
+                        responseTime = responseTime
+                    )
+                } else {
+                    ApiHealthCheckDto(
+                        name = name,
+                        url = url,
+                        status = "error",
+                        message = "HTTP ${response.code}: ${response.message}",
+                        responseTime = responseTime
+                    )
+                }
             }
         } catch (e: Exception) {
             logger.warn("检查 API 失败: $name ($url)", e)
@@ -554,36 +554,36 @@ class ApiHealthCheckService(
                 .build()
 
             val startTime = System.currentTimeMillis()
-            val response = client.newCall(request).execute()
-            val responseTime = System.currentTimeMillis() - startTime
-
-            if (response.isSuccessful) {
-                val responseBody = response.body?.string()
-                if (responseBody != null && responseBody.contains("\"result\"")) {
-                    ApiHealthCheckDto(
-                        name = name,
-                        url = url,
-                        status = "success",
-                        message = "连接成功",
-                        responseTime = responseTime
-                    )
+            client.newCall(request).execute().use { response ->
+                val responseTime = System.currentTimeMillis() - startTime
+                if (response.isSuccessful) {
+                    val responseBody = response.body?.string()
+                    if (responseBody != null && responseBody.contains("\"result\"")) {
+                        ApiHealthCheckDto(
+                            name = name,
+                            url = url,
+                            status = "success",
+                            message = "连接成功",
+                            responseTime = responseTime
+                        )
+                    } else {
+                        ApiHealthCheckDto(
+                            name = name,
+                            url = url,
+                            status = "error",
+                            message = "响应格式不正确",
+                            responseTime = responseTime
+                        )
+                    }
                 } else {
                     ApiHealthCheckDto(
                         name = name,
                         url = url,
                         status = "error",
-                        message = "响应格式不正确",
+                        message = "HTTP ${response.code}: ${response.message}",
                         responseTime = responseTime
                     )
                 }
-            } else {
-                ApiHealthCheckDto(
-                    name = name,
-                    url = url,
-                    status = "error",
-                    message = "HTTP ${response.code}: ${response.message}",
-                    responseTime = responseTime
-                )
             }
         } catch (e: Exception) {
             logger.warn("检查 JSON-RPC API 失败: $name ($url)", e)

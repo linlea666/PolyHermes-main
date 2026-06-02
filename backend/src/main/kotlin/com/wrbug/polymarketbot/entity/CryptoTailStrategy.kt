@@ -66,9 +66,14 @@ data class CryptoTailStrategy(
     @Column(name = "barrier_enabled", nullable = false)
     val barrierEnabled: Boolean = false,
 
-    /** 进场胜率阈值 pWin≥entryProb 才进场（0~1），默认 0.95 */
+    /**
+     * 进场胜率阈值 pWin≥entryProb 才进场（0~1），默认 0.55。
+     * 该闸仅作"方向倾向下限"防误判，真正的盈亏过滤交给扣费 EV 闸（entryEdge）。
+     * 注：阈值过高（如 0.95）会迫使只在 pWin 极端区间下注，而正态近似在极端区间最易高估，
+     * 反而拦掉中等倾向但正EV的机会；故默认设为略高于五五开的 0.55。
+     */
     @Column(name = "entry_prob", nullable = false, precision = 20, scale = 8)
-    val entryProb: BigDecimal = BigDecimal("0.95"),
+    val entryProb: BigDecimal = BigDecimal("0.55"),
 
     /** 扣费 EV 边际阈值 edge = pWin - 有效成本 ≥ entryEdge，默认 0.02 */
     @Column(name = "entry_edge", nullable = false, precision = 20, scale = 8)

@@ -90,7 +90,7 @@ class CryptoTailStrategyService(
                 ?: generateStrategyName(request.marketSlugPrefix.trim())
 
             // 障碍模式参数（缺省即默认，barrierEnabled=false 时不影响旧行为）
-            val entryProb = request.entryProb?.toSafeBigDecimal() ?: BigDecimal("0.95")
+            val entryProb = request.entryProb?.toSafeBigDecimal() ?: BigDecimal("0.55")
             val entryEdge = request.entryEdge?.toSafeBigDecimal() ?: BigDecimal("0.02")
             val maxEntryPrice = request.maxEntryPrice?.toSafeBigDecimal() ?: BigDecimal("0.99")
             val costBuffer = request.costBuffer?.toSafeBigDecimal() ?: BigDecimal("0.02")

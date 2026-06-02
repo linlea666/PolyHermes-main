@@ -151,12 +151,12 @@ data class CryptoTailStrategyDto(
     val enabled: Boolean = true,
     /** 障碍（终值概率）模式开关 */
     val barrierEnabled: Boolean = false,
-    val entryProb: String = "0.95",
+    val entryProb: String = "0.55",
     val entryEdge: String = "0.02",
     val maxEntryPrice: String = "0.99",
     val costBuffer: String = "0.02",
     val barrierMinMarketProb: String = "0",
-    val sigmaScale: String = "1.2533",
+    val sigmaScale: String = "1.0",
     val dailyLossLimitUsdc: String? = null,
     val maxConcurrentPositions: Int? = null,
     val takerFeeBps: Int = 0,
@@ -178,8 +178,8 @@ data class CryptoTailStrategyDto(
     val calibrationMinSamples: Int = 30,
     /** 放量达标最大校准误差 */
     val calibrationMaxError: String = "0.10",
-    /** σ 估计方法: MAD/EWMA/GARMAN_KLASS */
-    val sigmaMethod: String = "MAD",
+    /** σ 估计方法: GARMAN_KLASS/MAD/EWMA */
+    val sigmaMethod: String = "GARMAN_KLASS",
     /** EWMA 衰减系数 λ */
     val ewmaLambda: String = "0.94",
     /** 分数 Kelly 动态仓位开关 */
