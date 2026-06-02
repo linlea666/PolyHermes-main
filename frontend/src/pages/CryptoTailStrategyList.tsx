@@ -346,7 +346,8 @@ const CryptoTailStrategyList: React.FC = () => {
         return
       }
       const resolvedMode: number = typeof v.mode === 'number' ? v.mode : (v.barrierEnabled === true ? 1 : 0)
-      const barrierOn = resolvedMode === 1 || resolvedMode === 2
+      const probabilityMode = resolvedMode === 1 || resolvedMode === 2
+      const barrierOn = resolvedMode === 1
       const bracketOn = resolvedMode === 2
       // 障碍/阶梯模式：旧价格区间/价差闸不生效，统一存默认值
       const bracketParams = bracketOn ? {
@@ -369,30 +370,32 @@ const CryptoTailStrategyList: React.FC = () => {
       const barrierParams = {
         mode: resolvedMode,
         barrierEnabled: barrierOn,
-        entryProb: v.entryProb != null ? String(v.entryProb) : undefined,
-        entryEdge: v.entryEdge != null ? String(v.entryEdge) : undefined,
-        maxEntryPrice: v.maxEntryPrice != null ? String(v.maxEntryPrice) : undefined,
         costBuffer: v.costBuffer != null ? String(v.costBuffer) : undefined,
-        barrierMinMarketProb: v.barrierMinMarketProb != null ? String(v.barrierMinMarketProb) : undefined,
         sigmaScale: v.sigmaScale != null ? String(v.sigmaScale) : undefined,
         dailyLossLimitUsdc: v.dailyLossLimitUsdc != null && v.dailyLossLimitUsdc !== '' ? String(v.dailyLossLimitUsdc) : null,
         maxConcurrentPositions: v.maxConcurrentPositions != null ? Number(v.maxConcurrentPositions) : null,
         takerFeeBps: v.takerFeeBps != null ? Number(v.takerFeeBps) : undefined,
-        makerRebateBps: v.makerRebateBps != null ? Number(v.makerRebateBps) : undefined,
         gasCostUsdc: v.gasCostUsdc != null ? String(v.gasCostUsdc) : undefined,
-        entryOrderType: v.entryOrderType != null ? String(v.entryOrderType) : undefined,
         entryFakSlippage: v.entryFakSlippage != null ? String(v.entryFakSlippage) : undefined,
-        makerPriceOffset: v.makerPriceOffset != null ? String(v.makerPriceOffset) : undefined,
-        makerCancelBeforeSettleSeconds: v.makerCancelBeforeSettleSeconds != null ? Number(v.makerCancelBeforeSettleSeconds) : undefined,
-        makerFallbackTaker: v.makerFallbackTaker === true,
-        calibrationGateEnabled: v.calibrationGateEnabled === true,
-        probeAmountUsdc: v.probeAmountUsdc != null ? String(v.probeAmountUsdc) : undefined,
-        calibrationMinSamples: v.calibrationMinSamples != null ? Number(v.calibrationMinSamples) : undefined,
-        calibrationMaxError: v.calibrationMaxError != null ? String(v.calibrationMaxError) : undefined,
         sigmaMethod: v.sigmaMethod != null ? String(v.sigmaMethod) : undefined,
         ewmaLambda: v.ewmaLambda != null ? String(v.ewmaLambda) : undefined,
-        kellyEnabled: v.kellyEnabled === true,
-        kellyFraction: v.kellyFraction != null ? String(v.kellyFraction) : undefined,
+        ...(barrierOn ? {
+          entryProb: v.entryProb != null ? String(v.entryProb) : undefined,
+          entryEdge: v.entryEdge != null ? String(v.entryEdge) : undefined,
+          maxEntryPrice: v.maxEntryPrice != null ? String(v.maxEntryPrice) : undefined,
+          barrierMinMarketProb: v.barrierMinMarketProb != null ? String(v.barrierMinMarketProb) : undefined,
+          makerRebateBps: v.makerRebateBps != null ? Number(v.makerRebateBps) : undefined,
+          entryOrderType: v.entryOrderType != null ? String(v.entryOrderType) : undefined,
+          makerPriceOffset: v.makerPriceOffset != null ? String(v.makerPriceOffset) : undefined,
+          makerCancelBeforeSettleSeconds: v.makerCancelBeforeSettleSeconds != null ? Number(v.makerCancelBeforeSettleSeconds) : undefined,
+          makerFallbackTaker: v.makerFallbackTaker === true,
+          calibrationGateEnabled: v.calibrationGateEnabled === true,
+          probeAmountUsdc: v.probeAmountUsdc != null ? String(v.probeAmountUsdc) : undefined,
+          calibrationMinSamples: v.calibrationMinSamples != null ? Number(v.calibrationMinSamples) : undefined,
+          calibrationMaxError: v.calibrationMaxError != null ? String(v.calibrationMaxError) : undefined,
+          kellyEnabled: v.kellyEnabled === true,
+          kellyFraction: v.kellyFraction != null ? String(v.kellyFraction) : undefined
+        } : {}),
         ...bracketParams
       }
       const payload = {
@@ -402,13 +405,13 @@ const CryptoTailStrategyList: React.FC = () => {
         intervalSeconds: interval,
         windowStartSeconds,
         windowEndSeconds,
-        minPrice: barrierOn ? '0' : String(v.minPrice ?? 0),
-        maxPrice: barrierOn ? '1' : (v.maxPrice != null ? String(v.maxPrice) : undefined),
+        minPrice: probabilityMode ? '0' : String(v.minPrice ?? 0),
+        maxPrice: probabilityMode ? '1' : (v.maxPrice != null ? String(v.maxPrice) : undefined),
         amountMode: v.amountMode as string,
         amountValue: String(v.amountValue ?? 0),
-        spreadMode: barrierOn ? 'NONE' : ((v.spreadMode as string) || 'AUTO'),
-        spreadValue: barrierOn ? undefined : (v.spreadMode === 'FIXED' && v.spreadValue != null ? String(v.spreadValue) : (v.spreadMode === 'AUTO' && v.spreadValue != null ? String(v.spreadValue) : undefined)),
-        spreadDirection: barrierOn ? 'MIN' : (v.spreadDirection as string || 'MIN'),
+        spreadMode: probabilityMode ? 'NONE' : ((v.spreadMode as string) || 'AUTO'),
+        spreadValue: probabilityMode ? undefined : (v.spreadMode === 'FIXED' && v.spreadValue != null ? String(v.spreadValue) : (v.spreadMode === 'AUTO' && v.spreadValue != null ? String(v.spreadValue) : undefined)),
+        spreadDirection: probabilityMode ? 'MIN' : (v.spreadDirection as string || 'MIN'),
         enabled: v.enabled !== false,
         ...barrierParams
       }
@@ -1329,62 +1332,66 @@ const CryptoTailStrategyList: React.FC = () => {
           )}
           {barrierEnabled && (
             <>
-              <Alert type="info" showIcon style={{ marginBottom: 16 }} message={t('cryptoTailStrategy.form.barrierInfo')} />
-              <Form.Item
-                name="entryProb"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.entryProb')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.entryProbTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-                rules={[{ required: true }]}
-              >
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item
-                name="entryEdge"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.entryEdge')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.entryEdgeTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-                rules={[{ required: true }]}
-              >
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item
-                name="barrierMinMarketProb"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.barrierMinMarketProb')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.barrierMinMarketProbTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item
-                name="maxEntryPrice"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.maxEntryPrice')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.maxEntryPriceTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-                rules={[{ required: true }]}
-              >
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
+              {isBarrierMode && (
+                <>
+                  <Alert type="info" showIcon style={{ marginBottom: 16 }} message={t('cryptoTailStrategy.form.barrierInfo')} />
+                  <Form.Item
+                    name="entryProb"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.entryProb')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.entryProbTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                    rules={[{ required: true }]}
+                  >
+                    <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                  <Form.Item
+                    name="entryEdge"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.entryEdge')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.entryEdgeTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                    rules={[{ required: true }]}
+                  >
+                    <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                  <Form.Item
+                    name="barrierMinMarketProb"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.barrierMinMarketProb')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.barrierMinMarketProbTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                  >
+                    <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                  <Form.Item
+                    name="maxEntryPrice"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.maxEntryPrice')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.maxEntryPriceTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                    rules={[{ required: true }]}
+                  >
+                    <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+                  </Form.Item>
+                </>
+              )}
               <Form.Item
                 name="costBuffer"
                 label={
@@ -1508,19 +1515,21 @@ const CryptoTailStrategyList: React.FC = () => {
               >
                 <InputNumber min={0} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter="bps" />
               </Form.Item>
-              <Form.Item
-                name="makerRebateBps"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.makerRebateBps')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.makerRebateBpsTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <InputNumber min={0} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter="bps" />
-              </Form.Item>
+              {isBarrierMode && (
+                <Form.Item
+                  name="makerRebateBps"
+                  label={
+                    <Space size={4}>
+                      <span>{t('cryptoTailStrategy.form.makerRebateBps')}</span>
+                      <Tooltip title={t('cryptoTailStrategy.form.makerRebateBpsTip')}>
+                        <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                >
+                  <InputNumber min={0} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter="bps" />
+                </Form.Item>
+              )}
               <Form.Item
                 name="gasCostUsdc"
                 label={
@@ -1534,24 +1543,84 @@ const CryptoTailStrategyList: React.FC = () => {
               >
                 <InputNumber min={0} step={0.01} style={{ width: '100%' }} addonBefore="$" stringMode />
               </Form.Item>
-              <Form.Item
-                name="entryOrderType"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.entryOrderType')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.entryOrderTypeTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <Select
-                  options={[
-                    { value: 'FAK', label: t('cryptoTailStrategy.form.entryOrderTypeFak') },
-                    { value: 'MAKER', label: t('cryptoTailStrategy.form.entryOrderTypeMaker') }
-                  ]}
-                />
-              </Form.Item>
+              {isBarrierMode && (
+                <>
+                  <Form.Item
+                    name="entryOrderType"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.entryOrderType')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.entryOrderTypeTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
+                    }
+                  >
+                    <Select
+                      options={[
+                        { value: 'FAK', label: t('cryptoTailStrategy.form.entryOrderTypeFak') },
+                        { value: 'MAKER', label: t('cryptoTailStrategy.form.entryOrderTypeMaker') }
+                      ]}
+                    />
+                  </Form.Item>
+                  {entryOrderType === 'MAKER' && (
+                    <>
+                      <Form.Item
+                        name="makerPriceOffset"
+                        label={
+                          <Space size={4}>
+                            <span>{t('cryptoTailStrategy.form.makerPriceOffset')}</span>
+                            <Tooltip title={t('cryptoTailStrategy.form.makerPriceOffsetTip')}>
+                              <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                            </Tooltip>
+                          </Space>
+                        }
+                        rules={[
+                          {
+                            validator: (_, value) => {
+                              if (value == null || value === '') return Promise.resolve()
+                              const n = Number(value)
+                              if (Number.isNaN(n) || n <= -1 || n >= 1) {
+                                return Promise.reject(new Error(t('cryptoTailStrategy.form.makerPriceOffsetTip')))
+                              }
+                              return Promise.resolve()
+                            }
+                          }
+                        ]}
+                      >
+                        <InputNumber min={-1} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+                      </Form.Item>
+                      <Form.Item
+                        name="makerCancelBeforeSettleSeconds"
+                        label={
+                          <Space size={4}>
+                            <span>{t('cryptoTailStrategy.form.makerCancelBeforeSettleSeconds')}</span>
+                            <Tooltip title={t('cryptoTailStrategy.form.makerCancelBeforeSettleSecondsTip')}>
+                              <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                            </Tooltip>
+                          </Space>
+                        }
+                      >
+                        <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+                      </Form.Item>
+                      <Form.Item
+                        name="makerFallbackTaker"
+                        valuePropName="checked"
+                        label={
+                          <Space size={4}>
+                            <span>{t('cryptoTailStrategy.form.makerFallbackTaker')}</span>
+                            <Tooltip title={t('cryptoTailStrategy.form.makerFallbackTakerTip')}>
+                              <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                            </Tooltip>
+                          </Space>
+                        }
+                      >
+                        <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
+                      </Form.Item>
+                    </>
+                  )}
+                </>
+              )}
               <Form.Item
                 name="entryFakSlippage"
                 label={
@@ -1577,53 +1646,15 @@ const CryptoTailStrategyList: React.FC = () => {
               >
                 <InputNumber min={0} max={0.1} step={0.01} style={{ width: '100%' }} stringMode />
               </Form.Item>
-              {entryOrderType === 'MAKER' && (
+              {isBarrierMode && (
                 <>
                   <Form.Item
-                    name="makerPriceOffset"
-                    label={
-                      <Space size={4}>
-                        <span>{t('cryptoTailStrategy.form.makerPriceOffset')}</span>
-                        <Tooltip title={t('cryptoTailStrategy.form.makerPriceOffsetTip')}>
-                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                        </Tooltip>
-                      </Space>
-                    }
-                    rules={[
-                      {
-                        validator: (_, value) => {
-                          if (value == null || value === '') return Promise.resolve()
-                          const n = Number(value)
-                          if (Number.isNaN(n) || n <= -1 || n >= 1) {
-                            return Promise.reject(new Error(t('cryptoTailStrategy.form.makerPriceOffsetTip')))
-                          }
-                          return Promise.resolve()
-                        }
-                      }
-                    ]}
-                  >
-                    <InputNumber min={-1} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-                  </Form.Item>
-                  <Form.Item
-                    name="makerCancelBeforeSettleSeconds"
-                    label={
-                      <Space size={4}>
-                        <span>{t('cryptoTailStrategy.form.makerCancelBeforeSettleSeconds')}</span>
-                        <Tooltip title={t('cryptoTailStrategy.form.makerCancelBeforeSettleSecondsTip')}>
-                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                        </Tooltip>
-                      </Space>
-                    }
-                  >
-                    <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
-                  </Form.Item>
-                  <Form.Item
-                    name="makerFallbackTaker"
+                    name="calibrationGateEnabled"
                     valuePropName="checked"
                     label={
                       <Space size={4}>
-                        <span>{t('cryptoTailStrategy.form.makerFallbackTaker')}</span>
-                        <Tooltip title={t('cryptoTailStrategy.form.makerFallbackTakerTip')}>
+                        <span>{t('cryptoTailStrategy.form.calibrationGateEnabled')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.calibrationGateEnabledTip')}>
                           <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
                         </Tooltip>
                       </Space>
@@ -1631,126 +1662,112 @@ const CryptoTailStrategyList: React.FC = () => {
                   >
                     <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
                   </Form.Item>
-                </>
-              )}
-              <Form.Item
-                name="calibrationGateEnabled"
-                valuePropName="checked"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.calibrationGateEnabled')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.calibrationGateEnabledTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
-              </Form.Item>
-              {calibrationGateEnabled && (
-                <>
-                  <Form.Item
-                    name="probeAmountUsdc"
-                    label={
-                      <Space size={4}>
-                        <span>{t('cryptoTailStrategy.form.probeAmountUsdc')}</span>
-                        <Tooltip title={t('cryptoTailStrategy.form.probeAmountUsdcTip')}>
-                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                        </Tooltip>
-                      </Space>
-                    }
-                    rules={[
-                      {
-                        validator: (_, value) => {
-                          if (value == null || value === '') return Promise.resolve()
-                          if (Number(value) < 1) return Promise.reject(new Error(t('cryptoTailStrategy.form.probeAmountUsdcTip')))
-                          return Promise.resolve()
+                  {calibrationGateEnabled && (
+                    <>
+                      <Form.Item
+                        name="probeAmountUsdc"
+                        label={
+                          <Space size={4}>
+                            <span>{t('cryptoTailStrategy.form.probeAmountUsdc')}</span>
+                            <Tooltip title={t('cryptoTailStrategy.form.probeAmountUsdcTip')}>
+                              <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                            </Tooltip>
+                          </Space>
                         }
-                      }
-                    ]}
-                  >
-                    <InputNumber min={1} step={1} style={{ width: '100%' }} addonBefore="$" stringMode />
-                  </Form.Item>
-                  <Form.Item
-                    name="calibrationMinSamples"
-                    label={
-                      <Space size={4}>
-                        <span>{t('cryptoTailStrategy.form.calibrationMinSamples')}</span>
-                        <Tooltip title={t('cryptoTailStrategy.form.calibrationMinSamplesTip')}>
-                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                        </Tooltip>
-                      </Space>
-                    }
-                  >
-                    <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} />
-                  </Form.Item>
-                  <Form.Item
-                    name="calibrationMaxError"
-                    label={
-                      <Space size={4}>
-                        <span>{t('cryptoTailStrategy.form.calibrationMaxError')}</span>
-                        <Tooltip title={t('cryptoTailStrategy.form.calibrationMaxErrorTip')}>
-                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                        </Tooltip>
-                      </Space>
-                    }
-                    rules={[
-                      {
-                        validator: (_, value) => {
-                          if (value == null || value === '') return Promise.resolve()
-                          const n = Number(value)
-                          if (Number.isNaN(n) || n <= 0 || n >= 1) {
-                            return Promise.reject(new Error(t('cryptoTailStrategy.form.calibrationMaxErrorTip')))
+                        rules={[
+                          {
+                            validator: (_, value) => {
+                              if (value == null || value === '') return Promise.resolve()
+                              if (Number(value) < 1) return Promise.reject(new Error(t('cryptoTailStrategy.form.probeAmountUsdcTip')))
+                              return Promise.resolve()
+                            }
                           }
-                          return Promise.resolve()
+                        ]}
+                      >
+                        <InputNumber min={1} step={1} style={{ width: '100%' }} addonBefore="$" stringMode />
+                      </Form.Item>
+                      <Form.Item
+                        name="calibrationMinSamples"
+                        label={
+                          <Space size={4}>
+                            <span>{t('cryptoTailStrategy.form.calibrationMinSamples')}</span>
+                            <Tooltip title={t('cryptoTailStrategy.form.calibrationMinSamplesTip')}>
+                              <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                            </Tooltip>
+                          </Space>
                         }
-                      }
-                    ]}
-                  >
-                    <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-                  </Form.Item>
-                </>
-              )}
-              <Form.Item
-                name="kellyEnabled"
-                valuePropName="checked"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.kellyEnabled')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.kellyEnabledTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
-              </Form.Item>
-              {kellyEnabled && (
-                <Form.Item
-                  name="kellyFraction"
-                  label={
-                    <Space size={4}>
-                      <span>{t('cryptoTailStrategy.form.kellyFraction')}</span>
-                      <Tooltip title={t('cryptoTailStrategy.form.kellyFractionTip')}>
-                        <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                      </Tooltip>
-                    </Space>
-                  }
-                  rules={[
-                    {
-                      validator: (_, value) => {
-                        if (value == null || value === '') return Promise.resolve()
-                        const n = Number(value)
-                        if (Number.isNaN(n) || n <= 0 || n > 1) {
-                          return Promise.reject(new Error(t('cryptoTailStrategy.form.kellyFractionTip')))
+                      >
+                        <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} />
+                      </Form.Item>
+                      <Form.Item
+                        name="calibrationMaxError"
+                        label={
+                          <Space size={4}>
+                            <span>{t('cryptoTailStrategy.form.calibrationMaxError')}</span>
+                            <Tooltip title={t('cryptoTailStrategy.form.calibrationMaxErrorTip')}>
+                              <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                            </Tooltip>
+                          </Space>
                         }
-                        return Promise.resolve()
-                      }
+                        rules={[
+                          {
+                            validator: (_, value) => {
+                              if (value == null || value === '') return Promise.resolve()
+                              const n = Number(value)
+                              if (Number.isNaN(n) || n <= 0 || n >= 1) {
+                                return Promise.reject(new Error(t('cryptoTailStrategy.form.calibrationMaxErrorTip')))
+                              }
+                              return Promise.resolve()
+                            }
+                          }
+                        ]}
+                      >
+                        <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+                      </Form.Item>
+                    </>
+                  )}
+                  <Form.Item
+                    name="kellyEnabled"
+                    valuePropName="checked"
+                    label={
+                      <Space size={4}>
+                        <span>{t('cryptoTailStrategy.form.kellyEnabled')}</span>
+                        <Tooltip title={t('cryptoTailStrategy.form.kellyEnabledTip')}>
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                        </Tooltip>
+                      </Space>
                     }
-                  ]}
-                >
-                  <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
-                </Form.Item>
+                  >
+                    <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
+                  </Form.Item>
+                  {kellyEnabled && (
+                    <Form.Item
+                      name="kellyFraction"
+                      label={
+                        <Space size={4}>
+                          <span>{t('cryptoTailStrategy.form.kellyFraction')}</span>
+                          <Tooltip title={t('cryptoTailStrategy.form.kellyFractionTip')}>
+                            <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                          </Tooltip>
+                        </Space>
+                      }
+                      rules={[
+                        {
+                          validator: (_, value) => {
+                            if (value == null || value === '') return Promise.resolve()
+                            const n = Number(value)
+                            if (Number.isNaN(n) || n <= 0 || n > 1) {
+                              return Promise.reject(new Error(t('cryptoTailStrategy.form.kellyFractionTip')))
+                            }
+                            return Promise.resolve()
+                          }
+                        }
+                      ]}
+                    >
+                      <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+                    </Form.Item>
+                  )}
+                </>
               )}
             </>
           )}
