@@ -1241,8 +1241,10 @@ class CryptoTailStrategyExecutionService(
                 result = submitFakAttempt(clobApi, retryAttempt.orderRequest)
             }
         }
-        val realFill = result.filledSize != null && result.filledAmount != null &&
-                result.filledSize > BigDecimal.ZERO && result.filledAmount > BigDecimal.ZERO
+        val filledSize = result.filledSize
+        val filledAmount = result.filledAmount
+        val realFill = filledSize != null && filledAmount != null &&
+                filledSize > BigDecimal.ZERO && filledAmount > BigDecimal.ZERO
         val isBracketFilled = realFill && strategy.mode == TradingMode.BRACKET_DYNAMIC
         saveTriggerRecord(
             strategy,
@@ -1259,7 +1261,7 @@ class CryptoTailStrategyExecutionService(
             tokenId = tokenId,
             filledSize = result.filledSize,
             filledAmount = result.filledAmount,
-            remainingSize = if (isBracketFilled) result.filledSize else null,
+            remainingSize = if (isBracketFilled) filledSize else null,
             exitStatus = if (isBracketFilled) ExitStatus.OPEN.name else ExitStatus.NONE.name,
             finalLimitPrice = usedLimitPrice,
             retryCount = retryCount
