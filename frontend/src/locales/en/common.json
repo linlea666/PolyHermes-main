@@ -1892,7 +1892,7 @@
       "entryOrderTypeFak": "FAK Taker",
       "entryOrderTypeMaker": "MAKER (post-only)",
       "entryFakSlippage": "FAK Entry Limit Slippage",
-      "entryFakSlippageTip": "FAK buy limit = effectiveCost + this value, capped by max entry price. During the 0.5–1.5s network delay between WS push and CLOB submit, bestAsk may vanish and the FAK gets fully killed; an extra tick of slippage prevents the kill while keeping the EV gate untouched. Range [0, 0.10]; use 0.01 for high-liquidity, 0.02–0.03 for low-liquidity. Default 0.02.",
+      "entryFakSlippageTip": "Maximum FAK entry limit slippage. The system uses the lowest of bestAsk + this value, the EV-safe max price, and the max entry price; the final limit must still satisfy the fee-adjusted EV edge. Range [0, 0.10]; use 0.01 for high-liquidity, 0.02–0.03 for low-liquidity. Default 0.02.",
       "makerPriceOffset": "Maker Price Offset",
       "makerPriceOffsetTip": "Maker limit price = bestBid + offset (may be negative, range -1~1). postOnly guarantees maker, capped at max entry price. 0 = at bestBid.",
       "makerCancelBeforeSettleSeconds": "Maker Cancel Before Settle (s)",

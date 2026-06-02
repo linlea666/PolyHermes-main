@@ -1892,7 +1892,7 @@
       "entryOrderTypeFak": "FAK 吃单 (taker)",
       "entryOrderTypeMaker": "MAKER 挂单 (maker)",
       "entryFakSlippage": "FAK 进场限价滑点",
-      "entryFakSlippageTip": "FAK 买单限价 = effectiveCost + 此值，封顶最高买入限价。0.5–1.5s 网络延迟内 bestAsk 消失会被 FAK 整单 KILL，多吸一档防 KILL；EV 闸口径不变。范围 [0, 0.10]，高流动性档位 0.01，低流动性 0.02–0.03，默认 0.02。",
+      "entryFakSlippageTip": "FAK 买单限价滑点上限。系统会在 bestAsk + 此值、EV 安全最高价、最高买入限价中取最低值；最终限价仍必须满足扣费 EV 边际。范围 [0, 0.10]，高流动性档位 0.01，低流动性 0.02–0.03，默认 0.02。",
       "makerPriceOffset": "Maker 挂单价偏移",
       "makerPriceOffsetTip": "挂单价 = bestBid + 偏移(可负，范围 -1~1)，postOnly 兜底保证 maker，并封顶最高买入限价。0=平 bestBid。",
       "makerCancelBeforeSettleSeconds": "Maker 撤单提前秒数",

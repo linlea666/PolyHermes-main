@@ -189,9 +189,9 @@ data class CryptoTailStrategy(
     val entryOrderType: String = "FAK",
 
     /**
-     * FAK 进场限价滑点（V53 引入）：limit = effectiveCost + entryFakSlippage（封顶 maxEntryPrice/bracketMaxEntryPrice）。
+     * FAK 进场限价滑点上限（V53 引入）：limit = min(effectiveCost + entryFakSlippage, EV安全最高价, maxEntryPrice/bracketMaxEntryPrice)。
      * 解决 BARRIER/BRACKET 模式下 limit 紧贴 bestAsk 在 0.5–1.5s 网络延迟内被吃空 → FAK KILL 的根因。
-     * 仅作用于 limit 价格，FAK 实际成交价由对手盘决定（多吸一档防 KILL）；EV 闸口径不变。
+     * FAK 实际成交价由对手盘决定；最终限价仍受扣费 EV 边际约束，避免为成交率追成低EV/负EV单。
      * 取值范围 [0, 0.10]，默认 0.02。高流动性档位可调到 0.01；低流动性可上调到 0.03。
      */
     @Column(name = "entry_fak_slippage", nullable = false, precision = 20, scale = 8)

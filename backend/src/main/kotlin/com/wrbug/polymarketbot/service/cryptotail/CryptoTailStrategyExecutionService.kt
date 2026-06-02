@@ -2,6 +2,7 @@ package com.wrbug.polymarketbot.service.cryptotail
 
 import com.wrbug.polymarketbot.api.GammaEventBySlugResponse
 import com.wrbug.polymarketbot.api.NewOrderRequest
+import com.wrbug.polymarketbot.api.NewOrderResponse
 import com.wrbug.polymarketbot.api.PolymarketClobApi
 import com.wrbug.polymarketbot.dto.CryptoTailManualOrderRequest
 import com.wrbug.polymarketbot.dto.CryptoTailManualOrderResponse
@@ -193,6 +194,87 @@ class CryptoTailStrategyExecutionService(
         return size.toPlainString()
     }
 
+    private fun requiredEntryEdge(strategy: CryptoTailStrategy): BigDecimal {
+        return when (strategy.mode) {
+            TradingMode.BARRIER_HOLD -> strategy.entryEdge
+            TradingMode.BRACKET_DYNAMIC -> strategy.bracketEntryEdge
+            TradingMode.LEGACY_SPREAD -> BigDecimal.ZERO
+        }
+    }
+
+    private fun entryPriceCap(strategy: CryptoTailStrategy): BigDecimal {
+        return when (strategy.mode) {
+            TradingMode.BARRIER_HOLD -> strategy.maxEntryPrice
+            TradingMode.BRACKET_DYNAMIC -> strategy.bracketMaxEntryPrice
+            TradingMode.LEGACY_SPREAD -> BigDecimal(TRIGGER_FIXED_PRICE)
+        }
+    }
+
+    private fun computeFakPricing(
+        strategy: CryptoTailStrategy,
+        bestBid: BigDecimal,
+        bestAsk: BigDecimal?,
+        pWin: BigDecimal
+    ): CryptoTailFakPricingPolicy.Result {
+        return CryptoTailFakPricingPolicy.price(
+            CryptoTailFakPricingPolicy.Request(
+                mode = strategy.mode,
+                pWin = pWin,
+                requiredEdge = requiredEntryEdge(strategy),
+                bestBid = bestBid,
+                bestAsk = bestAsk,
+                costBuffer = strategy.costBuffer,
+                configuredSlippage = strategy.entryFakSlippage,
+                takerFeeBps = strategy.takerFeeBps,
+                priceCap = entryPriceCap(strategy)
+            )
+        )
+    }
+
+    private fun pricingPayload(
+        pricing: CryptoTailFakPricingPolicy.Result?,
+        orderbookRefreshed: Boolean
+    ): Map<String, Any> {
+        if (pricing == null) {
+            return mapOf(
+                "rawAsk" to "",
+                "configuredSlippage" to "",
+                "configuredLimit" to "",
+                "evSafeLimit" to "",
+                "priceCap" to "",
+                "finalLimitPrice" to "",
+                "limitEdge" to "",
+                "pricingClampReason" to "",
+                "orderbookRefreshed" to orderbookRefreshed
+            )
+        }
+        return mapOf(
+            "rawAsk" to pricing.rawAsk.toPlainString(),
+            "configuredSlippage" to pricing.configuredSlippage.toPlainString(),
+            "configuredLimit" to pricing.configuredLimit.toPlainString(),
+            "evSafeLimit" to pricing.evSafeLimit.toPlainString(),
+            "priceCap" to pricing.priceCap.toPlainString(),
+            "finalLimitPrice" to pricing.finalLimit.toPlainString(),
+            "limitEdge" to pricing.limitEdge.toPlainString(),
+            "pricingClampReason" to pricing.pricingClampReason,
+            "orderbookRefreshed" to orderbookRefreshed
+        )
+    }
+
+    private fun avgFillPrice(filledSize: BigDecimal?, filledAmount: BigDecimal?): BigDecimal? {
+        if (filledSize == null || filledAmount == null || filledSize <= BigDecimal.ZERO) return null
+        return filledAmount.divide(filledSize, 8, RoundingMode.HALF_UP)
+    }
+
+    private fun isRetryableFakMiss(message: String?): Boolean {
+        val m = message?.lowercase() ?: return false
+        return m.contains("no orders found") ||
+                m.contains("no match") ||
+                m.contains("零成交") ||
+                m.contains("无对手盘") ||
+                (m.contains("fak") && m.contains("unfilled"))
+    }
+
     private fun getOrInvalidatePeriodContext(strategy: CryptoTailStrategy, periodStartUnix: Long): PeriodContext? {
         val key = triggerLockKey(strategy.id!!, periodStartUnix)
         val nowSeconds = System.currentTimeMillis() / 1000
@@ -290,9 +372,8 @@ class CryptoTailStrategyExecutionService(
                     }
                     val scaling = calibrationService.evaluateScalingGate(strategy)
                     val amountOverride = if (scaling.useProbe) strategy.probeAmountUsdc else null
-                    recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, eval.metrics, bestBid, bestAsk, scaling, amountOverride)
                     ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
-                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride, eval.metrics?.pWin, eval.metrics?.effectiveCost)
+                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride, eval.metrics, scaling)
                 }
                 TradingMode.BRACKET_DYNAMIC -> {
                     val eval = evaluateBracketEntryGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk)
@@ -308,9 +389,8 @@ class CryptoTailStrategyExecutionService(
                         return@withLock
                     }
                     // 阶梯模式不参与放量闸/校准（独立模式，校准样本来自 BARRIER）
-                    recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, eval.metrics, bestBid, bestAsk)
                     ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
-                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, null, eval.metrics?.pWin, eval.metrics?.effectiveCost)
+                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, null, eval.metrics)
                 }
                 TradingMode.LEGACY_SPREAD -> {
                     if (!passSpreadCheck(strategy, periodStartUnix, outcomeIndex)) return@withLock
@@ -342,6 +422,22 @@ class CryptoTailStrategyExecutionService(
         val safeRatio: BigDecimal,
         val effectiveCost: BigDecimal,
         val edge: BigDecimal
+    )
+
+    private data class FakOrderAttempt(
+        val orderRequest: NewOrderRequest,
+        val limitPrice: BigDecimal,
+        val pricing: CryptoTailFakPricingPolicy.Result? = null,
+        val orderbookRefreshed: Boolean = false
+    )
+
+    private data class FakSubmitResult(
+        val status: String,
+        val orderId: String?,
+        val filledSize: BigDecimal?,
+        val filledAmount: BigDecimal?,
+        val failReason: String?,
+        val retryable: Boolean
     )
 
     /**
@@ -576,11 +672,17 @@ class CryptoTailStrategyExecutionService(
         bestBid: BigDecimal,
         bestAsk: BigDecimal?,
         scaling: CryptoTailCalibrationService.ScalingDecision? = null,
-        amountOverrideUsdc: BigDecimal? = null
+        amountOverrideUsdc: BigDecimal? = null,
+        pricing: CryptoTailFakPricingPolicy.Result? = null,
+        orderbookRefreshed: Boolean = false
     ) {
         if (metrics == null) return
         val isMaker = strategy.entryOrderType.uppercase() == "MAKER"
-        val targetPrice = if (isMaker) computeMakerPrice(strategy, bestBid, bestAsk) else computeBuyPrice(strategy, bestBid, bestAsk)
+        val targetPrice = when {
+            isMaker -> computeMakerPrice(strategy, bestBid, bestAsk)
+            pricing != null -> pricing.finalLimit
+            else -> computeBuyPrice(strategy, bestBid, bestAsk)
+        }
         val mid = bestAsk?.let { bestBid.add(it).divide(BigDecimal(2), 8, RoundingMode.HALF_UP) } ?: bestBid
         val payload = mapOf(
             "marketSlug" to strategy.marketSlugPrefix,
@@ -610,7 +712,7 @@ class CryptoTailStrategyExecutionService(
             "scalingReason" to (scaling?.reason ?: ""),
             "probeAmountUsdc" to strategy.probeAmountUsdc.toPlainString(),
             "effectiveAmountUsdc" to (amountOverrideUsdc?.toPlainString() ?: strategy.amountValue.toPlainString())
-        ).toJson()
+        ).plus(pricingPayload(pricing, orderbookRefreshed)).toJson()
         val scalingNote = if (scaling != null && scaling.useProbe) " [放量闸:小额 ${strategy.probeAmountUsdc.toPlainString()}]" else ""
         recordDecisionOncePerPeriod(
             strategy.id!!, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
@@ -630,10 +732,12 @@ class CryptoTailStrategyExecutionService(
         outcomeIndex: Int,
         metrics: BarrierMetrics?,
         bestBid: BigDecimal,
-        bestAsk: BigDecimal?
+        bestAsk: BigDecimal?,
+        pricing: CryptoTailFakPricingPolicy.Result? = null,
+        orderbookRefreshed: Boolean = false
     ) {
         if (metrics == null) return
-        val targetPrice = computeBuyPrice(strategy, bestBid, bestAsk)
+        val targetPrice = pricing?.finalLimit ?: computeBuyPrice(strategy, bestBid, bestAsk)
         val mid = bestAsk?.let { bestBid.add(it).divide(BigDecimal(2), 8, RoundingMode.HALF_UP) } ?: bestBid
         val payload = mapOf(
             "mode" to "BRACKET_DYNAMIC",
@@ -670,11 +774,35 @@ class CryptoTailStrategyExecutionService(
             "orderType" to "FAK",
             "targetPrice" to targetPrice.toPlainString(),
             "effectiveAmountUsdc" to strategy.amountValue.toPlainString()
-        ).toJson()
+        ).plus(pricingPayload(pricing, orderbookRefreshed)).toJson()
         recordDecisionOncePerPeriod(
             strategy.id!!, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
             eventType = "ORDER_SUBMITTED", gateName = null, passed = null,
             reason = "已提交阶梯入场单 目标价=${targetPrice.toPlainString()} 剩余=${metrics.remaining.toLong()}s",
+            payloadJson = payload, triggerId = null
+        )
+    }
+
+    private fun recordEvSafeLimitRejected(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        metrics: BarrierMetrics?,
+        pricing: CryptoTailFakPricingPolicy.Result,
+        orderbookRefreshed: Boolean
+    ) {
+        val payload = mapOf(
+            "marketSlug" to strategy.marketSlugPrefix,
+            "intervalSeconds" to strategy.intervalSeconds,
+            "pWin" to (metrics?.pWin?.toPlainString() ?: ""),
+            "requiredEdge" to requiredEntryEdge(strategy).toPlainString(),
+            "takerFeeBps" to strategy.takerFeeBps,
+            "mode" to strategy.mode.name
+        ).plus(pricingPayload(pricing, orderbookRefreshed)).toJson()
+        recordDecisionOncePerPeriod(
+            strategy.id!!, periodStartUnix, "GATE_FAILED-EV_SAFE_LIMIT", outcomeIndex,
+            eventType = "GATE_FAILED", gateName = "EV_SAFE_LIMIT", passed = false,
+            reason = "EV安全最高价=${pricing.evSafeLimit.toPlainString()}低于可成交ask=${pricing.executableAsk.toPlainString()}，放弃FAK进场",
             payloadJson = payload, triggerId = null
         )
     }
@@ -790,14 +918,13 @@ class CryptoTailStrategyExecutionService(
     }
 
     /**
-     * 计算买入限价：
+     * 计算旧语义买入限价：
      * - 障碍模式：有效成本 = bestAsk（缺失则 bestBid+costBuffer），加 entryFakSlippage（V53）后向上取整到 4 位，封顶 maxEntryPrice。
      * - 阶梯模式：同障碍但封顶用 bracketMaxEntryPrice（独立阈值，避免与障碍互相影响）。
      * - 旧模式：最大价差 = 触发价+0.02；否则固定 0.99（保持原行为）。
      *
-     * V53 引入 entryFakSlippage 的原因：BARRIER/BRACKET 此前直接拿 bestAsk 当 limit，
-     * 在 0.5–1.5s 网络/签名延迟内对手盘消失即被 FAK 整单 KILL（参见 sellPosition 的 -0.02 滑点已是对称设计）。
-     * 此滑点仅作用于 limit price，FAK 实际成交价由对手盘决定（多吸一档防 KILL，不影响 EV 闸口径）。
+     * 自动 BARRIER/BRACKET FAK 进场使用 CryptoTailFakPricingPolicy 计算 EV 安全限价；
+     * 本函数保留给旧价差、手动缺上下文路径与 maker fallback，避免不相关行为被本次改造牵连。
      */
     private fun computeBuyPrice(strategy: CryptoTailStrategy, triggerPrice: BigDecimal, bestAsk: BigDecimal?): BigDecimal {
         return when (strategy.mode) {
@@ -821,6 +948,46 @@ class CryptoTailStrategyExecutionService(
                 }
             }
         }
+    }
+
+    private suspend fun buildRetryFakOrderAttempt(
+        strategy: CryptoTailStrategy,
+        clobApi: PolymarketClobApi,
+        tokenId: String,
+        amountUsdc: BigDecimal,
+        triggerPrice: BigDecimal,
+        pWin: BigDecimal,
+        privateKey: String,
+        makerAddress: String,
+        owner: String,
+        signatureType: Int,
+        settleAtUnix: Long
+    ): FakOrderAttempt? {
+        val nowSeconds = System.currentTimeMillis() / 1000
+        if (nowSeconds >= settleAtUnix) return null
+        val refreshedBestAsk = fetchBestAsk(clobApi, tokenId) ?: return null
+        val effectiveBestAsk = refreshedBestAsk
+        val pricing = computeFakPricing(strategy, triggerPrice, effectiveBestAsk, pWin)
+        if (!pricing.canSubmit) {
+            logger.warn("FAK一跳救单被EV安全价拦截: strategyId=${strategy.id}, tokenId=$tokenId, evSafeLimit=${pricing.evSafeLimit.toPlainString()}, executableAsk=${pricing.executableAsk.toPlainString()}")
+            return null
+        }
+        val size = computeSize(amountUsdc, pricing.finalLimit)
+        val signedOrder = orderSigningService.createAndSignOrder(
+            privateKey = privateKey,
+            makerAddress = makerAddress,
+            tokenId = tokenId,
+            side = "BUY",
+            price = pricing.finalLimit.toPlainString(),
+            size = size,
+            signatureType = signatureType
+        )
+        return FakOrderAttempt(
+            orderRequest = NewOrderRequest(order = signedOrder, owner = owner, orderType = "FAK"),
+            limitPrice = pricing.finalLimit,
+            pricing = pricing,
+            orderbookRefreshed = true
+        )
     }
 
     /**
@@ -857,8 +1024,8 @@ class CryptoTailStrategyExecutionService(
         triggerPrice: BigDecimal,
         bestAsk: BigDecimal?,
         amountOverrideUsdc: BigDecimal? = null,
-        pWin: BigDecimal? = null,
-        effectiveCost: BigDecimal? = null
+        metrics: BarrierMetrics? = null,
+        scaling: CryptoTailCalibrationService.ScalingDecision? = null
     ) {
         val ctx = getOrInvalidatePeriodContext(strategy, periodStartUnix)
 
@@ -869,7 +1036,7 @@ class CryptoTailStrategyExecutionService(
             val useKelly = amountOverrideUsdc == null &&
                     strategy.mode == TradingMode.BARRIER_HOLD &&
                     strategy.kellyEnabled &&
-                    pWin != null && effectiveCost != null
+                    metrics != null
             var kellyBankroll = BigDecimal.ZERO
             var amountUsdc = when {
                 // 放量闸钳制：直接用小额覆盖（仍受 MIN_ORDER_USDC 下限保护）
@@ -887,7 +1054,7 @@ class CryptoTailStrategyExecutionService(
                     }
                     kellyBankroll = bankroll
                     // 下注 = bankroll × kellyFraction × clamp(f*,0,1)，上限钳到 bankroll
-                    computeKellyAmount(pWin!!, effectiveCost!!, bankroll, strategy.kellyFraction).min(bankroll)
+                    computeKellyAmount(metrics!!.pWin, metrics.effectiveCost, bankroll, strategy.kellyFraction).min(bankroll)
                 }
                 strategy.amountMode.uppercase() == "RATIO" -> {
                     val balanceResult = accountService.getAccountBalance(ctx.account.id)
@@ -940,6 +1107,7 @@ class CryptoTailStrategyExecutionService(
             // 障碍模式 MAKER：GTC + postOnly 挂单进场（@bestBid+offset，postOnly 兜底保证 maker），生命周期由对账服务管理
             // 注：阶梯模式 BRACKET_DYNAMIC 强制 FAK 进场，避免"边买边判断卖出"竞态，因此不进入 maker 分支
             if (strategy.mode == TradingMode.BARRIER_HOLD && strategy.entryOrderType.uppercase() == "MAKER") {
+                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, metrics, triggerPrice, bestAsk, scaling, amountOverrideUsdc)
                 val makerPrice = computeMakerPrice(strategy, triggerPrice, bestAsk)
                 val makerSize = computeSize(amountUsdc, makerPrice)
                 val makerSignedOrder = orderSigningService.createAndSignOrder(
@@ -973,7 +1141,24 @@ class CryptoTailStrategyExecutionService(
             }
 
             // 根据模式确定下单价格（FAK 吃单）
-            val price = computeBuyPrice(strategy, triggerPrice, bestAsk)
+            val refreshedBestAsk = if (strategy.mode != TradingMode.LEGACY_SPREAD) fetchBestAsk(ctx.clobApi, tokenId) else null
+            val orderbookRefreshed = refreshedBestAsk != null
+            val effectiveBestAsk = refreshedBestAsk ?: bestAsk
+            val pricing = if (strategy.mode != TradingMode.LEGACY_SPREAD && metrics != null) {
+                computeFakPricing(strategy, triggerPrice, effectiveBestAsk, metrics.pWin)
+            } else {
+                null
+            }
+            if (pricing != null && !pricing.canSubmit) {
+                recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, metrics, pricing, orderbookRefreshed)
+                return
+            }
+            if (strategy.mode == TradingMode.BARRIER_HOLD) {
+                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, metrics, triggerPrice, effectiveBestAsk, scaling, amountOverrideUsdc, pricing, orderbookRefreshed)
+            } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
+                recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, metrics, triggerPrice, effectiveBestAsk, pricing, orderbookRefreshed)
+            }
+            val price = pricing?.finalLimit ?: computeBuyPrice(strategy, triggerPrice, effectiveBestAsk)
             val priceStr = price.toPlainString()
             val size = computeSize(amountUsdc, price)
             val signedOrder = orderSigningService.createAndSignOrder(
@@ -990,6 +1175,27 @@ class CryptoTailStrategyExecutionService(
                 owner = ctx.account.apiKey!!,
                 orderType = "FAK"
             )
+            val retryMetrics = metrics
+            val retryBuilder: (suspend () -> FakOrderAttempt?)? =
+                if (strategy.mode != TradingMode.LEGACY_SPREAD && retryMetrics != null) {
+                    {
+                        buildRetryFakOrderAttempt(
+                            strategy = strategy,
+                            clobApi = ctx.clobApi,
+                            tokenId = tokenId,
+                            amountUsdc = amountUsdc,
+                            triggerPrice = triggerPrice,
+                            pWin = retryMetrics.pWin,
+                            privateKey = ctx.decryptedPrivateKey,
+                            makerAddress = ctx.account.proxyAddress,
+                            owner = ctx.account.apiKey!!,
+                            signatureType = ctx.signatureType,
+                            settleAtUnix = periodStartUnix + strategy.intervalSeconds
+                        )
+                    }
+                } else {
+                    null
+                }
             submitOrderAndSaveRecord(
                 ctx.clobApi,
                 strategy,
@@ -1000,12 +1206,14 @@ class CryptoTailStrategyExecutionService(
                 amountUsdc,
                 orderRequest,
                 triggerType = "AUTO",
-                tokenId = tokenId
+                tokenId = tokenId,
+                finalLimitPrice = price,
+                retryOrderBuilder = retryBuilder
             )
             return
         }
 
-        placeOrderForTriggerSlowPath(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, triggerPrice, bestAsk)
+        placeOrderForTriggerSlowPath(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, triggerPrice, bestAsk, metrics)
     }
 
     private suspend fun submitOrderAndSaveRecord(
@@ -1018,56 +1226,24 @@ class CryptoTailStrategyExecutionService(
         amountUsdc: BigDecimal,
         orderRequest: NewOrderRequest,
         triggerType: String = "AUTO",
-        tokenId: String? = null
+        tokenId: String? = null,
+        finalLimitPrice: BigDecimal? = null,
+        retryOrderBuilder: (suspend () -> FakOrderAttempt?)? = null
     ) {
-        var failReason: String? = null
-        try {
-            val response = clobApi.createOrder(orderRequest)
-            if (response.isSuccessful && response.body() != null) {
-                val body = response.body()!!
-                if (body.success && body.orderId != null) {
-                    // 以下单响应的真实成交为准：BUY 单 makingAmount=支付USDC, takingAmount=获得份额
-                    val filledSize = body.takingAmount?.toSafeBigDecimal() ?: BigDecimal.ZERO
-                    val filledAmount = body.makingAmount?.toSafeBigDecimal() ?: BigDecimal.ZERO
-                    // FAK 可能被接受但零成交（无对手盘）；零成交不可进结算，标记 unfilled
-                    val realFill = filledSize > BigDecimal.ZERO && filledAmount > BigDecimal.ZERO
-                    val finalStatus = if (realFill) "success" else "unfilled"
-                    // 阶梯模式 FAK 成交：把仓位数量与状态写入 trigger，作为持仓状态机的真相起点
-                    val isBracketFilled = realFill && strategy.mode == TradingMode.BRACKET_DYNAMIC
-                    saveTriggerRecord(
-                        strategy,
-                        periodStartUnix,
-                        marketTitle,
-                        outcomeIndex,
-                        triggerPrice,
-                        amountUsdc,
-                        body.orderId,
-                        finalStatus,
-                        if (realFill) null else "FAK未成交(零成交/无对手盘) status=${body.status ?: ""}",
-                        triggerType = triggerType,
-                        filledSize = if (realFill) filledSize else null,
-                        filledAmount = if (realFill) filledAmount else null,
-                        orderType = orderRequest.orderType,
-                        tokenId = tokenId,
-                        remainingSize = if (isBracketFilled) filledSize else null,
-                        exitStatus = if (isBracketFilled) ExitStatus.OPEN.name else ExitStatus.NONE.name
-                    )
-                    if (realFill) {
-                        logger.info("加密价差策略下单成交: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, outcomeIndex=$outcomeIndex, orderId=${body.orderId}, filledSize=${filledSize.toPlainString()}, filledAmount=${filledAmount.toPlainString()}, triggerType=$triggerType, mode=${strategy.mode.name}, exitStatus=${if (isBracketFilled) "OPEN" else "NONE"}")
-                    } else {
-                        logger.warn("加密价差策略下单被接受但零成交(unfilled): strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, orderId=${body.orderId}, status=${body.status}")
-                    }
-                    return
-                }
-                failReason = body.errorMsg ?: "unknown"
-            } else {
-                val errorBody = response.errorBody()?.string().orEmpty()
-                failReason = errorBody.ifEmpty { "请求失败" }
+        var result = submitFakAttempt(clobApi, orderRequest)
+        var usedLimitPrice = finalLimitPrice
+        var retryCount = 0
+        if (result.retryable && retryOrderBuilder != null) {
+            val retryAttempt = retryOrderBuilder()
+            if (retryAttempt != null) {
+                retryCount = 1
+                usedLimitPrice = retryAttempt.limitPrice
+                result = submitFakAttempt(clobApi, retryAttempt.orderRequest)
             }
-        } catch (e: Exception) {
-            failReason = e.message ?: e.toString()
-            logger.error("加密价差策略下单异常: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix", e)
         }
+        val realFill = result.filledSize != null && result.filledAmount != null &&
+                result.filledSize > BigDecimal.ZERO && result.filledAmount > BigDecimal.ZERO
+        val isBracketFilled = realFill && strategy.mode == TradingMode.BRACKET_DYNAMIC
         saveTriggerRecord(
             strategy,
             periodStartUnix,
@@ -1075,14 +1251,57 @@ class CryptoTailStrategyExecutionService(
             outcomeIndex,
             triggerPrice,
             amountUsdc,
-            null,
-            "fail",
-            failReason,
+            result.orderId,
+            result.status,
+            result.failReason,
             triggerType = triggerType,
             orderType = orderRequest.orderType,
-            tokenId = tokenId
+            tokenId = tokenId,
+            filledSize = result.filledSize,
+            filledAmount = result.filledAmount,
+            remainingSize = if (isBracketFilled) result.filledSize else null,
+            exitStatus = if (isBracketFilled) ExitStatus.OPEN.name else ExitStatus.NONE.name,
+            finalLimitPrice = usedLimitPrice,
+            retryCount = retryCount
         )
-        logger.error("加密价差策略下单失败: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, reason=$failReason")
+        when (result.status) {
+            "success" -> logger.info("加密价差策略下单成交: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, outcomeIndex=$outcomeIndex, orderId=${result.orderId}, filledSize=${result.filledSize?.toPlainString()}, filledAmount=${result.filledAmount?.toPlainString()}, retryCount=$retryCount, triggerType=$triggerType, mode=${strategy.mode.name}, exitStatus=${if (isBracketFilled) "OPEN" else "NONE"}")
+            "unfilled" -> logger.warn("加密价差策略下单零成交(unfilled): strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, orderId=${result.orderId}, retryCount=$retryCount, reason=${result.failReason}")
+            else -> logger.error("加密价差策略下单失败: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, retryCount=$retryCount, reason=${result.failReason}")
+        }
+    }
+
+    private suspend fun submitFakAttempt(clobApi: PolymarketClobApi, orderRequest: NewOrderRequest): FakSubmitResult {
+        return try {
+            val response = clobApi.createOrder(orderRequest)
+            if (response.isSuccessful && response.body() != null) {
+                submitResultFromBody(response.body()!!)
+            } else {
+                val errorBody = response.errorBody()?.string().orEmpty()
+                val reason = errorBody.ifEmpty { "请求失败" }
+                FakSubmitResult("fail", null, null, null, reason, isRetryableFakMiss(reason))
+            }
+        } catch (e: Exception) {
+            val reason = e.message ?: e.toString()
+            logger.error("加密价差策略下单异常: ${e.message}", e)
+            FakSubmitResult("fail", null, null, null, reason, isRetryableFakMiss(reason))
+        }
+    }
+
+    private fun submitResultFromBody(body: NewOrderResponse): FakSubmitResult {
+        if (body.success && body.orderId != null) {
+            val filledSize = body.takingAmount?.toSafeBigDecimal() ?: BigDecimal.ZERO
+            val filledAmount = body.makingAmount?.toSafeBigDecimal() ?: BigDecimal.ZERO
+            val realFill = filledSize > BigDecimal.ZERO && filledAmount > BigDecimal.ZERO
+            return if (realFill) {
+                FakSubmitResult("success", body.orderId, filledSize, filledAmount, null, false)
+            } else {
+                val reason = "FAK未成交(零成交/无对手盘) status=${body.status ?: ""}"
+                FakSubmitResult("unfilled", body.orderId, null, null, reason, true)
+            }
+        }
+        val reason = body.getErrorMessage()
+        return FakSubmitResult("fail", body.orderId, null, null, reason, isRetryableFakMiss(reason))
     }
 
     /**
@@ -1178,7 +1397,8 @@ class CryptoTailStrategyExecutionService(
         tokenIds: List<String>,
         outcomeIndex: Int,
         triggerPrice: BigDecimal,
-        bestAsk: BigDecimal?
+        bestAsk: BigDecimal?,
+        metrics: BarrierMetrics? = null
     ) {
         val account = accountRepository.findById(strategy.accountId).orElse(null) ?: run {
             logger.warn("账户不存在: accountId=${strategy.accountId}")
@@ -1252,8 +1472,38 @@ class CryptoTailStrategyExecutionService(
             return
         }
 
+        val apiSecret = try {
+            account.apiSecret.let { cryptoUtils.decrypt(it) }
+        } catch (e: Exception) {
+            ""
+        }
+        val apiPassphrase = try {
+            account.apiPassphrase.let { cryptoUtils.decrypt(it) }
+        } catch (e: Exception) {
+            ""
+        }
+        val clobApi = retrofitFactory.createClobApi(account.apiKey, apiSecret, apiPassphrase, account.walletAddress)
+        val signatureType = orderSigningService.getSignatureTypeForWalletType(account.walletType)
+
+        val refreshedBestAsk = if (strategy.mode != TradingMode.LEGACY_SPREAD) fetchBestAsk(clobApi, tokenId) else null
+        val orderbookRefreshed = refreshedBestAsk != null
+        val effectiveBestAsk = refreshedBestAsk ?: bestAsk
+        val pricing = if (strategy.mode != TradingMode.LEGACY_SPREAD && metrics != null) {
+            computeFakPricing(strategy, triggerPrice, effectiveBestAsk, metrics.pWin)
+        } else {
+            null
+        }
+        if (pricing != null && !pricing.canSubmit) {
+            recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, metrics, pricing, orderbookRefreshed)
+            return
+        }
+        if (strategy.mode == TradingMode.BARRIER_HOLD) {
+            recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, metrics, triggerPrice, effectiveBestAsk, null, null, pricing, orderbookRefreshed)
+        } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
+            recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, metrics, triggerPrice, effectiveBestAsk, pricing, orderbookRefreshed)
+        }
         // 根据模式确定下单价格
-        val price = computeBuyPrice(strategy, triggerPrice, bestAsk)
+        val price = pricing?.finalLimit ?: computeBuyPrice(strategy, triggerPrice, effectiveBestAsk)
         val priceStr = price.toPlainString()
         val size = computeSize(amountUsdc, price)
 
@@ -1274,18 +1524,6 @@ class CryptoTailStrategyExecutionService(
             )
             return
         }
-        val apiSecret = try {
-            account.apiSecret.let { cryptoUtils.decrypt(it) }
-        } catch (e: Exception) {
-            ""
-        }
-        val apiPassphrase = try {
-            account.apiPassphrase.let { cryptoUtils.decrypt(it) }
-        } catch (e: Exception) {
-            ""
-        }
-        val clobApi = retrofitFactory.createClobApi(account.apiKey, apiSecret, apiPassphrase, account.walletAddress)
-        val signatureType = orderSigningService.getSignatureTypeForWalletType(account.walletType)
 
         val signedOrder = orderSigningService.createAndSignOrder(
             privateKey = decryptedKey,
@@ -1301,6 +1539,27 @@ class CryptoTailStrategyExecutionService(
             owner = account.apiKey!!,
             orderType = "FAK"
         )
+        val retryMetrics = metrics
+        val retryBuilder: (suspend () -> FakOrderAttempt?)? =
+            if (strategy.mode != TradingMode.LEGACY_SPREAD && retryMetrics != null) {
+                {
+                    buildRetryFakOrderAttempt(
+                        strategy = strategy,
+                        clobApi = clobApi,
+                        tokenId = tokenId,
+                        amountUsdc = amountUsdc,
+                        triggerPrice = triggerPrice,
+                        pWin = retryMetrics.pWin,
+                        privateKey = decryptedKey,
+                        makerAddress = account.proxyAddress,
+                        owner = account.apiKey!!,
+                        signatureType = signatureType,
+                        settleAtUnix = periodStartUnix + strategy.intervalSeconds
+                    )
+                }
+            } else {
+                null
+            }
         submitOrderAndSaveRecord(
             clobApi,
             strategy,
@@ -1309,7 +1568,9 @@ class CryptoTailStrategyExecutionService(
             outcomeIndex,
             triggerPrice,
             amountUsdc,
-            orderRequest
+            orderRequest,
+            finalLimitPrice = price,
+            retryOrderBuilder = retryBuilder
         )
     }
 
@@ -1352,7 +1613,9 @@ class CryptoTailStrategyExecutionService(
         /** 仅 BRACKET_DYNAMIC 入场成交后由调用方传入：=filledSize；其他模式保持 null */
         remainingSize: BigDecimal? = null,
         /** 仅 BRACKET_DYNAMIC 入场成交后由调用方传入：=OPEN；其他模式保持默认 NONE */
-        exitStatus: String = ExitStatus.NONE.name
+        exitStatus: String = ExitStatus.NONE.name,
+        finalLimitPrice: BigDecimal? = null,
+        retryCount: Int = 0
     ): CryptoTailStrategyTrigger {
         val record = CryptoTailStrategyTrigger(
             strategyId = strategy.id!!,
@@ -1388,6 +1651,9 @@ class CryptoTailStrategyExecutionService(
                     "amountUsdc" to amountUsdc.toPlainString(),
                     "filledSize" to (filledSize?.toPlainString() ?: ""),
                     "filledAmount" to (filledAmount?.toPlainString() ?: ""),
+                    "avgFillPrice" to (avgFillPrice(filledSize, filledAmount)?.toPlainString() ?: ""),
+                    "finalLimitPrice" to (finalLimitPrice?.toPlainString() ?: ""),
+                    "retryCount" to retryCount,
                     "orderType" to (orderType ?: ""),
                     "triggerType" to triggerType
                 ).toJson(),

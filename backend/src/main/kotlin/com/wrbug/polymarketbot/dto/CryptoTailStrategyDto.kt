@@ -48,7 +48,7 @@ data class CryptoTailStrategyCreateRequest(
     val gasCostUsdc: String? = null,
     /** 进场订单类型: FAK / MAKER */
     val entryOrderType: String? = null,
-    /** FAK 进场限价滑点（V53）：limit = effectiveCost + 此值, 封顶 maxEntryPrice/bracketMaxEntryPrice，默认 0.02 */
+    /** FAK 进场限价滑点上限（V53）：最终限价受 EV 安全最高价和 maxEntryPrice/bracketMaxEntryPrice 共同约束，默认 0.02 */
     val entryFakSlippage: String? = null,
     /** maker 挂单相对 bestBid 价格偏移(可负) */
     val makerPriceOffset: String? = null,
@@ -203,7 +203,7 @@ data class CryptoTailStrategyDto(
     val gasCostUsdc: String = "0",
     /** 进场订单类型: FAK吃单 / MAKER挂单 */
     val entryOrderType: String = "FAK",
-    /** FAK 进场限价滑点（V53）：limit = effectiveCost + 此值, 封顶 maxEntryPrice/bracketMaxEntryPrice */
+    /** FAK 进场限价滑点上限（V53）：最终限价受 EV 安全最高价和 maxEntryPrice/bracketMaxEntryPrice 共同约束 */
     val entryFakSlippage: String = "0.02",
     /** maker 挂单相对 bestBid 价格偏移 */
     val makerPriceOffset: String = "0",
