@@ -321,10 +321,19 @@ pull_images() {
     title "  $(bilingual "步骤 5: 拉取 Docker 镜像" "Step 5: Pull Docker Images")"
     title "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    info "$(bilingual "正在从 Docker Hub 拉取最新镜像..." "Pulling latest images from Docker Hub...")"
+    # 本项目默认走本机 full-build（./deploy.sh --full-build），不内置上游默认镜像。
+    # 仅当显式设置了自己的镜像 POLYHERMES_IMAGE 时，此交互脚本才拉取镜像。
+    if [ -z "${POLYHERMES_IMAGE}" ]; then
+        error "$(bilingual "未设置 POLYHERMES_IMAGE，已禁用上游镜像拉取" "POLYHERMES_IMAGE not set, upstream pull disabled")"
+        warn "$(bilingual "本项目请使用本机编译：./deploy.sh --full-build" "Use local build: ./deploy.sh --full-build")"
+        warn "$(bilingual "如需拉取自有镜像：POLYHERMES_IMAGE=你的账号/polyhermes:tag" "Or set your own image: POLYHERMES_IMAGE=your-user/polyhermes:tag")"
+        exit 1
+    fi
+
+    info "$(bilingual "正在拉取镜像..." "Pulling image..."): ${POLYHERMES_IMAGE}"
     
-    if docker pull wrbug/polyhermes:latest; then
-        info "$(bilingual "应用镜像拉取成功" "App image pulled"): wrbug/polyhermes:latest"
+    if docker pull "${POLYHERMES_IMAGE}"; then
+        info "$(bilingual "应用镜像拉取成功" "App image pulled"): ${POLYHERMES_IMAGE}"
     else
         error "$(bilingual "应用镜像拉取失败" "Failed to pull app image")"
         warn "$(bilingual "可能的原因：" "Possible reasons:")"
@@ -416,7 +425,7 @@ show_deployment_info() {
     echo -e "  $(bilingual "查看日志" "Logs"): ${CYAN}docker compose -f docker-compose.prod.yml logs -f${NC}"
     echo -e "  $(bilingual "停止服务" "Stop"): ${CYAN}docker compose -f docker-compose.prod.yml down${NC}"
     echo -e "  $(bilingual "重启服务" "Restart"): ${CYAN}docker compose -f docker-compose.prod.yml restart${NC}"
-    echo -e "  $(bilingual "更新镜像" "Update"): ${CYAN}docker pull wrbug/polyhermes:latest && docker compose -f docker-compose.prod.yml up -d${NC}"
+    echo -e "  $(bilingual "更新（本机编译）" "Update (local build)"): ${CYAN}./deploy.sh --full-build${NC}"
     echo ""
     
     title "$(bilingual "【数据库连接信息】" "【Database Connection】")"

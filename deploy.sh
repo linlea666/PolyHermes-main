@@ -13,7 +13,10 @@ NC='\033[0m' # No Color
 COMPOSE_FILES=(-f docker-compose.yml)
 COMPOSE_COMMAND=()
 DEPLOY_MODE="full-build"
-DEFAULT_IMAGE="wrbug/polyhermes:latest"
+# 本项目默认采用本机 full-build。不再内置任何上游默认镜像，
+# 避免误拉到本仓库之外的官方镜像（曾因默认拉 wrbug/polyhermes 导致部署到旧代码）。
+# 如确需 --pull-image，必须显式设置 POLYHERMES_IMAGE=你的账号/镜像:tag。
+DEFAULT_IMAGE=""
 REPO_URL="https://github.com/linlea666/PolyHermes-main"
 
 # 打印信息
@@ -143,7 +146,8 @@ ADMIN_RESET_PASSWORD_KEY=${ADMIN_RESET_KEY}
 # BUILD_IN_DOCKER=false
 # FRONTEND_BUILD_MEM_MB=1024
 # FRONTEND_BUILD_CONTAINER_MEM_MB=1536
-# POLYHERMES_IMAGE=wrbug/polyhermes:latest
+# 仅当使用 --pull-image 时需要，且必须是你自己的镜像仓库（本项目默认走 --full-build，无需设置）
+# POLYHERMES_IMAGE=your-dockerhub-user/polyhermes:latest
 EOF
         info ".env 文件已创建，已自动生成随机密码和密钥"
         warn "生产环境建议修改以下参数："
@@ -345,6 +349,12 @@ deploy() {
     if [ "$DEPLOY_MODE" = "pull-image" ]; then
         local image_ref
         image_ref=$(get_image_ref)
+        if [ -z "$image_ref" ]; then
+            error "未配置 POLYHERMES_IMAGE，已禁用默认上游镜像拉取（防止误拉到本仓库之外的镜像）。"
+            error "本项目请使用本机编译：./deploy.sh --full-build"
+            error "如确需拉取你自己的镜像：POLYHERMES_IMAGE=你的账号/polyhermes:tag ./deploy.sh --pull-image"
+            exit 1
+        fi
         export POLYHERMES_IMAGE="$image_ref"
 
         info "部署模式：pull-image（拉取远程镜像，不本地编译）"
@@ -394,6 +404,12 @@ deploy() {
     info "启动服务..."
     compose up -d
 
+    # 清理本次构建产生的悬空(dangling)镜像，避免低配机磁盘被旧层占满。
+    # 只删无 tag 的悬空镜像，不影响在用镜像与缓存卷。
+    if docker image prune -f >/dev/null 2>&1; then
+        info "已清理悬空镜像，回收磁盘空间"
+    fi
+
     show_status
 }
 
@@ -415,7 +431,7 @@ usage() {
 部署模式：
   --restart      只执行 docker compose up -d --no-build，不编译、不构建镜像
   --full-build   完整构建并启动（默认）。BUILD_IN_DOCKER=false 时脚本预编译；BUILD_IN_DOCKER=true 时 Dockerfile 内编译
-  --pull-image   拉取远程镜像并启动，不本地编译。镜像默认 ${DEFAULT_IMAGE}，可用 POLYHERMES_IMAGE 覆盖
+  --pull-image   拉取远程镜像并启动，不本地编译。须显式设置 POLYHERMES_IMAGE=你的账号/镜像:tag（无内置默认镜像）
 
 兼容参数：
   --use-docker-hub, -d  等同于 --pull-image
@@ -431,7 +447,7 @@ usage() {
   $0 --restart
   $0 --full-build
   BUILD_IN_DOCKER=true $0 --full-build
-  POLYHERMES_IMAGE=wrbug/polyhermes:latest $0 --pull-image
+  POLYHERMES_IMAGE=your-dockerhub-user/polyhermes:latest $0 --pull-image
 EOF
 }
 
