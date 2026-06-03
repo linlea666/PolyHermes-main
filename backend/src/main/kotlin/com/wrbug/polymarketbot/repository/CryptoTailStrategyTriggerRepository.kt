@@ -55,8 +55,56 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
     @Query("SELECT COALESCE(SUM(t.realizedPnl), 0) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true AND t.settledAt >= :settledAtAfter")
     fun sumRealizedPnlByStrategyIdAndSettledAtAfter(@Param("strategyId") strategyId: Long, @Param("settledAtAfter") settledAtAfter: Long): BigDecimal?
 
+    /** 账户级风控-日亏闸：同账户所有策略指定结算时间点之后已结算订单的已实现盈亏之和 */
+    @Query(
+        "SELECT COALESCE(SUM(t.realizedPnl), 0) FROM CryptoTailStrategyTrigger t, CryptoTailStrategy s " +
+            "WHERE t.strategyId = s.id AND s.accountId = :accountId AND t.resolved = true AND t.settledAt >= :settledAtAfter"
+    )
+    fun sumRealizedPnlByAccountIdAndSettledAtAfter(@Param("accountId") accountId: Long, @Param("settledAtAfter") settledAtAfter: Long): BigDecimal?
+
     /** 风控-并发敞口闸：已成功下单但未结算的笔数 */
     fun countByStrategyIdAndStatusAndResolvedFalse(strategyId: Long, status: String): Long
+
+    /** 账户级风控-并发敞口闸：同账户所有策略已成功下单但未结算的笔数 */
+    @Query(
+        "SELECT COUNT(t) FROM CryptoTailStrategyTrigger t, CryptoTailStrategy s " +
+            "WHERE t.strategyId = s.id AND s.accountId = :accountId AND t.status = :status AND t.resolved = false"
+    )
+    fun countByAccountIdAndStatusAndResolvedFalse(@Param("accountId") accountId: Long, @Param("status") status: String): Long
+
+    /** 账户级风控-日订单上限：同账户所有策略指定创建时间范围内成功入场笔数 */
+    @Query(
+        "SELECT COUNT(t) FROM CryptoTailStrategyTrigger t, CryptoTailStrategy s " +
+            "WHERE t.strategyId = s.id AND s.accountId = :accountId AND t.status = :status " +
+            "AND t.createdAt >= :startInclusive AND t.createdAt <= :endInclusive"
+    )
+    fun countByAccountIdAndStatusAndCreatedAtBetween(
+        @Param("accountId") accountId: Long,
+        @Param("status") status: String,
+        @Param("startInclusive") startInclusive: Long,
+        @Param("endInclusive") endInclusive: Long
+    ): Long
+
+    /** 同账户 pending 买单占用的策略请求金额，用于下单前余额预留扣减 */
+    @Query(
+        "SELECT COALESCE(SUM(t.amountUsdc), 0) FROM CryptoTailStrategyTrigger t, CryptoTailStrategy s " +
+            "WHERE t.strategyId = s.id AND s.accountId = :accountId AND t.status = 'pending' AND t.resolved = false"
+    )
+    fun sumPendingEntryAmountByAccountId(@Param("accountId") accountId: Long): BigDecimal?
+
+    /** 同账户同 market+period+outcome 是否已有有效入场，防止多个策略重复开同一仓位 */
+    @Query(
+        "SELECT COUNT(t) FROM CryptoTailStrategyTrigger t, CryptoTailStrategy s " +
+            "WHERE t.strategyId = s.id AND s.accountId = :accountId AND s.marketSlugPrefix = :marketSlugPrefix " +
+            "AND t.periodStartUnix = :periodStartUnix AND t.outcomeIndex = :outcomeIndex " +
+            "AND t.resolved = false AND t.status IN ('success', 'pending')"
+    )
+    fun countOpenMarketPositionByAccountMarketPeriodOutcome(
+        @Param("accountId") accountId: Long,
+        @Param("marketSlugPrefix") marketSlugPrefix: String,
+        @Param("periodStartUnix") periodStartUnix: Long,
+        @Param("outcomeIndex") outcomeIndex: Int
+    ): Long
 
     /** 策略已结算中赢的笔数（outcome_index = winner_outcome_index） */
     @Query("SELECT COUNT(t) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true AND t.outcomeIndex = t.winnerOutcomeIndex")

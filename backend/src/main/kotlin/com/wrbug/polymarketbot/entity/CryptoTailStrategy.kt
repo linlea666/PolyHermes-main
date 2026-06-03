@@ -388,6 +388,10 @@ data class CryptoTailStrategy(
     @Column(name = "kelly_fraction", nullable = false, precision = 20, scale = 8)
     val kellyFraction: BigDecimal = BigDecimal("0.25"),
 
+    /** 是否允许同账户在同一 market+period+outcome 上重复开仓，默认 false 防止多策略重复持仓 */
+    @Column(name = "allow_duplicate_market_position", nullable = false)
+    val allowDuplicateMarketPosition: Boolean = false,
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

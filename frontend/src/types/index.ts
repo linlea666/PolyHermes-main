@@ -1496,6 +1496,8 @@ export interface CryptoTailStrategyDto {
   kellyEnabled?: boolean
   /** Kelly 分数 0~1 */
   kellyFraction?: string
+  /** 是否允许同账户同 market/period/outcome 重复开仓 */
+  allowDuplicateMarketPosition?: boolean
   /** 交易模式（V52）: 0=LEGACY_SPREAD 旧价差, 1=BARRIER_HOLD 障碍, 2=BRACKET_DYNAMIC 概率阶梯止盈 */
   mode?: number
   /** 阶梯模式入场胜率阈值 */

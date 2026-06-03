@@ -116,6 +116,7 @@ class CryptoTailStrategyService(
             val ewmaLambda = request.ewmaLambda?.toSafeBigDecimal() ?: BigDecimal("0.94")
             val kellyEnabled = request.kellyEnabled ?: false
             val kellyFraction = request.kellyFraction?.toSafeBigDecimal() ?: BigDecimal("0.25")
+            val allowDuplicateMarketPosition = request.allowDuplicateMarketPosition ?: false
 
             // V52：mode 字段优先；request.mode 缺失时回退 barrierEnabled 兼容（旧前端不带 mode 也能运行）
             val resolvedMode = when {
@@ -252,6 +253,7 @@ class CryptoTailStrategyService(
                 ewmaLambda = ewmaLambda,
                 kellyEnabled = kellyEnabled,
                 kellyFraction = kellyFraction,
+                allowDuplicateMarketPosition = allowDuplicateMarketPosition,
                 mode = resolvedMode,
                 // 同步 barrierEnabled 兼容字段：mode==BARRIER_HOLD ⇔ barrierEnabled=true
                 barrierEnabled = resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD,
@@ -399,6 +401,7 @@ class CryptoTailStrategyService(
             val newEwmaLambda = request.ewmaLambda?.toSafeBigDecimal() ?: existing.ewmaLambda
             val newKellyEnabled = request.kellyEnabled ?: existing.kellyEnabled
             val newKellyFraction = request.kellyFraction?.toSafeBigDecimal() ?: existing.kellyFraction
+            val newAllowDuplicateMarketPosition = request.allowDuplicateMarketPosition ?: existing.allowDuplicateMarketPosition
 
             // V52：mode 字段优先；缺失时按 barrierEnabled 兼容
             val newMode = when {
@@ -533,6 +536,7 @@ class CryptoTailStrategyService(
                 ewmaLambda = newEwmaLambda,
                 kellyEnabled = newKellyEnabled,
                 kellyFraction = newKellyFraction,
+                allowDuplicateMarketPosition = newAllowDuplicateMarketPosition,
                 mode = newMode,
                 barrierEnabled = newMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD,
                 bracketEntryProb = newBracketEntryProb,
@@ -1321,6 +1325,7 @@ class CryptoTailStrategyService(
             ewmaLambda = e.ewmaLambda.toPlainString(),
             kellyEnabled = e.kellyEnabled,
             kellyFraction = e.kellyFraction.toPlainString(),
+            allowDuplicateMarketPosition = e.allowDuplicateMarketPosition,
             mode = e.mode.value,
             bracketEntryProb = e.bracketEntryProb.toPlainString(),
             bracketEntryEdge = e.bracketEntryEdge.toPlainString(),

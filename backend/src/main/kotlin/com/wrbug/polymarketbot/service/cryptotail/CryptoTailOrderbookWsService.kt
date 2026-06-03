@@ -85,9 +85,12 @@ class CryptoTailOrderbookWsService(
     data class WsBookEntry(
         val strategy: CryptoTailStrategy,
         val periodStartUnix: Long,
+        val marketSlug: String,
+        val tokenId: String,
         val marketTitle: String?,
         val tokenIds: List<String>,
-        val outcomeIndex: Int
+        val outcomeIndex: Int,
+        val subscriptionKey: String
     )
 
     @PostConstruct
@@ -554,8 +557,10 @@ class CryptoTailOrderbookWsService(
             }
             tokenIdSet.addAll(tokenIds)
             for (i in tokenIds.indices) {
-                map.getOrPut(tokenIds[i]) { mutableListOf() }.add(
-                    WsBookEntry(strategy, periodStartUnix, event.title, tokenIds, i)
+                val tokenId = tokenIds[i]
+                val subscriptionKey = "$slug:$tokenId:$i:$periodStartUnix"
+                map.getOrPut(tokenId) { mutableListOf() }.add(
+                    WsBookEntry(strategy, periodStartUnix, slug, tokenId, event.title, tokenIds, i, subscriptionKey)
                 )
             }
         }

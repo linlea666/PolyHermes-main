@@ -216,6 +216,7 @@ class CryptoTailBracketExitService(
             val sizing = sizeExitForLiquidity(strategy, orderbook, bestBid, targetSize, decision.kind)
             if (sizing.waitReason != null) {
                 recordEvent(
+                    strategy,
                     checked,
                     eventType = "EXIT_CHECK",
                     gateName = decision.kind.name,
@@ -630,9 +631,14 @@ class CryptoTailBracketExitService(
         val expectedExitPrice = orderbook?.expectedExitPrice(remaining)
         val executableDepth = orderbook?.executableBidDepthUsd(remaining)
         val payload = mapOf(
+            "strategyId" to (strategy.id ?: ""),
+            "strategyName" to (strategy.name ?: ""),
+            "coin" to (CryptoTailCoinResolver.coinOfSlug(strategy.marketSlugPrefix) ?: ""),
             "positionId" to (trigger.id?.toString() ?: ""),
+            "triggerId" to (trigger.id ?: ""),
             "marketSlug" to strategy.marketSlugPrefix,
             "periodStartUnix" to trigger.periodStartUnix,
+            "tokenId" to (trigger.tokenId ?: ""),
             "outcomeIndex" to trigger.outcomeIndex,
             "entryFillPrice" to entryFillPrice.toPlainString(),
             "currentBestBid" to bestBid.toPlainString(),
@@ -834,6 +840,7 @@ class CryptoTailBracketExitService(
                 else -> "EXIT_SUBMITTED"
             }
             recordEvent(
+                strategy,
                 trigger,
                 eventType = submittedType,
                 gateName = kind.name,
@@ -864,6 +871,7 @@ class CryptoTailBracketExitService(
             )
             failBackoffCache.put(failBackoffKey(triggerId, kind), true)
             recordEvent(
+                strategy,
                 trigger,
                 eventType = "EXIT_FAILED",
                 gateName = kind.name,
@@ -918,6 +926,7 @@ class CryptoTailBracketExitService(
 
     /** 记录决策日志事件（异步发布） */
     private fun recordEvent(
+        strategy: CryptoTailStrategy,
         trigger: CryptoTailStrategyTrigger,
         eventType: String,
         gateName: String?,
@@ -929,6 +938,12 @@ class CryptoTailBracketExitService(
         extra: Map<String, Any?> = emptyMap()
     ) {
         val payload = buildMap<String, Any?> {
+            put("strategyId", strategy.id ?: "")
+            put("strategyName", strategy.name ?: "")
+            put("coin", CryptoTailCoinResolver.coinOfSlug(strategy.marketSlugPrefix) ?: "")
+            put("marketSlug", strategy.marketSlugPrefix)
+            put("periodStartUnix", trigger.periodStartUnix)
+            put("tokenId", trigger.tokenId ?: "")
             put("mode", trigger.mode.name)
             put("triggerId", trigger.id)
             put("outcomeIndex", trigger.outcomeIndex)

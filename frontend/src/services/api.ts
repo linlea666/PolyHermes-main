@@ -560,6 +560,7 @@ export const apiService = {
       maxConcurrentPositions?: number | null
       kellyEnabled?: boolean
       kellyFraction?: string
+      allowDuplicateMarketPosition?: boolean
       /** FAK 进场限价滑点（V53），BARRIER + BRACKET 共用 */
       entryFakSlippage?: string
       // 阶梯模式（V52）
@@ -654,6 +655,7 @@ export const apiService = {
       maxConcurrentPositions?: number | null
       kellyEnabled?: boolean
       kellyFraction?: string
+      allowDuplicateMarketPosition?: boolean
       /** FAK 进场限价滑点（V53），BARRIER + BRACKET 共用 */
       entryFakSlippage?: string
       // 阶梯模式（V52）

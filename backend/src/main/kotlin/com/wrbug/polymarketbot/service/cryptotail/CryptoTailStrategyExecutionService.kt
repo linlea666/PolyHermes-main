@@ -18,7 +18,6 @@ import com.wrbug.polymarketbot.enums.TradingMode
 import com.wrbug.polymarketbot.repository.AccountRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
-import com.wrbug.polymarketbot.service.accounts.AccountService
 import com.wrbug.polymarketbot.service.binance.BinanceKlineAutoSpreadService
 import com.wrbug.polymarketbot.service.binance.BinanceKlineService
 import com.wrbug.polymarketbot.service.common.PolymarketClobService
@@ -80,7 +79,7 @@ class CryptoTailStrategyExecutionService(
     private val strategyRepository: CryptoTailStrategyRepository,
     private val triggerRepository: CryptoTailStrategyTriggerRepository,
     private val accountRepository: AccountRepository,
-    private val accountService: AccountService,
+    private val entryGuardService: CryptoTailEntryGuardService,
     private val retrofitFactory: RetrofitFactory,
     private val clobService: PolymarketClobService,
     private val orderSigningService: OrderSigningService,
@@ -100,6 +99,9 @@ class CryptoTailStrategyExecutionService(
     /** 按 (strategyId, periodStartUnix) 加锁，避免同一周期被调度器与 WebSocket 等多路并发重复下单 */
     private val triggerMutexMap = ConcurrentHashMap<String, Mutex>()
 
+    /** 按 accountId 加锁，串行化同账户多策略入场的余额预留与重复持仓检查 */
+    private val accountEntryMutexMap = ConcurrentHashMap<Long, Mutex>()
+
     /** 过期锁 key 保留时间（秒），超过则清理，防止 map 无界增长 */
     private val triggerMutexExpireSeconds = 3600L
 
@@ -109,6 +111,9 @@ class CryptoTailStrategyExecutionService(
         cleanExpiredTriggerMutexKeys()
         return triggerMutexMap.getOrPut(triggerLockKey(strategyId, periodStartUnix)) { Mutex() }
     }
+
+    private fun getAccountEntryMutex(accountId: Long): Mutex =
+        accountEntryMutexMap.getOrPut(accountId) { Mutex() }
 
     /** 清理已过期的 (strategyId, periodStartUnix) 锁，避免内存泄漏 */
     private fun cleanExpiredTriggerMutexKeys() {
@@ -386,46 +391,65 @@ class CryptoTailStrategyExecutionService(
                 )
             }
 
-            when (strategy.mode) {
-                TradingMode.BARRIER_HOLD -> {
-                    val eval = evaluateBarrierGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk, orderbook)
-                    recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
-                    if (!eval.pass) return@withLock
-                    val risk = cryptoTailRiskService.checkRiskGate(strategy)
-                    if (!risk.passed) {
-                        recordDecisionOncePerPeriod(
-                            strategy.id!!, periodStartUnix, "GATE_FAILED-${risk.gateName}", outcomeIndex,
-                            eventType = "GATE_FAILED", gateName = risk.gateName, passed = false, reason = risk.reason,
-                            payloadJson = eval.payloadJson, triggerId = null
-                        )
-                        return@withLock
-                    }
-                    val scaling = calibrationService.evaluateScalingGate(strategy)
-                    val amountOverride = if (scaling.useProbe) strategy.probeAmountUsdc else null
-                    ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
-                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride, eval.metrics, scaling, orderbook)
+            val tokenIdForOutcome = tokenIds.getOrNull(outcomeIndex)
+            val accountMutex = getAccountEntryMutex(strategy.accountId)
+            accountMutex.withLock accountLock@{
+                if (entryGuardService.hasDuplicateMarketPosition(strategy, periodStartUnix, outcomeIndex)) {
+                    recordDecisionOncePerPeriod(
+                        strategy, periodStartUnix, "GATE_FAILED-DUPLICATE_MARKET_POSITION", outcomeIndex,
+                        eventType = "GATE_FAILED", gateName = "DUPLICATE_MARKET_POSITION", passed = false,
+                        reason = "同账户同 market/period/outcome 已有 success/pending 入场，allowDuplicateMarketPosition=false",
+                        payloadJson = mapOf(
+                            "allowDuplicateMarketPosition" to strategy.allowDuplicateMarketPosition,
+                            "duplicateKey" to "${strategy.accountId}:${strategy.marketSlugPrefix}:$periodStartUnix:$outcomeIndex"
+                        ).toJson(),
+                        triggerId = null,
+                        tokenId = tokenIdForOutcome
+                    )
+                    return@accountLock
                 }
-                TradingMode.BRACKET_DYNAMIC -> {
-                    val eval = evaluateBracketEntryGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk, orderbook)
-                    recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
-                    if (!eval.pass) return@withLock
-                    val risk = cryptoTailRiskService.checkRiskGate(strategy)
-                    if (!risk.passed) {
-                        recordDecisionOncePerPeriod(
-                            strategy.id!!, periodStartUnix, "GATE_FAILED-${risk.gateName}", outcomeIndex,
-                            eventType = "GATE_FAILED", gateName = risk.gateName, passed = false, reason = risk.reason,
-                            payloadJson = eval.payloadJson, triggerId = null
-                        )
-                        return@withLock
+
+                when (strategy.mode) {
+                    TradingMode.BARRIER_HOLD -> {
+                        val eval = evaluateBarrierGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk, orderbook)
+                        recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval, tokenIdForOutcome)
+                        if (!eval.pass) return@accountLock
+                        val risk = cryptoTailRiskService.checkRiskGate(strategy)
+                        if (!risk.passed) {
+                            recordDecisionOncePerPeriod(
+                                strategy, periodStartUnix, "GATE_FAILED-${risk.gateName}", outcomeIndex,
+                                eventType = "GATE_FAILED", gateName = risk.gateName, passed = false, reason = risk.reason,
+                                payloadJson = eval.payloadJson, triggerId = null, tokenId = tokenIdForOutcome
+                            )
+                            return@accountLock
+                        }
+                        val scaling = calibrationService.evaluateScalingGate(strategy)
+                        val amountOverride = if (scaling.useProbe) strategy.probeAmountUsdc else null
+                        ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
+                        placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride, eval.metrics, scaling, orderbook)
                     }
-                    // 阶梯模式不参与放量闸/校准（独立模式，校准样本来自 BARRIER）
-                    ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
-                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, null, eval.metrics, preRefreshOrderbook = orderbook)
-                }
-                TradingMode.LEGACY_SPREAD -> {
-                    if (!passSpreadCheck(strategy, periodStartUnix, outcomeIndex)) return@withLock
-                    ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
-                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, null)
+                    TradingMode.BRACKET_DYNAMIC -> {
+                        val eval = evaluateBracketEntryGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk, orderbook)
+                        recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval, tokenIdForOutcome)
+                        if (!eval.pass) return@accountLock
+                        val risk = cryptoTailRiskService.checkRiskGate(strategy)
+                        if (!risk.passed) {
+                            recordDecisionOncePerPeriod(
+                                strategy, periodStartUnix, "GATE_FAILED-${risk.gateName}", outcomeIndex,
+                                eventType = "GATE_FAILED", gateName = risk.gateName, passed = false, reason = risk.reason,
+                                payloadJson = eval.payloadJson, triggerId = null, tokenId = tokenIdForOutcome
+                            )
+                            return@accountLock
+                        }
+                        // 阶梯模式不参与放量闸/校准（独立模式，校准样本来自 BARRIER）
+                        ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
+                        placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, null, eval.metrics, preRefreshOrderbook = orderbook)
+                    }
+                    TradingMode.LEGACY_SPREAD -> {
+                        if (!passSpreadCheck(strategy, periodStartUnix, outcomeIndex)) return@accountLock
+                        ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
+                        placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, null)
+                    }
                 }
             }
         }
@@ -532,6 +556,7 @@ class CryptoTailStrategyExecutionService(
         "priceAgeMs" to (status.ageMs ?: ""),
         "fallbackUsed" to false
     ).plus(readinessDiagnostics(status))
+
 
     private fun checkEntryMarketQuality(
         strategy: CryptoTailStrategy,
@@ -932,18 +957,24 @@ class CryptoTailStrategyExecutionService(
     }
 
     /** 记录障碍闸结果（每周期每结果去重，避免每个 tick 刷库） */
-    private fun recordBarrierDecision(strategy: CryptoTailStrategy, periodStartUnix: Long, outcomeIndex: Int, eval: BarrierEval) {
+    private fun recordBarrierDecision(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        eval: BarrierEval,
+        tokenId: String? = null
+    ) {
         if (eval.pass) {
             recordDecisionOncePerPeriod(
-                strategy.id!!, periodStartUnix, "GATE_PASSED-ALL", outcomeIndex,
+                strategy, periodStartUnix, "GATE_PASSED-ALL", outcomeIndex,
                 eventType = "GATE_PASSED", gateName = "ALL", passed = true, reason = eval.reason,
-                payloadJson = eval.payloadJson, triggerId = null
+                payloadJson = eval.payloadJson, triggerId = null, tokenId = tokenId
             )
         } else {
             recordDecisionOncePerPeriod(
-                strategy.id!!, periodStartUnix, "GATE_FAILED-${eval.gateName}", outcomeIndex,
+                strategy, periodStartUnix, "GATE_FAILED-${eval.gateName}", outcomeIndex,
                 eventType = "GATE_FAILED", gateName = eval.gateName, passed = false, reason = eval.reason,
-                payloadJson = eval.payloadJson, triggerId = null
+                payloadJson = eval.payloadJson, triggerId = null, tokenId = tokenId
             )
         }
     }
@@ -991,7 +1022,8 @@ class CryptoTailStrategyExecutionService(
         pricing: CryptoTailFakPricingPolicy.Result? = null,
         orderbookRefreshed: Boolean = false,
         preRefreshOrderbook: OrderbookQualitySnapshot? = null,
-        refreshedOrderbook: OrderbookQualitySnapshot? = null
+        refreshedOrderbook: OrderbookQualitySnapshot? = null,
+        tokenId: String? = null
     ) {
         if (metrics == null) return
         val isMaker = strategy.entryOrderType.uppercase() == "MAKER"
@@ -1045,10 +1077,10 @@ class CryptoTailStrategyExecutionService(
             .toJson()
         val scalingNote = if (scaling != null && scaling.useProbe) " [放量闸:小额 ${strategy.probeAmountUsdc.toPlainString()}]" else ""
         recordDecisionOncePerPeriod(
-            strategy.id!!, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
+            strategy, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
             eventType = "ORDER_SUBMITTED", gateName = null, passed = null,
             reason = "已提交下单 目标价=${targetPrice.toPlainString()} 剩余=${metrics.remaining.toLong()}s$scalingNote",
-            payloadJson = payload, triggerId = null
+            payloadJson = payload, triggerId = null, tokenId = tokenId
         )
     }
 
@@ -1066,7 +1098,8 @@ class CryptoTailStrategyExecutionService(
         pricing: CryptoTailFakPricingPolicy.Result? = null,
         orderbookRefreshed: Boolean = false,
         preRefreshOrderbook: OrderbookQualitySnapshot? = null,
-        refreshedOrderbook: OrderbookQualitySnapshot? = null
+        refreshedOrderbook: OrderbookQualitySnapshot? = null,
+        tokenId: String? = null
     ) {
         if (metrics == null) return
         val targetPrice = pricing?.finalLimit ?: computeBuyPrice(strategy, bestBid, bestAsk)
@@ -1121,10 +1154,10 @@ class CryptoTailStrategyExecutionService(
             .plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, orderbookRefreshed))
             .toJson()
         recordDecisionOncePerPeriod(
-            strategy.id!!, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
+            strategy, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
             eventType = "ORDER_SUBMITTED", gateName = null, passed = null,
             reason = "已提交阶梯入场单 目标价=${targetPrice.toPlainString()} 剩余=${metrics.remaining.toLong()}s",
-            payloadJson = payload, triggerId = null
+            payloadJson = payload, triggerId = null, tokenId = tokenId
         )
     }
 
@@ -1134,7 +1167,8 @@ class CryptoTailStrategyExecutionService(
         outcomeIndex: Int,
         metrics: BarrierMetrics?,
         pricing: CryptoTailFakPricingPolicy.Result,
-        orderbookRefreshed: Boolean
+        orderbookRefreshed: Boolean,
+        tokenId: String? = null
     ) {
         val payload = mapOf(
             "marketSlug" to strategy.marketSlugPrefix,
@@ -1145,10 +1179,10 @@ class CryptoTailStrategyExecutionService(
             "mode" to strategy.mode.name
         ).plus(pricingPayload(pricing, orderbookRefreshed)).toJson()
         recordDecisionOncePerPeriod(
-            strategy.id!!, periodStartUnix, "GATE_FAILED-EV_SAFE_LIMIT", outcomeIndex,
+            strategy, periodStartUnix, "GATE_FAILED-EV_SAFE_LIMIT", outcomeIndex,
             eventType = "GATE_FAILED", gateName = "EV_SAFE_LIMIT", passed = false,
             reason = "EV安全最高价=${pricing.evSafeLimit.toPlainString()}低于可成交ask=${pricing.executableAsk.toPlainString()}，放弃FAK进场",
-            payloadJson = payload, triggerId = null
+            payloadJson = payload, triggerId = null, tokenId = tokenId
         )
     }
 
@@ -1159,7 +1193,8 @@ class CryptoTailStrategyExecutionService(
         metrics: BarrierMetrics?,
         pricing: CryptoTailFakPricingPolicy.Result?,
         finalLimitPrice: BigDecimal,
-        orderbookRefreshed: Boolean
+        orderbookRefreshed: Boolean,
+        tokenId: String? = null
     ): Boolean {
         if (strategy.mode == TradingMode.LEGACY_SPREAD || pricing == null) return true
         val maxAllowed = pricing.priceCap.min(pricing.evSafeLimit)
@@ -1172,7 +1207,7 @@ class CryptoTailStrategyExecutionService(
             "maxAllowedFinalLimit" to maxAllowed.toPlainString()
         ).plus(pricingPayload(pricing, orderbookRefreshed)).toJson()
         recordDecisionOncePerPeriod(
-            strategy.id!!,
+            strategy,
             periodStartUnix,
             "GATE_FAILED-FINAL_LIMIT_ABOVE_EV_SAFE_LIMIT",
             outcomeIndex,
@@ -1181,7 +1216,8 @@ class CryptoTailStrategyExecutionService(
             passed = false,
             reason = "finalLimitPrice=${finalLimitPrice.toPlainString()} > min(priceCap=${pricing.priceCap.toPlainString()}, evSafeLimit=${pricing.evSafeLimit.toPlainString()})=${maxAllowed.toPlainString()}",
             payloadJson = payload,
-            triggerId = null
+            triggerId = null,
+            tokenId = tokenId
         )
         return false
     }
@@ -1191,7 +1227,8 @@ class CryptoTailStrategyExecutionService(
         periodStartUnix: Long,
         outcomeIndex: Int,
         preRefreshOrderbook: OrderbookQualitySnapshot?,
-        refreshedOrderbook: OrderbookQualitySnapshot
+        refreshedOrderbook: OrderbookQualitySnapshot,
+        tokenId: String? = null
     ) {
         val preAsk = preRefreshOrderbook?.bestAsk ?: return
         val refreshedAsk = refreshedOrderbook.bestAsk ?: return
@@ -1205,7 +1242,7 @@ class CryptoTailStrategyExecutionService(
             "maxEntrySpread" to strategy.maxEntrySpread.toPlainString()
         ).plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, true)).toJson()
         recordDecisionOncePerPeriod(
-            strategy.id!!,
+            strategy,
             periodStartUnix,
             "ORDERBOOK_REFRESH-REFRESHED_ASK_CHANGED_TOO_MUCH",
             outcomeIndex,
@@ -1214,13 +1251,14 @@ class CryptoTailStrategyExecutionService(
             passed = null,
             reason = "REFRESHED_ASK_CHANGED_TOO_MUCH",
             payloadJson = payload,
-            triggerId = null
+            triggerId = null,
+            tokenId = tokenId
         )
     }
 
     /** 决策日志：同一周期同一 key 只记一次（内存去重，热路径友好），通过解耦 recorder 异步落库/推送 */
     private fun recordDecisionOncePerPeriod(
-        strategyId: Long,
+        strategy: CryptoTailStrategy,
         periodStartUnix: Long,
         dedupeKey: String,
         outcomeIndex: Int?,
@@ -1229,11 +1267,14 @@ class CryptoTailStrategyExecutionService(
         passed: Boolean?,
         reason: String?,
         payloadJson: String?,
-        triggerId: Long?
+        triggerId: Long?,
+        tokenId: String? = null
     ) {
+        val strategyId = strategy.id ?: return
         val key = "$strategyId-$periodStartUnix-$dedupeKey"
         if (decisionLoggedCache.getIfPresent(key) != null) return
         decisionLoggedCache.put(key, true)
+        val payload = enrichDecisionPayload(strategy, periodStartUnix, outcomeIndex, triggerId, tokenId, payloadJson)
         decisionRecorder.record(
             CryptoTailDecisionEvent(
                 strategyId = strategyId,
@@ -1243,11 +1284,31 @@ class CryptoTailStrategyExecutionService(
                 gateName = gateName,
                 passed = passed,
                 reason = reason,
-                payloadJson = payloadJson,
+                payloadJson = payload,
                 outcomeIndex = outcomeIndex,
                 triggerId = triggerId
             )
         )
+    }
+
+    private fun enrichDecisionPayload(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int?,
+        triggerId: Long?,
+        tokenId: String?,
+        payloadJson: String?
+    ): String {
+        val base = payloadJson?.fromJson<Map<String, Any?>>()?.toMutableMap() ?: mutableMapOf()
+        base.putIfAbsent("strategyId", strategy.id ?: "")
+        base.putIfAbsent("strategyName", strategy.name ?: "")
+        base.putIfAbsent("coin", CryptoTailCoinResolver.coinOfSlug(strategy.marketSlugPrefix) ?: "")
+        base.putIfAbsent("marketSlug", strategy.marketSlugPrefix)
+        base.putIfAbsent("periodStartUnix", periodStartUnix)
+        base.putIfAbsent("tokenId", tokenId ?: base["tokenId"] ?: "")
+        base.putIfAbsent("outcomeIndex", outcomeIndex ?: "")
+        base.putIfAbsent("triggerId", triggerId ?: "")
+        return base.toJson()
     }
 
     private fun passSpreadCheck(strategy: CryptoTailStrategy, periodStartUnix: Long, outcomeIndex: Int): Boolean {
@@ -1385,10 +1446,10 @@ class CryptoTailStrategyExecutionService(
         val pricing = computeFakPricing(strategy, refreshedOrderbook.bestBid, refreshedOrderbook.bestAsk, eval.metrics.pWin)
         if (!pricing.canSubmit) {
             logger.warn("FAK一跳救单被EV安全价拦截: strategyId=${strategy.id}, tokenId=$tokenId, evSafeLimit=${pricing.evSafeLimit.toPlainString()}, executableAsk=${pricing.executableAsk.toPlainString()}")
-            recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, eval.metrics, pricing, true)
+            recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, eval.metrics, pricing, true, tokenId)
             return null
         }
-        if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, eval.metrics, pricing, pricing.finalLimit, true)) {
+        if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, eval.metrics, pricing, pricing.finalLimit, true, tokenId)) {
             return null
         }
         val size = computeSize(amountUsdc, pricing.finalLimit)
@@ -1452,7 +1513,8 @@ class CryptoTailStrategyExecutionService(
         val ctx = getOrInvalidatePeriodContext(strategy, periodStartUnix)
 
         if (ctx != null) {
-            var availableBalanceForRatio = BigDecimal.ZERO
+            val balanceSnapshot = entryGuardService.loadEntryBalanceSnapshot(strategy.accountId)
+            var spendableBalanceForRatio = BigDecimal.ZERO
             // 优先级：放量闸 probe（安全优先） > 分数 Kelly（仅 BARRIER 模式适用） > 原 amountMode
             // V53 注：Kelly 仅对 BARRIER 二元收益结构有效；BRACKET 阶梯收益非二元，公式不适用，强制走原 amountMode。
             val useKelly = amountOverrideUsdc == null &&
@@ -1466,11 +1528,8 @@ class CryptoTailStrategyExecutionService(
                 useKelly -> {
                     // bankroll：RATIO=可用余额，FIXED=amountValue（视为本金/上限）
                     val bankroll = if (strategy.amountMode.uppercase() == "RATIO") {
-                        val balanceResult = accountService.getAccountBalance(ctx.account.id)
-                        val availableBalance =
-                            balanceResult.getOrNull()?.availableBalance?.toSafeBigDecimal() ?: BigDecimal.ZERO
-                        availableBalanceForRatio = availableBalance
-                        availableBalance
+                        spendableBalanceForRatio = balanceSnapshot.spendable
+                        balanceSnapshot.spendable
                     } else {
                         strategy.amountValue
                     }
@@ -1479,11 +1538,8 @@ class CryptoTailStrategyExecutionService(
                     computeKellyAmount(metrics!!.pWin, metrics.effectiveCost, bankroll, strategy.kellyFraction).min(bankroll)
                 }
                 strategy.amountMode.uppercase() == "RATIO" -> {
-                    val balanceResult = accountService.getAccountBalance(ctx.account.id)
-                    val availableBalance =
-                        balanceResult.getOrNull()?.availableBalance?.toSafeBigDecimal() ?: BigDecimal.ZERO
-                    availableBalanceForRatio = availableBalance
-                    availableBalance.multiply(strategy.amountValue).divide(BigDecimal("100"), 18, RoundingMode.DOWN)
+                    spendableBalanceForRatio = balanceSnapshot.spendable
+                    balanceSnapshot.spendable.multiply(strategy.amountValue).divide(BigDecimal("100"), 18, RoundingMode.DOWN)
                 }
 
                 else -> strategy.amountValue
@@ -1493,7 +1549,7 @@ class CryptoTailStrategyExecutionService(
                 if (useKelly && kellyBankroll >= MIN_ORDER_USDC) {
                     // Kelly 下限钳制：本金够最小下单额则补到 MIN（f*≤0 等极小情形）
                     amountUsdc = MIN_ORDER_USDC
-                } else if (amountMode == "RATIO" && availableBalanceForRatio >= MIN_ORDER_USDC) {
+                } else if (amountMode == "RATIO" && spendableBalanceForRatio >= MIN_ORDER_USDC) {
                     amountUsdc = MIN_ORDER_USDC
                 } else {
                     saveTriggerRecord(
@@ -1509,6 +1565,20 @@ class CryptoTailStrategyExecutionService(
                     )
                     return
                 }
+            }
+            if (amountUsdc > balanceSnapshot.spendable) {
+                saveTriggerRecord(
+                    strategy,
+                    periodStartUnix,
+                    marketTitle,
+                    outcomeIndex,
+                    triggerPrice,
+                    amountUsdc,
+                    null,
+                    "fail",
+                    entryGuardService.insufficientBalanceReason(amountUsdc, balanceSnapshot)
+                )
+                return
             }
 
             val tokenId = tokenIds.getOrNull(outcomeIndex) ?: run {
@@ -1529,7 +1599,7 @@ class CryptoTailStrategyExecutionService(
             // 障碍模式 MAKER：GTC + postOnly 挂单进场（@bestBid+offset，postOnly 兜底保证 maker），生命周期由对账服务管理
             // 注：阶梯模式 BRACKET_DYNAMIC 强制 FAK 进场，避免"边买边判断卖出"竞态，因此不进入 maker 分支
             if (strategy.mode == TradingMode.BARRIER_HOLD && strategy.entryOrderType.uppercase() == "MAKER") {
-                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, metrics, triggerPrice, bestAsk, scaling, amountOverrideUsdc)
+                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, metrics, triggerPrice, bestAsk, scaling, amountOverrideUsdc, tokenId = tokenId)
                 val makerPrice = computeMakerPrice(strategy, triggerPrice, bestAsk)
                 val makerSize = computeSize(amountUsdc, makerPrice)
                 val makerSignedOrder = orderSigningService.createAndSignOrder(
@@ -1577,7 +1647,7 @@ class CryptoTailStrategyExecutionService(
                 null
             }
             val preSubmitEval = if (refreshedOrderbook != null) {
-                recordRefreshedAskDriftDiagnostic(strategy, periodStartUnix, outcomeIndex, preRefreshOrderbook, refreshedOrderbook)
+                recordRefreshedAskDriftDiagnostic(strategy, periodStartUnix, outcomeIndex, preRefreshOrderbook, refreshedOrderbook, tokenId)
                 val eval = evaluateProbabilityEntryGates(strategy, periodStartUnix, outcomeIndex, refreshedOrderbook)
                 if (!eval.pass || eval.metrics == null) {
                     recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
@@ -1597,17 +1667,17 @@ class CryptoTailStrategyExecutionService(
                 null
             }
             if (pricing != null && !pricing.canSubmit) {
-                recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, orderbookRefreshed)
+                recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, orderbookRefreshed, tokenId)
                 return
             }
             val price = pricing?.finalLimit ?: computeBuyPrice(strategy, triggerPrice, effectiveBestAsk)
-            if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, price, orderbookRefreshed)) {
+            if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, price, orderbookRefreshed, tokenId)) {
                 return
             }
             if (strategy.mode == TradingMode.BARRIER_HOLD) {
-                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, scaling, amountOverrideUsdc, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook)
+                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, scaling, amountOverrideUsdc, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, tokenId)
             } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
-                recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook)
+                recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, tokenId)
             }
             val priceStr = price.toPlainString()
             val size = computeSize(amountUsdc, price)
@@ -1911,15 +1981,15 @@ class CryptoTailStrategyExecutionService(
             return
         }
 
-        val balanceResult = accountService.getAccountBalance(account.id)
-        val availableBalance = balanceResult.getOrNull()?.availableBalance?.toSafeBigDecimal() ?: BigDecimal.ZERO
+        val accountId = account.id ?: strategy.accountId
+        val balanceSnapshot = entryGuardService.loadEntryBalanceSnapshot(accountId)
         var amountUsdc = when (strategy.amountMode.uppercase()) {
-            "RATIO" -> availableBalance.multiply(strategy.amountValue).divide(BigDecimal("100"), 18, RoundingMode.DOWN)
+            "RATIO" -> balanceSnapshot.spendable.multiply(strategy.amountValue).divide(BigDecimal("100"), 18, RoundingMode.DOWN)
             else -> strategy.amountValue
         }
         if (amountUsdc < MIN_ORDER_USDC) {
             val amountMode = strategy.amountMode.uppercase()
-            if (amountMode == "RATIO" && availableBalance >= MIN_ORDER_USDC) {
+            if (amountMode == "RATIO" && balanceSnapshot.spendable >= MIN_ORDER_USDC) {
                 amountUsdc = MIN_ORDER_USDC
             } else {
                 saveTriggerRecord(
@@ -1935,6 +2005,20 @@ class CryptoTailStrategyExecutionService(
                 )
                 return
             }
+        }
+        if (amountUsdc > balanceSnapshot.spendable) {
+            saveTriggerRecord(
+                strategy,
+                periodStartUnix,
+                marketTitle,
+                outcomeIndex,
+                triggerPrice,
+                amountUsdc,
+                null,
+                "fail",
+                entryGuardService.insufficientBalanceReason(amountUsdc, balanceSnapshot)
+            )
+            return
         }
 
         val tokenId = tokenIds.getOrNull(outcomeIndex) ?: run {
@@ -1979,7 +2063,7 @@ class CryptoTailStrategyExecutionService(
             null
         }
         val preSubmitEval = if (refreshedOrderbook != null) {
-            recordRefreshedAskDriftDiagnostic(strategy, periodStartUnix, outcomeIndex, preRefreshOrderbook, refreshedOrderbook)
+            recordRefreshedAskDriftDiagnostic(strategy, periodStartUnix, outcomeIndex, preRefreshOrderbook, refreshedOrderbook, tokenId)
             val eval = evaluateProbabilityEntryGates(strategy, periodStartUnix, outcomeIndex, refreshedOrderbook)
             if (!eval.pass || eval.metrics == null) {
                 recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
@@ -1999,17 +2083,17 @@ class CryptoTailStrategyExecutionService(
             null
         }
         if (pricing != null && !pricing.canSubmit) {
-            recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, orderbookRefreshed)
+            recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, orderbookRefreshed, tokenId)
             return
         }
         val price = pricing?.finalLimit ?: computeBuyPrice(strategy, triggerPrice, effectiveBestAsk)
-        if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, price, orderbookRefreshed)) {
+        if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, price, orderbookRefreshed, tokenId)) {
             return
         }
         if (strategy.mode == TradingMode.BARRIER_HOLD) {
-            recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, null, null, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook)
+            recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, null, null, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, tokenId)
         } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
-            recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook)
+            recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, tokenId)
         }
         // 根据模式确定下单价格
         val priceStr = price.toPlainString()
@@ -2166,7 +2250,7 @@ class CryptoTailStrategyExecutionService(
         // 非旧价差模式（BARRIER/BRACKET）记录下单结果到决策日志（链路终点锚点）
         if (strategy.mode != TradingMode.LEGACY_SPREAD) {
             recordDecisionOncePerPeriod(
-                strategy.id!!, periodStartUnix, "ORDER_RESULT-$status", outcomeIndex,
+                strategy, periodStartUnix, "ORDER_RESULT-$status", outcomeIndex,
                 eventType = "ORDER_RESULT", gateName = null, passed = status == "success",
                 reason = failReason ?: if (status == "success") "下单成功 orderId=$orderId" else null,
                 payloadJson = mapOf(
@@ -2195,7 +2279,8 @@ class CryptoTailStrategyExecutionService(
                     "submitLatencyMs" to (orderResultContext.submitLatencyMs ?: ""),
                     "postFailBestAsk" to (orderResultContext.postFailBestAsk?.toPlainString() ?: "")
                 ).toJson(),
-                triggerId = saved.id
+                triggerId = saved.id,
+                tokenId = tokenId
             )
         }
         return saved
@@ -2585,7 +2670,7 @@ class CryptoTailStrategyExecutionService(
         triggerRepository.save(updated)
         if (strategy.mode != TradingMode.LEGACY_SPREAD) {
             recordDecisionOncePerPeriod(
-                strategy.id!!, trigger.periodStartUnix, "ORDER_RESULT-$status", trigger.outcomeIndex,
+                strategy, trigger.periodStartUnix, "ORDER_RESULT-$status", trigger.outcomeIndex,
                 eventType = "ORDER_RESULT", gateName = null, passed = status == "success",
                 reason = reason ?: if (status == "success") "maker成交 orderId=${updated.orderId}" else null,
                 payloadJson = mapOf(
@@ -2596,7 +2681,8 @@ class CryptoTailStrategyExecutionService(
                     "orderType" to (updated.orderType ?: ""),
                     "lifecycle" to "MAKER_RECONCILE"
                 ).toJson(),
-                triggerId = updated.id
+                triggerId = updated.id,
+                tokenId = updated.tokenId
             )
         }
         logger.info("maker订单对账定夺: triggerId=${trigger.id}, orderId=${updated.orderId}, status=$status, filledSize=${updated.filledSize?.toPlainString()}, reason=$reason")

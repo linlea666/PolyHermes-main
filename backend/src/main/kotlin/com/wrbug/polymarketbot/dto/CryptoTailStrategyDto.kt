@@ -72,6 +72,8 @@ data class CryptoTailStrategyCreateRequest(
     val kellyEnabled: Boolean? = null,
     /** Kelly 分数 0~1 */
     val kellyFraction: String? = null,
+    /** 是否允许同账户同 market/period/outcome 重复开仓 */
+    val allowDuplicateMarketPosition: Boolean? = null,
     /** 交易模式: 0=LEGACY_SPREAD, 1=BARRIER_HOLD, 2=BRACKET_DYNAMIC（V52） */
     val mode: Int? = null,
     val bracketEntryProb: String? = null,
@@ -187,6 +189,7 @@ data class CryptoTailStrategyUpdateRequest(
     val ewmaLambda: String? = null,
     val kellyEnabled: Boolean? = null,
     val kellyFraction: String? = null,
+    val allowDuplicateMarketPosition: Boolean? = null,
     /** 交易模式: 0/1/2（V52） */
     val mode: Int? = null,
     val bracketEntryProb: String? = null,
@@ -325,6 +328,7 @@ data class CryptoTailStrategyDto(
     val kellyEnabled: Boolean = false,
     /** Kelly 分数 0~1 */
     val kellyFraction: String = "0.25",
+    val allowDuplicateMarketPosition: Boolean = false,
     /** 交易模式: 0=LEGACY_SPREAD, 1=BARRIER_HOLD, 2=BRACKET_DYNAMIC */
     val mode: Int = 0,
     val bracketEntryProb: String = "0.80",

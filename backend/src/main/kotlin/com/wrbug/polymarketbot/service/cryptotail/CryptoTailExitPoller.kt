@@ -151,6 +151,11 @@ class CryptoTailExitPoller(
     ) {
         val remainingSeconds = (trigger.periodStartUnix + strategy.intervalSeconds - System.currentTimeMillis() / 1000).toInt()
         val payload = mapOf(
+            "strategyId" to trigger.strategyId,
+            "strategyName" to (strategy.name ?: ""),
+            "coin" to (CryptoTailCoinResolver.coinOfSlug(strategy.marketSlugPrefix) ?: ""),
+            "marketSlug" to strategy.marketSlugPrefix,
+            "periodStartUnix" to trigger.periodStartUnix,
             "triggerSource" to "POLL",
             "mode" to strategy.mode.name,
             "triggerId" to (trigger.id ?: ""),

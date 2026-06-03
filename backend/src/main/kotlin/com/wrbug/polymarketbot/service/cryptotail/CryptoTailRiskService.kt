@@ -1,6 +1,7 @@
 package com.wrbug.polymarketbot.service.cryptotail
 
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
+import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
 import org.slf4j.LoggerFactory
 import org.springframework.data.domain.PageRequest
@@ -18,7 +19,8 @@ import java.time.ZoneId
  */
 @Service
 class CryptoTailRiskService(
-    private val triggerRepository: CryptoTailStrategyTriggerRepository
+    private val triggerRepository: CryptoTailStrategyTriggerRepository,
+    private val strategyRepository: CryptoTailStrategyRepository
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailRiskService::class.java)
@@ -87,6 +89,8 @@ class CryptoTailRiskService(
             }
         }
 
+        checkAccountRiskGate(strategy, startOfDayMs, nowMs)?.let { return it }
+
         val latestResolved = triggerRepository.findLatestResolvedByStrategyId(strategyId, PageRequest.of(0, 20))
 
         val pauseAfterLossMinutes = strategy.pauseAfterLossMinutes
@@ -118,5 +122,64 @@ class CryptoTailRiskService(
         }
 
         return RiskResult.PASS
+    }
+
+    private fun checkAccountRiskGate(
+        strategy: CryptoTailStrategy,
+        startOfDayMs: Long,
+        nowMs: Long
+    ): RiskResult? {
+        val accountId = strategy.accountId
+        val enabledStrategies = try {
+            strategyRepository.findByAccountIdAndEnabled(accountId, true)
+        } catch (e: Exception) {
+            logger.warn("crypto-tail 账户级风控读取策略失败: accountId=$accountId, ${e.message}")
+            return RiskResult(false, "RISK_ACCOUNT_QUERY_FAILED", "账户级风控读取策略失败")
+        }
+        if (enabledStrategies.isEmpty()) return null
+
+        val accountDailyLossLimit = enabledStrategies
+            .mapNotNull { it.dailyLossLimitUsdc?.takeIf { v -> v > BigDecimal.ZERO } }
+            .fold(BigDecimal.ZERO, BigDecimal::add)
+        if (accountDailyLossLimit > BigDecimal.ZERO) {
+            val todayPnl = triggerRepository.sumRealizedPnlByAccountIdAndSettledAtAfter(accountId, startOfDayMs)
+                ?: BigDecimal.ZERO
+            if (todayPnl < BigDecimal.ZERO && todayPnl.negate() >= accountDailyLossLimit) {
+                val reason = "账户当日已实现亏损 ${todayPnl.toPlainString()} 达到账户级合计熔断阈值 ${accountDailyLossLimit.toPlainString()}"
+                logger.info("crypto-tail 账户级风控拦截(日亏): accountId=$accountId, $reason")
+                return RiskResult(false, "RISK_ACCOUNT_DAILY_LOSS", reason)
+            }
+        }
+
+        val accountMaxConcurrent = enabledStrategies
+            .mapNotNull { it.maxConcurrentPositions?.takeIf { v -> v > 0 } }
+            .sum()
+        if (accountMaxConcurrent > 0) {
+            val openCount = triggerRepository.countByAccountIdAndStatusAndResolvedFalse(accountId, "success")
+            if (openCount >= accountMaxConcurrent) {
+                val reason = "账户未结算敞口 $openCount 达到账户级合计上限 $accountMaxConcurrent"
+                logger.info("crypto-tail 账户级风控拦截(并发敞口): accountId=$accountId, $reason")
+                return RiskResult(false, "RISK_ACCOUNT_CONCURRENCY", reason)
+            }
+        }
+
+        val accountMaxOrdersPerDay = enabledStrategies
+            .mapNotNull { it.maxOrdersPerDay?.takeIf { v -> v > 0 } }
+            .sum()
+        if (accountMaxOrdersPerDay > 0) {
+            val count = triggerRepository.countByAccountIdAndStatusAndCreatedAtBetween(
+                accountId,
+                "success",
+                startOfDayMs,
+                nowMs
+            )
+            if (count >= accountMaxOrdersPerDay) {
+                val reason = "账户当日成功入场 $count 达到账户级合计上限 $accountMaxOrdersPerDay"
+                logger.info("crypto-tail 账户级风控拦截(日订单上限): accountId=$accountId, $reason")
+                return RiskResult(false, "RISK_ACCOUNT_MAX_ORDERS_PER_DAY", reason)
+            }
+        }
+
+        return null
     }
 }

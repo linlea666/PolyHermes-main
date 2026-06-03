@@ -193,6 +193,7 @@ const CryptoTailStrategyList: React.FC = () => {
       ewmaLambda: '0.94',
       kellyEnabled: false,
       kellyFraction: '0.25',
+      allowDuplicateMarketPosition: false,
       // 阶梯模式默认值（与后端 V52 默认一致）
       bracketEntryProb: '0.80',
       bracketEntryEdge: '0.04',
@@ -306,6 +307,7 @@ const CryptoTailStrategyList: React.FC = () => {
       ewmaLambda: record.ewmaLambda ?? '0.94',
       kellyEnabled: record.kellyEnabled ?? false,
       kellyFraction: record.kellyFraction ?? '0.25',
+      allowDuplicateMarketPosition: record.allowDuplicateMarketPosition ?? false,
       // 阶梯模式
       bracketEntryProb: record.bracketEntryProb ?? '0.80',
       bracketEntryEdge: record.bracketEntryEdge ?? '0.04',
@@ -526,6 +528,7 @@ const CryptoTailStrategyList: React.FC = () => {
         maxOrdersPerDay: v.maxOrdersPerDay != null && v.maxOrdersPerDay !== '' ? Number(v.maxOrdersPerDay) : null,
         maxConsecutiveLosses: v.maxConsecutiveLosses != null && v.maxConsecutiveLosses !== '' ? Number(v.maxConsecutiveLosses) : null,
         pauseAfterLossMinutes: v.pauseAfterLossMinutes != null ? Number(v.pauseAfterLossMinutes) : undefined,
+        allowDuplicateMarketPosition: v.allowDuplicateMarketPosition === true,
         ...(barrierOn ? {
           entryProb: v.entryProb != null ? String(v.entryProb) : undefined,
           entryEdge: v.entryEdge != null ? String(v.entryEdge) : undefined,
@@ -1819,6 +1822,14 @@ const CryptoTailStrategyList: React.FC = () => {
                 }
               >
                 <InputNumber min={0} step={1} precision={0} placeholder={t('cryptoTailStrategy.form.optionalPlaceholder')} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item
+                name="allowDuplicateMarketPosition"
+                label="允许同市场重复开仓"
+                valuePropName="checked"
+                tooltip="默认关闭：同账户、同 market、同周期、同 outcome 已有 success/pending 入场时，新策略不再重复开仓"
+              >
+                <Switch />
               </Form.Item>
               <Form.Item name="maxOrdersPerDay" label="单日最大入场笔数">
                 <InputNumber min={0} step={1} precision={0} placeholder={t('cryptoTailStrategy.form.optionalPlaceholder')} style={{ width: '100%' }} />
