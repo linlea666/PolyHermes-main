@@ -142,6 +142,7 @@ ADMIN_RESET_PASSWORD_KEY=${ADMIN_RESET_KEY}
 # 部署构建配置（可选）
 # BUILD_IN_DOCKER=false
 # FRONTEND_BUILD_MEM_MB=1024
+# FRONTEND_BUILD_CONTAINER_MEM_MB=1536
 # POLYHERMES_IMAGE=wrbug/polyhermes:latest
 EOF
         info ".env 文件已创建，已自动生成随机密码和密钥"
@@ -233,15 +234,22 @@ build_artifacts_on_host() {
 
     # 前端：用 node 容器编译，挂载 npm 缓存卷
     # 显式限内存：vite/rollup 在低配机上 rendering chunks 容易吃满内存被 OOM kill 后表现为"卡住"。
-    # NODE_OPTIONS 控制 V8 堆，--memory 限容器；FRONTEND_BUILD_MEM_MB 可通过 .env 或环境变量覆盖（默认 1024）。
+    # NODE_OPTIONS 控制 V8 堆，--memory 限容器。容器上限必须高于 V8 堆，给 npm/vite/native 进程留余量。
     local fe_mem_mb
+    local fe_container_mem_mb
     fe_mem_mb=$(get_config_value "FRONTEND_BUILD_MEM_MB")
     fe_mem_mb="${fe_mem_mb:-1024}"
-    info "编译前端产物（NODE_OPTIONS 堆上限=${fe_mem_mb}MB）..."
+    fe_container_mem_mb=$(get_config_value "FRONTEND_BUILD_CONTAINER_MEM_MB")
+    fe_container_mem_mb="${fe_container_mem_mb:-1536}"
+    if [ "$fe_container_mem_mb" -lt "$fe_mem_mb" ]; then
+        warn "FRONTEND_BUILD_CONTAINER_MEM_MB(${fe_container_mem_mb}) 小于 FRONTEND_BUILD_MEM_MB(${fe_mem_mb})，自动提升到 ${fe_mem_mb}"
+        fe_container_mem_mb="$fe_mem_mb"
+    fi
+    info "编译前端产物（NODE_OPTIONS 堆上限=${fe_mem_mb}MB，容器内存=${fe_container_mem_mb}MB）..."
     docker run --rm \
         --user root \
-        --memory "${fe_mem_mb}m" \
-        --memory-swap "${fe_mem_mb}m" \
+        --memory "${fe_container_mem_mb}m" \
+        --memory-swap "${fe_container_mem_mb}m" \
         -e VERSION="${DOCKER_VERSION}" \
         -e GIT_TAG="${DOCKER_VERSION}" \
         -e GITHUB_REPO_URL="${REPO_URL}" \
