@@ -21,11 +21,12 @@ import {
   Tabs,
   DatePicker,
   Empty,
-  Typography
+  Typography,
+  Upload
 } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { PlusOutlined, EditOutlined, UnorderedListOutlined, LineChartOutlined, InfoCircleOutlined, WarningOutlined, CalendarOutlined, FileTextOutlined, DeleteOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, UnorderedListOutlined, LineChartOutlined, InfoCircleOutlined, WarningOutlined, CalendarOutlined, FileTextOutlined, DeleteOutlined, ExportOutlined, ImportOutlined, UploadOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useMediaQuery } from 'react-responsive'
 import { apiService } from '../services/api'
@@ -46,6 +47,8 @@ const CryptoTailStrategyList: React.FC = () => {
   const [systemConfig, setSystemConfig] = useState<{ builderApiKeyConfigured?: boolean; autoRedeemEnabled?: boolean } | null>(null)
   const [redeemModalOpen, setRedeemModalOpen] = useState(false)
   const [formModalOpen, setFormModalOpen] = useState(false)
+  const [importModalOpen, setImportModalOpen] = useState(false)
+  const [importText, setImportText] = useState('')
   const [editingId, setEditingId] = useState<number | null>(null)
   const [recommendingSigma, setRecommendingSigma] = useState(false)
   const [marketOptions, setMarketOptions] = useState<CryptoTailMarketOptionDto[]>([])
@@ -631,6 +634,80 @@ const CryptoTailStrategyList: React.FC = () => {
       }
       message.error((e as Error).message)
     }
+  }
+
+  // 导出/导入仅携带策略参数，刻意排除与账户/行情强绑定的字段，避免导入到新策略时错配
+  const CONFIG_EXCLUDED_FIELDS = ['accountId', 'marketSlugPrefix', 'name']
+
+  const handleExportConfig = () => {
+    const all = form.getFieldsValue(true) as Record<string, unknown>
+    const params: Record<string, unknown> = {}
+    Object.keys(all).forEach((key) => {
+      if (!CONFIG_EXCLUDED_FIELDS.includes(key) && all[key] !== undefined) {
+        params[key] = all[key]
+      }
+    })
+    if (Object.keys(params).length === 0) {
+      message.warning(t('cryptoTailStrategy.form.exportEmpty'))
+      return
+    }
+    const payload = { _type: 'cryptoTailStrategy', _v: 1, params }
+    const json = JSON.stringify(payload, null, 2)
+    try {
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `crypto-tail-strategy-config-${dayjs().format('YYYYMMDD-HHmmss')}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch {
+      // 下载失败不阻断，下面仍尝试复制到剪贴板
+    }
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(json).then(
+        () => message.success(t('cryptoTailStrategy.form.exportSuccess')),
+        () => message.success(t('cryptoTailStrategy.form.exportSuccess'))
+      )
+    } else {
+      message.success(t('cryptoTailStrategy.form.exportSuccess'))
+    }
+  }
+
+  const openImportModal = () => {
+    setImportText('')
+    setImportModalOpen(true)
+  }
+
+  const handleApplyImport = () => {
+    const text = importText.trim()
+    if (!text) {
+      message.warning(t('cryptoTailStrategy.form.importEmpty'))
+      return
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      message.error(t('cryptoTailStrategy.form.importInvalid'))
+      return
+    }
+    const obj = parsed as { _type?: string; params?: Record<string, unknown> }
+    if (!obj || obj._type !== 'cryptoTailStrategy' || typeof obj.params !== 'object' || obj.params === null) {
+      message.error(t('cryptoTailStrategy.form.importInvalid'))
+      return
+    }
+    const params: Record<string, unknown> = {}
+    Object.keys(obj.params).forEach((key) => {
+      if (!CONFIG_EXCLUDED_FIELDS.includes(key)) {
+        params[key] = (obj.params as Record<string, unknown>)[key]
+      }
+    })
+    form.setFieldsValue(params)
+    setImportModalOpen(false)
+    message.success(t('cryptoTailStrategy.form.importSuccess'))
   }
 
   const handleToggle = async (record: CryptoTailStrategyDto) => {
@@ -1315,6 +1392,14 @@ const CryptoTailStrategyList: React.FC = () => {
         destroyOnClose
       >
         <Alert type="warning" showIcon message={t('cryptoTailStrategy.form.walletTip')} style={{ marginBottom: 16 }} />
+        <Space wrap style={{ marginBottom: 16 }}>
+          <Button icon={<ExportOutlined />} onClick={handleExportConfig}>
+            {t('cryptoTailStrategy.form.exportConfig')}
+          </Button>
+          <Button icon={<ImportOutlined />} onClick={openImportModal}>
+            {t('cryptoTailStrategy.form.importConfig')}
+          </Button>
+        </Space>
         <Form form={form} layout="vertical" initialValues={{ amountMode: 'RATIO', maxPrice: '1', spreadMode: 'AUTO', spreadDirection: 'MIN', enabled: true }}>
           <Form.Item name="accountId" label={t('cryptoTailStrategy.form.selectAccount')} rules={[{ required: true }]}>
             <Select
@@ -2448,6 +2533,37 @@ const CryptoTailStrategyList: React.FC = () => {
             <Switch checkedChildren={t('common.enabled')} unCheckedChildren={t('common.disabled')} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={t('cryptoTailStrategy.form.importTitle')}
+        open={importModalOpen}
+        onCancel={() => setImportModalOpen(false)}
+        onOk={handleApplyImport}
+        okText={t('cryptoTailStrategy.form.importConfirm')}
+        width={isMobile ? '100%' : 520}
+        destroyOnClose
+      >
+        <Upload
+          accept=".json,application/json"
+          showUploadList={false}
+          beforeUpload={(file) => {
+            const reader = new FileReader()
+            reader.onload = () => setImportText(String(reader.result ?? ''))
+            reader.readAsText(file)
+            return false
+          }}
+        >
+          <Button icon={<UploadOutlined />} style={{ marginBottom: 12 }}>
+            {t('cryptoTailStrategy.form.importUpload')}
+          </Button>
+        </Upload>
+        <Input.TextArea
+          value={importText}
+          onChange={(e) => setImportText(e.target.value)}
+          placeholder={t('cryptoTailStrategy.form.importPlaceholder')}
+          autoSize={{ minRows: 8, maxRows: 16 }}
+        />
       </Modal>
 
       <Modal
