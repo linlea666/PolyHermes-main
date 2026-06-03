@@ -517,10 +517,18 @@ class CryptoTailOrderbookWsService(
             val periodStartUnix = (nowSeconds / interval) * interval
             val windowEnd = periodStartUnix + strategy.windowEndSeconds
             val periodEnd = periodStartUnix + interval
-            // V53 修正：BRACKET_DYNAMIC 退出依赖 WS bestBid 全周期监听，须订阅到 periodEnd（不能在 windowEnd 即停）。
-            // BARRIER/LEGACY 仅入场期需要价格监听，windowEnd 后即可释放订阅。
-            val needFullPeriodMonitor = strategy.mode == TradingMode.BRACKET_DYNAMIC
+            val needFullPeriodMonitor = strategy.mode != TradingMode.LEGACY_SPREAD && strategy.enableExitManager
             val cutoff = if (needFullPeriodMonitor) periodEnd else windowEnd
+            val fullPeriodReason = when {
+                strategy.mode == TradingMode.LEGACY_SPREAD -> "LEGACY_SPREAD_ENTRY_ONLY"
+                !strategy.enableExitManager -> "EXIT_MANAGER_DISABLED"
+                else -> "EXIT_MANAGER_ENABLED"
+            }
+            val fullPeriodLog =
+                "FULL_PERIOD_MONITOR_ENABLED strategyId=${strategy.id}, slug=${strategy.marketSlugPrefix}, " +
+                    "enabled=$needFullPeriodMonitor, mode=${strategy.mode.name}, windowEnd=$windowEnd, " +
+                    "periodEnd=$periodEnd, cutoff=$cutoff, reason=$fullPeriodReason"
+            if (needFullPeriodMonitor) logger.info(fullPeriodLog) else logger.debug(fullPeriodLog)
             if (nowSeconds >= cutoff) {
                 logger.debug(
                     "加密价差策略跳过（已过订阅窗口）: strategyId=${strategy.id}, slug=${strategy.marketSlugPrefix}, " +

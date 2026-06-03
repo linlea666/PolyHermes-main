@@ -101,7 +101,8 @@ class CryptoTailBracketExitService(
         outcomeIndex: Int,
         bestBid: BigDecimal,
         nowSeconds: Long,
-        orderbook: OrderbookQualitySnapshot? = null
+        orderbook: OrderbookQualitySnapshot? = null,
+        triggerSource: String = "WS"
     ) {
         if (strategy.mode == TradingMode.LEGACY_SPREAD || !strategy.enableExitManager) return
         val strategyId = strategy.id ?: return
@@ -115,7 +116,7 @@ class CryptoTailBracketExitService(
         for (t in openTriggers) {
             // 仅评估与 bestBid 同方向的 trigger（卖出价取该 outcome 的 bestBid）
             if (t.outcomeIndex != outcomeIndex) continue
-            evaluateAndExit(t, strategy, bestBid, nowSeconds, orderbook)
+            evaluateAndExit(t, strategy, bestBid, nowSeconds, orderbook, triggerSource)
         }
     }
 
@@ -134,7 +135,8 @@ class CryptoTailBracketExitService(
         strategy: CryptoTailStrategy,
         bestBid: BigDecimal,
         nowSeconds: Long,
-        orderbook: OrderbookQualitySnapshot? = null
+        orderbook: OrderbookQualitySnapshot? = null,
+        triggerSource: String = "WS"
     ) {
         if (strategy.mode == TradingMode.LEGACY_SPREAD || !strategy.enableExitManager) return
         val triggerId = trigger.id ?: return
@@ -182,7 +184,7 @@ class CryptoTailBracketExitService(
                 orderbook = orderbook
             )
 
-            recordExitCheck(checked, strategy, holding, bestBid, remainingSeconds, decision, orderbook)
+            recordExitCheck(checked, strategy, holding, bestBid, remainingSeconds, decision, orderbook, triggerSource)
 
             if (decision.kind == null || decision.ratio <= BigDecimal.ZERO) {
                 persistTp1HoldStateIfNeeded(checked, decision)
@@ -223,6 +225,7 @@ class CryptoTailBracketExitService(
                     bestBid = bestBid,
                     remainingSeconds = remainingSeconds,
                     extra = exitLiquidityPayload(orderbook, targetSize, sizing)
+                        .plus("triggerSource" to triggerSource)
                 )
                 return
             }
@@ -361,7 +364,7 @@ class CryptoTailBracketExitService(
             return Decision(
                 null,
                 BigDecimal.ZERO,
-                "HOLD_TO_SETTLE: pWin=${holding.pWinHolding.toPlainString()}>=${strategy.holdToSettlePwin.toPlainString()} 剩余=${remainingSeconds}s<=${strategy.holdToSettleSeconds}s",
+                "HOLD_TO_SETTLE: currentPWin=${holding.pWinHolding.toPlainString()} pWinModel=${holding.pWinModel.toPlainString()} modelSide=${holding.modelSide} outcomeIndex=${trigger.outcomeIndex} gap=${holding.gap.toPlainString()} remainingSeconds=$remainingSeconds holdToSettlePwin=${strategy.holdToSettlePwin.toPlainString()} holdToSettleSeconds=${strategy.holdToSettleSeconds}",
                 clearTp1HoldStartedAt = true
             )
         }
@@ -369,7 +372,7 @@ class CryptoTailBracketExitService(
             return Decision(
                 ExitKind.FORCE,
                 BigDecimal.ONE,
-                "强制平仓: 剩余=${remainingSeconds}s<=${strategy.forceExitBeforeSettleSeconds}s 且未满足持有到结算条件",
+                "FORCE_EXIT: 剩余=${remainingSeconds}s<=${strategy.forceExitBeforeSettleSeconds}s 且未满足持有到结算条件",
                 clearTp1HoldStartedAt = true
             )
         }
@@ -480,8 +483,29 @@ class CryptoTailBracketExitService(
                 targetSize = BigDecimal.ZERO,
                 plannedSize = targetSize,
                 executableSize = BigDecimal.ZERO,
-                waitReason = "退出流动性等待: 硬退出订单簿快照缺失"
+                waitReason = "ORDERBOOK_REFRESH_RECHECK_FAILED"
             )
+            val nowMs = System.currentTimeMillis()
+            val quoteAge = snapshot.quoteAgeMs(nowMs)
+            val depthAge = snapshot.depthAgeMs(nowMs)
+            if (strategy.maxOrderbookAgeMs > 0 && quoteAge > strategy.maxOrderbookAgeMs) {
+                return ExitSizing(
+                    targetSize = BigDecimal.ZERO,
+                    plannedSize = targetSize,
+                    executableSize = BigDecimal.ZERO,
+                    waitReason = "EXIT_QUOTE_STALE"
+                )
+            }
+            if (snapshot.depthStale || snapshot.depthUpdatedAtMs == null ||
+                (strategy.maxOrderbookAgeMs > 0 && (depthAge == null || depthAge > strategy.maxOrderbookAgeMs))
+            ) {
+                return ExitSizing(
+                    targetSize = BigDecimal.ZERO,
+                    plannedSize = targetSize,
+                    executableSize = BigDecimal.ZERO,
+                    waitReason = "EXIT_QUOTE_STALE"
+                )
+            }
             val exitPrice = computeExitPrice("FAK", bestBid)
             val executable = snapshot.executableBidSizeAtBestOrBetter(exitPrice, targetSize)
                 .setScale(sizeDecimalScale, RoundingMode.DOWN)
@@ -541,7 +565,12 @@ class CryptoTailBracketExitService(
             "expectedExitPrice" to (expectedPrice?.toPlainString() ?: ""),
             "expectedExitSlippage" to (expectedPrice?.let { orderbook?.bestBid?.subtract(it)?.max(BigDecimal.ZERO)?.toPlainString() } ?: ""),
             "bidDepthUsd" to (orderbook?.bidDepthUsd?.toPlainString() ?: ""),
-            "bidLevelCount" to (orderbook?.bidLevels?.size ?: 0)
+            "bidLevelCount" to (orderbook?.bidLevels?.size ?: 0),
+            "bestBid" to (orderbook?.bestBid?.toPlainString() ?: ""),
+            "spread" to (orderbook?.spread?.toPlainString() ?: ""),
+            "quoteAgeMs" to (orderbook?.quoteAgeMs() ?: ""),
+            "depthAgeMs" to (orderbook?.depthAgeMs() ?: ""),
+            "depthStale" to (orderbook?.depthStale ?: true)
         )
     }
 
@@ -590,7 +619,8 @@ class CryptoTailBracketExitService(
         bestBid: BigDecimal,
         remainingSeconds: Int,
         decision: Decision,
-        orderbook: OrderbookQualitySnapshot? = null
+        orderbook: OrderbookQualitySnapshot? = null,
+        triggerSource: String = "WS"
     ) {
         val entryFillPrice = trigger.entryFillPrice ?: BigDecimal.ZERO
         val peakBid = trigger.peakBid ?: bestBid
@@ -613,6 +643,11 @@ class CryptoTailBracketExitService(
             "currentSafeRatio" to (holding?.safeRatio?.toPlainString() ?: ""),
             "entryModelSide" to (trigger.entryModelSide ?: ""),
             "currentModelSide" to (holding?.modelSide ?: ""),
+            "pWinModel" to (holding?.pWinModel?.toPlainString() ?: ""),
+            "modelSide" to (holding?.modelSide ?: ""),
+            "triggerSource" to triggerSource,
+            "holdToSettlePwin" to strategy.holdToSettlePwin.toPlainString(),
+            "holdToSettleSeconds" to strategy.holdToSettleSeconds,
             "entryGap" to (trigger.entryGap?.toPlainString() ?: ""),
             "currentGap" to (holding?.gap?.toPlainString() ?: ""),
             "remainingSeconds" to remainingSeconds,

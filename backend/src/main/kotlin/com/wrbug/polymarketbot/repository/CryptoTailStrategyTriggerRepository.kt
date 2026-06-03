@@ -4,8 +4,10 @@ import com.wrbug.polymarketbot.entity.CryptoTailStrategyTrigger
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.Query
 import org.springframework.data.repository.query.Param
+import org.springframework.transaction.annotation.Transactional
 import java.math.BigDecimal
 
 interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategyTrigger, Long> {
@@ -86,4 +88,21 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
         @Param("strategyId") strategyId: Long,
         @Param("periodStartUnix") periodStartUnix: Long
     ): List<CryptoTailStrategyTrigger>
+
+    /**
+     * 退出 poller 兜底扫描：跨策略找 OPEN/PARTIAL_EXIT 持仓，策略启用、模式、周期有效性由服务层按最新策略配置过滤。
+     */
+    @Query(
+        "SELECT t FROM CryptoTailStrategyTrigger t WHERE t.exitStatus IN ('OPEN', 'PARTIAL_EXIT') " +
+            "AND t.tokenId IS NOT NULL AND t.remainingSize IS NOT NULL"
+    )
+    fun findAllOpenForExitPolling(): List<CryptoTailStrategyTrigger>
+
+    @Modifying
+    @Transactional
+    @Query("UPDATE CryptoTailStrategyTrigger t SET t.lastExitCheckAt = :lastExitCheckAt WHERE t.id = :triggerId")
+    fun updateLastExitCheckAt(
+        @Param("triggerId") triggerId: Long,
+        @Param("lastExitCheckAt") lastExitCheckAt: Long
+    ): Int
 }

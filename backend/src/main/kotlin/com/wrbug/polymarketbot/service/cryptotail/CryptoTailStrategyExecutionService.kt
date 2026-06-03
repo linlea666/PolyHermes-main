@@ -91,7 +91,8 @@ class CryptoTailStrategyExecutionService(
     private val decisionRecorder: CryptoTailDecisionRecorder,
     private val periodPriceProvider: PeriodPriceProvider,
     private val calibrationService: CryptoTailCalibrationService,
-    private val wickSignalService: CryptoTailWickSignalService
+    private val wickSignalService: CryptoTailWickSignalService,
+    private val orderbookSnapshotFetcher: CryptoTailOrderbookSnapshotFetcher
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailStrategyExecutionService::class.java)
@@ -276,6 +277,19 @@ class CryptoTailStrategyExecutionService(
         )
     }
 
+    private fun orderbookRefreshPayload(
+        preRefreshOrderbook: OrderbookQualitySnapshot?,
+        refreshedOrderbook: OrderbookQualitySnapshot?,
+        orderbookRefreshed: Boolean
+    ): Map<String, Any> = mapOf(
+        "preRefreshBestBid" to (preRefreshOrderbook?.bestBid?.toPlainString() ?: ""),
+        "preRefreshBestAsk" to (preRefreshOrderbook?.bestAsk?.toPlainString() ?: ""),
+        "refreshedBestBid" to (refreshedOrderbook?.bestBid?.toPlainString() ?: ""),
+        "refreshedBestAsk" to (refreshedOrderbook?.bestAsk?.toPlainString() ?: ""),
+        "refreshedSpread" to (refreshedOrderbook?.spread?.toPlainString() ?: ""),
+        "orderbookRefreshed" to orderbookRefreshed
+    )
+
     private fun avgFillPrice(filledSize: BigDecimal?, filledAmount: BigDecimal?): BigDecimal? {
         if (filledSize == null || filledAmount == null || filledSize <= BigDecimal.ZERO) return null
         return filledAmount.divide(filledSize, 8, RoundingMode.HALF_UP)
@@ -389,7 +403,7 @@ class CryptoTailStrategyExecutionService(
                     val scaling = calibrationService.evaluateScalingGate(strategy)
                     val amountOverride = if (scaling.useProbe) strategy.probeAmountUsdc else null
                     ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
-                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride, eval.metrics, scaling)
+                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, amountOverride, eval.metrics, scaling, orderbook)
                 }
                 TradingMode.BRACKET_DYNAMIC -> {
                     val eval = evaluateBracketEntryGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk, orderbook)
@@ -406,7 +420,7 @@ class CryptoTailStrategyExecutionService(
                     }
                     // 阶梯模式不参与放量闸/校准（独立模式，校准样本来自 BARRIER）
                     ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
-                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, null, eval.metrics)
+                    placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, null, eval.metrics, preRefreshOrderbook = orderbook)
                 }
                 TradingMode.LEGACY_SPREAD -> {
                     if (!passSpreadCheck(strategy, periodStartUnix, outcomeIndex)) return@withLock
@@ -463,10 +477,12 @@ class CryptoTailStrategyExecutionService(
     )
 
     private data class OrderResultContext(
+        val preRefreshOrderbook: OrderbookQualitySnapshot? = null,
         val preSubmitOrderbook: OrderbookQualitySnapshot? = null,
         val pricing: CryptoTailFakPricingPolicy.Result? = null,
         val submitLatencyMs: Long? = null,
-        val postFailBestAsk: BigDecimal? = null
+        val postFailBestAsk: BigDecimal? = null,
+        val orderbookRefreshed: Boolean = false
     )
 
     private fun orderbookPayload(orderbook: OrderbookQualitySnapshot?, nowMs: Long = System.currentTimeMillis()): Map<String, Any> {
@@ -940,7 +956,9 @@ class CryptoTailStrategyExecutionService(
         scaling: CryptoTailCalibrationService.ScalingDecision? = null,
         amountOverrideUsdc: BigDecimal? = null,
         pricing: CryptoTailFakPricingPolicy.Result? = null,
-        orderbookRefreshed: Boolean = false
+        orderbookRefreshed: Boolean = false,
+        preRefreshOrderbook: OrderbookQualitySnapshot? = null,
+        refreshedOrderbook: OrderbookQualitySnapshot? = null
     ) {
         if (metrics == null) return
         val isMaker = strategy.entryOrderType.uppercase() == "MAKER"
@@ -988,7 +1006,9 @@ class CryptoTailStrategyExecutionService(
             "scalingReason" to (scaling?.reason ?: ""),
             "probeAmountUsdc" to strategy.probeAmountUsdc.toPlainString(),
             "effectiveAmountUsdc" to (amountOverrideUsdc?.toPlainString() ?: strategy.amountValue.toPlainString())
-        ).plus(pricingPayload(pricing, orderbookRefreshed)).toJson()
+        ).plus(pricingPayload(pricing, orderbookRefreshed))
+            .plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, orderbookRefreshed))
+            .toJson()
         val scalingNote = if (scaling != null && scaling.useProbe) " [放量闸:小额 ${strategy.probeAmountUsdc.toPlainString()}]" else ""
         recordDecisionOncePerPeriod(
             strategy.id!!, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
@@ -1010,7 +1030,9 @@ class CryptoTailStrategyExecutionService(
         bestBid: BigDecimal,
         bestAsk: BigDecimal?,
         pricing: CryptoTailFakPricingPolicy.Result? = null,
-        orderbookRefreshed: Boolean = false
+        orderbookRefreshed: Boolean = false,
+        preRefreshOrderbook: OrderbookQualitySnapshot? = null,
+        refreshedOrderbook: OrderbookQualitySnapshot? = null
     ) {
         if (metrics == null) return
         val targetPrice = pricing?.finalLimit ?: computeBuyPrice(strategy, bestBid, bestAsk)
@@ -1060,7 +1082,9 @@ class CryptoTailStrategyExecutionService(
             "orderType" to "FAK",
             "targetPrice" to targetPrice.toPlainString(),
             "effectiveAmountUsdc" to strategy.amountValue.toPlainString()
-        ).plus(pricingPayload(pricing, orderbookRefreshed)).toJson()
+        ).plus(pricingPayload(pricing, orderbookRefreshed))
+            .plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, orderbookRefreshed))
+            .toJson()
         recordDecisionOncePerPeriod(
             strategy.id!!, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
             eventType = "ORDER_SUBMITTED", gateName = null, passed = null,
@@ -1090,6 +1114,72 @@ class CryptoTailStrategyExecutionService(
             eventType = "GATE_FAILED", gateName = "EV_SAFE_LIMIT", passed = false,
             reason = "EV安全最高价=${pricing.evSafeLimit.toPlainString()}低于可成交ask=${pricing.executableAsk.toPlainString()}，放弃FAK进场",
             payloadJson = payload, triggerId = null
+        )
+    }
+
+    private fun validateFinalLimitInvariant(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        metrics: BarrierMetrics?,
+        pricing: CryptoTailFakPricingPolicy.Result?,
+        finalLimitPrice: BigDecimal,
+        orderbookRefreshed: Boolean
+    ): Boolean {
+        if (strategy.mode == TradingMode.LEGACY_SPREAD || pricing == null) return true
+        val maxAllowed = pricing.priceCap.min(pricing.evSafeLimit)
+        if (finalLimitPrice <= maxAllowed) return true
+        val payload = mapOf(
+            "marketSlug" to strategy.marketSlugPrefix,
+            "intervalSeconds" to strategy.intervalSeconds,
+            "pWin" to (metrics?.pWin?.toPlainString() ?: ""),
+            "mode" to strategy.mode.name,
+            "maxAllowedFinalLimit" to maxAllowed.toPlainString()
+        ).plus(pricingPayload(pricing, orderbookRefreshed)).toJson()
+        recordDecisionOncePerPeriod(
+            strategy.id!!,
+            periodStartUnix,
+            "GATE_FAILED-FINAL_LIMIT_ABOVE_EV_SAFE_LIMIT",
+            outcomeIndex,
+            eventType = "GATE_FAILED",
+            gateName = "FINAL_LIMIT_ABOVE_EV_SAFE_LIMIT",
+            passed = false,
+            reason = "finalLimitPrice=${finalLimitPrice.toPlainString()} > min(priceCap=${pricing.priceCap.toPlainString()}, evSafeLimit=${pricing.evSafeLimit.toPlainString()})=${maxAllowed.toPlainString()}",
+            payloadJson = payload,
+            triggerId = null
+        )
+        return false
+    }
+
+    private fun recordRefreshedAskDriftDiagnostic(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        preRefreshOrderbook: OrderbookQualitySnapshot?,
+        refreshedOrderbook: OrderbookQualitySnapshot
+    ) {
+        val preAsk = preRefreshOrderbook?.bestAsk ?: return
+        val refreshedAsk = refreshedOrderbook.bestAsk ?: return
+        if (strategy.maxEntrySpread <= BigDecimal.ZERO) return
+        val diff = refreshedAsk.subtract(preAsk).abs()
+        if (diff <= strategy.maxEntrySpread) return
+        val payload = mapOf(
+            "marketSlug" to strategy.marketSlugPrefix,
+            "mode" to strategy.mode.name,
+            "askDiff" to diff.toPlainString(),
+            "maxEntrySpread" to strategy.maxEntrySpread.toPlainString()
+        ).plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, true)).toJson()
+        recordDecisionOncePerPeriod(
+            strategy.id!!,
+            periodStartUnix,
+            "ORDERBOOK_REFRESH-REFRESHED_ASK_CHANGED_TOO_MUCH",
+            outcomeIndex,
+            eventType = "ORDERBOOK_REFRESH_DIAGNOSTIC",
+            gateName = "REFRESHED_ASK_CHANGED_TOO_MUCH",
+            passed = null,
+            reason = "REFRESHED_ASK_CHANGED_TOO_MUCH",
+            payloadJson = payload,
+            triggerId = null
         )
     }
 
@@ -1251,7 +1341,7 @@ class CryptoTailStrategyExecutionService(
     ): FakOrderAttempt? {
         val nowSeconds = System.currentTimeMillis() / 1000
         if (nowSeconds >= settleAtUnix) return null
-        val refreshedOrderbook = fetchOrderbookSnapshot(clobApi, tokenId) ?: return null
+        val refreshedOrderbook = orderbookSnapshotFetcher.fetch(clobApi, tokenId) ?: return null
         val eval = evaluateProbabilityEntryGates(strategy, periodStartUnix, outcomeIndex, refreshedOrderbook)
         if (!eval.pass || eval.metrics == null) {
             recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
@@ -1261,6 +1351,9 @@ class CryptoTailStrategyExecutionService(
         if (!pricing.canSubmit) {
             logger.warn("FAK一跳救单被EV安全价拦截: strategyId=${strategy.id}, tokenId=$tokenId, evSafeLimit=${pricing.evSafeLimit.toPlainString()}, executableAsk=${pricing.executableAsk.toPlainString()}")
             recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, eval.metrics, pricing, true)
+            return null
+        }
+        if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, eval.metrics, pricing, pricing.finalLimit, true)) {
             return null
         }
         val size = computeSize(amountUsdc, pricing.finalLimit)
@@ -1318,7 +1411,8 @@ class CryptoTailStrategyExecutionService(
         bestAsk: BigDecimal?,
         amountOverrideUsdc: BigDecimal? = null,
         metrics: BarrierMetrics? = null,
-        scaling: CryptoTailCalibrationService.ScalingDecision? = null
+        scaling: CryptoTailCalibrationService.ScalingDecision? = null,
+        preRefreshOrderbook: OrderbookQualitySnapshot? = null
     ) {
         val ctx = getOrInvalidatePeriodContext(strategy, periodStartUnix)
 
@@ -1435,7 +1529,7 @@ class CryptoTailStrategyExecutionService(
 
             // 根据模式确定下单价格（FAK 吃单）
             val refreshedOrderbook = if (strategy.mode != TradingMode.LEGACY_SPREAD) {
-                fetchOrderbookSnapshot(ctx.clobApi, tokenId) ?: run {
+                orderbookSnapshotFetcher.fetch(ctx.clobApi, tokenId) ?: run {
                     recordBarrierDecision(
                         strategy,
                         periodStartUnix,
@@ -1448,6 +1542,7 @@ class CryptoTailStrategyExecutionService(
                 null
             }
             val preSubmitEval = if (refreshedOrderbook != null) {
+                recordRefreshedAskDriftDiagnostic(strategy, periodStartUnix, outcomeIndex, preRefreshOrderbook, refreshedOrderbook)
                 val eval = evaluateProbabilityEntryGates(strategy, periodStartUnix, outcomeIndex, refreshedOrderbook)
                 if (!eval.pass || eval.metrics == null) {
                     recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
@@ -1470,12 +1565,15 @@ class CryptoTailStrategyExecutionService(
                 recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, orderbookRefreshed)
                 return
             }
-            if (strategy.mode == TradingMode.BARRIER_HOLD) {
-                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, scaling, amountOverrideUsdc, pricing, orderbookRefreshed)
-            } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
-                recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed)
-            }
             val price = pricing?.finalLimit ?: computeBuyPrice(strategy, triggerPrice, effectiveBestAsk)
+            if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, price, orderbookRefreshed)) {
+                return
+            }
+            if (strategy.mode == TradingMode.BARRIER_HOLD) {
+                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, scaling, amountOverrideUsdc, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook)
+            } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
+                recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook)
+            }
             val priceStr = price.toPlainString()
             val size = computeSize(amountUsdc, price)
             val signedOrder = orderSigningService.createAndSignOrder(
@@ -1527,12 +1625,12 @@ class CryptoTailStrategyExecutionService(
                 finalLimitPrice = price,
                 retryOrderBuilder = retryBuilder,
                 metrics = effectiveMetrics,
-                orderResultContext = OrderResultContext(refreshedOrderbook, pricing)
+                orderResultContext = OrderResultContext(preRefreshOrderbook, refreshedOrderbook, pricing, orderbookRefreshed = orderbookRefreshed)
             )
             return
         }
 
-        placeOrderForTriggerSlowPath(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, triggerPrice, bestAsk, metrics)
+        placeOrderForTriggerSlowPath(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, triggerPrice, bestAsk, metrics, preRefreshOrderbook)
     }
 
     private suspend fun submitOrderAndSaveRecord(
@@ -1566,9 +1664,11 @@ class CryptoTailStrategyExecutionService(
                 val retryStarted = System.currentTimeMillis()
                 result = submitFakAttempt(clobApi, retryAttempt.orderRequest)
                 activeContext = OrderResultContext(
+                    preRefreshOrderbook = orderResultContext.preRefreshOrderbook,
                     preSubmitOrderbook = retryAttempt.orderbook,
                     pricing = retryAttempt.pricing,
-                    submitLatencyMs = System.currentTimeMillis() - retryStarted
+                    submitLatencyMs = System.currentTimeMillis() - retryStarted,
+                    orderbookRefreshed = retryAttempt.orderbookRefreshed
                 )
             }
         }
@@ -1742,7 +1842,8 @@ class CryptoTailStrategyExecutionService(
         outcomeIndex: Int,
         triggerPrice: BigDecimal,
         bestAsk: BigDecimal?,
-        metrics: BarrierMetrics? = null
+        metrics: BarrierMetrics? = null,
+        preRefreshOrderbook: OrderbookQualitySnapshot? = null
     ) {
         val account = accountRepository.findById(strategy.accountId).orElse(null) ?: run {
             logger.warn("账户不存在: accountId=${strategy.accountId}")
@@ -1830,7 +1931,7 @@ class CryptoTailStrategyExecutionService(
         val signatureType = orderSigningService.getSignatureTypeForWalletType(account.walletType)
 
         val refreshedOrderbook = if (strategy.mode != TradingMode.LEGACY_SPREAD) {
-            fetchOrderbookSnapshot(clobApi, tokenId) ?: run {
+            orderbookSnapshotFetcher.fetch(clobApi, tokenId) ?: run {
                 recordBarrierDecision(
                     strategy,
                     periodStartUnix,
@@ -1843,6 +1944,7 @@ class CryptoTailStrategyExecutionService(
             null
         }
         val preSubmitEval = if (refreshedOrderbook != null) {
+            recordRefreshedAskDriftDiagnostic(strategy, periodStartUnix, outcomeIndex, preRefreshOrderbook, refreshedOrderbook)
             val eval = evaluateProbabilityEntryGates(strategy, periodStartUnix, outcomeIndex, refreshedOrderbook)
             if (!eval.pass || eval.metrics == null) {
                 recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
@@ -1865,13 +1967,16 @@ class CryptoTailStrategyExecutionService(
             recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, orderbookRefreshed)
             return
         }
+        val price = pricing?.finalLimit ?: computeBuyPrice(strategy, triggerPrice, effectiveBestAsk)
+        if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, price, orderbookRefreshed)) {
+            return
+        }
         if (strategy.mode == TradingMode.BARRIER_HOLD) {
-            recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, null, null, pricing, orderbookRefreshed)
+            recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, null, null, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook)
         } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
-            recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed)
+            recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook)
         }
         // 根据模式确定下单价格
-        val price = pricing?.finalLimit ?: computeBuyPrice(strategy, triggerPrice, effectiveBestAsk)
         val priceStr = price.toPlainString()
         val size = computeSize(amountUsdc, price)
 
@@ -1940,7 +2045,7 @@ class CryptoTailStrategyExecutionService(
             finalLimitPrice = price,
             retryOrderBuilder = retryBuilder,
             metrics = effectiveMetrics,
-            orderResultContext = OrderResultContext(refreshedOrderbook, pricing)
+            orderResultContext = OrderResultContext(preRefreshOrderbook, refreshedOrderbook, pricing, orderbookRefreshed = orderbookRefreshed)
         )
     }
 
@@ -2044,6 +2149,12 @@ class CryptoTailStrategyExecutionService(
                     "preSubmitBestBid" to (orderResultContext.preSubmitOrderbook?.bestBid?.toPlainString() ?: ""),
                     "preSubmitBestAsk" to (orderResultContext.preSubmitOrderbook?.bestAsk?.toPlainString() ?: ""),
                     "preSubmitAskSize" to (orderResultContext.preSubmitOrderbook?.askSize?.toPlainString() ?: ""),
+                    "preRefreshBestBid" to (orderResultContext.preRefreshOrderbook?.bestBid?.toPlainString() ?: ""),
+                    "preRefreshBestAsk" to (orderResultContext.preRefreshOrderbook?.bestAsk?.toPlainString() ?: ""),
+                    "refreshedBestBid" to (orderResultContext.preSubmitOrderbook?.bestBid?.toPlainString() ?: ""),
+                    "refreshedBestAsk" to (orderResultContext.preSubmitOrderbook?.bestAsk?.toPlainString() ?: ""),
+                    "refreshedSpread" to (orderResultContext.preSubmitOrderbook?.spread?.toPlainString() ?: ""),
+                    "orderbookRefreshed" to orderResultContext.orderbookRefreshed,
                     "orderBookAgeMs" to (orderResultContext.preSubmitOrderbook?.quoteAgeMs() ?: ""),
                     "evSafeMaxPrice" to (orderResultContext.pricing?.evSafeLimit?.toPlainString() ?: ""),
                     "submitLatencyMs" to (orderResultContext.submitLatencyMs ?: ""),
@@ -2404,47 +2515,7 @@ class CryptoTailStrategyExecutionService(
 
     /** 通过 CLOB 订单簿查询某 token 的 bestAsk（最低卖价），失败返回 null */
     private suspend fun fetchBestAsk(clobApi: PolymarketClobApi, tokenId: String): BigDecimal? {
-        return fetchOrderbookSnapshot(clobApi, tokenId)?.bestAsk
-    }
-
-    private suspend fun fetchOrderbookSnapshot(clobApi: PolymarketClobApi, tokenId: String): OrderbookQualitySnapshot? {
-        return try {
-            val resp = clobApi.getOrderbook(tokenId = tokenId)
-            if (!resp.isSuccessful) return null
-            val body = resp.body() ?: return null
-            val bidLevels = body.bids.mapNotNull { entry ->
-                val price = entry.price.toSafeBigDecimal()
-                val size = entry.size.toSafeBigDecimal()
-                if (price > BigDecimal.ZERO && size > BigDecimal.ZERO) OrderbookQualitySnapshot.BookLevel(price, size) else null
-            }.sortedByDescending { it.price }
-            if (bidLevels.isEmpty()) return null
-            val askLevels = body.asks.mapNotNull { entry ->
-                val price = entry.price.toSafeBigDecimal()
-                val size = entry.size.toSafeBigDecimal()
-                if (price > BigDecimal.ZERO && size > BigDecimal.ZERO) OrderbookQualitySnapshot.BookLevel(price, size) else null
-            }.sortedBy { it.price }
-            val bestBid = bidLevels.first()
-            val bestAsk = askLevels.firstOrNull()
-            val nowMs = System.currentTimeMillis()
-            OrderbookQualitySnapshot(
-                tokenId = tokenId,
-                bestBid = bestBid.price,
-                bestAsk = bestAsk?.price,
-                bidSize = bestBid.size,
-                askSize = bestAsk?.size,
-                bidDepthUsd = bidLevels.fold(BigDecimal.ZERO) { acc, level -> acc.add(level.price.multiply(level.size)) },
-                askDepthUsd = askLevels.fold(BigDecimal.ZERO) { acc, level -> acc.add(level.price.multiply(level.size)) },
-                spread = bestAsk?.price?.subtract(bestBid.price),
-                quoteUpdatedAtMs = nowMs,
-                depthUpdatedAtMs = nowMs,
-                depthStale = false,
-                bidLevels = bidLevels,
-                askLevels = askLevels
-            )
-        } catch (e: Exception) {
-            logger.warn("查询订单簿失败: tokenId=$tokenId, ${e.message}")
-            null
-        }
+        return orderbookSnapshotFetcher.fetch(clobApi, tokenId)?.bestAsk
     }
 
     /** 就地更新 pending 触发记录为终态，并记录 ORDER_RESULT 决策日志（障碍模式） */
