@@ -1498,6 +1498,30 @@ export interface CryptoTailStrategyDto {
   kellyFraction?: string
   /** 是否允许同账户同 market/period/outcome 重复开仓 */
   allowDuplicateMarketPosition?: boolean
+  /** Strong Gap Boost（强价差放量，V60）总开关 */
+  enableStrongGapBoost?: boolean
+  /** Boost shadow 模式：只记日志不真正放大 */
+  strongGapBoostShadow?: boolean
+  /** 一档放量最小 pWin */
+  strongGapMinPwin?: string
+  /** 一档放量最小 safeRatio */
+  strongGapMinSafeRatio?: string
+  /** 一档放量倍数 */
+  strongGapStakeMultiplier?: string
+  /** 二档放量最小 pWin */
+  ultraGapMinPwin?: string
+  /** 二档放量最小 safeRatio */
+  ultraGapMinSafeRatio?: string
+  /** 二档放量倍数 */
+  ultraGapStakeMultiplier?: string
+  /** 放量倍数总上限 */
+  maxStrongGapStakeMultiplier?: string
+  /** 放量后单笔金额上限 USDC（空=不额外限制） */
+  maxBoostedAmountUsdc?: string
+  /** 放量后同周期累计敞口上限 USDC（空=不额外限制） */
+  maxBoostedPeriodExposureUsdc?: string
+  /** 是否允许在 Kelly 之上叠加放量 */
+  allowBoostWithKelly?: boolean
   /** 交易模式（V52）: 0=LEGACY_SPREAD 旧价差, 1=BARRIER_HOLD 障碍, 2=BRACKET_DYNAMIC 概率阶梯止盈 */
   mode?: number
   /** 阶梯模式入场胜率阈值 */

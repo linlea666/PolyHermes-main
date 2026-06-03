@@ -392,6 +392,58 @@ data class CryptoTailStrategy(
     @Column(name = "allow_duplicate_market_position", nullable = false)
     val allowDuplicateMarketPosition: Boolean = false,
 
+    // ===== Strong Gap Boost（强价差放量，V60）=====
+    // 高置信（pWin/safeRatio 远超入场门槛）时按倍数放大下注；只改 amount，不改方向、不放宽任何风控/限价。
+    // 默认关闭；开启但仅 shadow 时只写 BOOST_* 决策日志、不真正放大（由 strongGapBoostShadow 控制）。
+
+    /** Strong Gap Boost 总开关，默认 false=不放量 */
+    @Column(name = "enable_strong_gap_boost", nullable = false)
+    val enableStrongGapBoost: Boolean = false,
+
+    /** shadow 模式：true=只记录 BOOST_* 日志、不真正放大实盘仓位（默认 true，先观察再开实盘） */
+    @Column(name = "strong_gap_boost_shadow", nullable = false)
+    val strongGapBoostShadow: Boolean = true,
+
+    /** 一档（strong）放量触发的最小 pWin（0~1），默认 0.90 */
+    @Column(name = "strong_gap_min_pwin", nullable = false, precision = 20, scale = 8)
+    val strongGapMinPwin: BigDecimal = BigDecimal("0.90"),
+
+    /** 一档（strong）放量触发的最小 safeRatio，默认 1.50 */
+    @Column(name = "strong_gap_min_safe_ratio", nullable = false, precision = 20, scale = 8)
+    val strongGapMinSafeRatio: BigDecimal = BigDecimal("1.50"),
+
+    /** 一档（strong）放量倍数（≥1），默认 1.50 */
+    @Column(name = "strong_gap_stake_multiplier", nullable = false, precision = 20, scale = 8)
+    val strongGapStakeMultiplier: BigDecimal = BigDecimal("1.50"),
+
+    /** 二档（ultra）放量触发的最小 pWin（0~1），默认 0.95 */
+    @Column(name = "ultra_gap_min_pwin", nullable = false, precision = 20, scale = 8)
+    val ultraGapMinPwin: BigDecimal = BigDecimal("0.95"),
+
+    /** 二档（ultra）放量触发的最小 safeRatio，默认 2.00 */
+    @Column(name = "ultra_gap_min_safe_ratio", nullable = false, precision = 20, scale = 8)
+    val ultraGapMinSafeRatio: BigDecimal = BigDecimal("2.00"),
+
+    /** 二档（ultra）放量倍数（≥1），默认 2.00 */
+    @Column(name = "ultra_gap_stake_multiplier", nullable = false, precision = 20, scale = 8)
+    val ultraGapStakeMultiplier: BigDecimal = BigDecimal("2.00"),
+
+    /** 放量倍数总上限（兜底，防配置失误），默认 2.00 */
+    @Column(name = "max_strong_gap_stake_multiplier", nullable = false, precision = 20, scale = 8)
+    val maxStrongGapStakeMultiplier: BigDecimal = BigDecimal("2.00"),
+
+    /** 放量后单笔金额上限 USDC，null=不额外限制（仍受余额/EV 约束） */
+    @Column(name = "max_boosted_amount_usdc", precision = 20, scale = 8)
+    val maxBoostedAmountUsdc: BigDecimal? = null,
+
+    /** 放量后同周期累计敞口上限 USDC，null=不额外限制 */
+    @Column(name = "max_boosted_period_exposure_usdc", precision = 20, scale = 8)
+    val maxBoostedPeriodExposureUsdc: BigDecimal? = null,
+
+    /** 是否允许在 Kelly 动态仓位之上叠加放量，默认 false（Kelly 已含仓位管理，默认不叠加） */
+    @Column(name = "allow_boost_with_kelly", nullable = false)
+    val allowBoostWithKelly: Boolean = false,
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

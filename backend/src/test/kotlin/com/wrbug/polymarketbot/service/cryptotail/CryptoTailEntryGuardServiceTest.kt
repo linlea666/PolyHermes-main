@@ -31,6 +31,24 @@ class CryptoTailEntryGuardServiceTest {
     }
 
     @Test
+    fun `recent FAK fill reservation reduces spendable for concurrent same-account strategy`() {
+        val accountService = Mockito.mock(AccountService::class.java)
+        val triggerRepository = Mockito.mock(CryptoTailStrategyTriggerRepository::class.java)
+        Mockito.`when`(accountService.getAccountBalance(7L)).thenReturn(
+            Result.success(AccountBalanceResponse("10.00", "0", "10.00"))
+        )
+        Mockito.`when`(triggerRepository.sumPendingEntryAmountByAccountId(7L)).thenReturn(BigDecimal.ZERO)
+
+        val guard = CryptoTailEntryGuardService(accountService, triggerRepository)
+        // 模拟一笔刚成交、链上余额尚未反映的 FAK 花费
+        guard.reserveRecentFill(7L, BigDecimal("6.00"))
+        val snapshot = guard.loadEntryBalanceSnapshot(7L)
+
+        assertEquals(0, BigDecimal("6.00").compareTo(snapshot.recentFillReserved))
+        assertEquals(0, BigDecimal("4.00").compareTo(snapshot.spendable))
+    }
+
+    @Test
     fun `duplicate market position is blocked by default and bypassed when explicitly allowed`() {
         val accountService = Mockito.mock(AccountService::class.java)
         val triggerRepository = Mockito.mock(CryptoTailStrategyTriggerRepository::class.java)

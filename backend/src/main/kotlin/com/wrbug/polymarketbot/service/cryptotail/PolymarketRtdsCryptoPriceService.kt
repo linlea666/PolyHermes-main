@@ -294,10 +294,22 @@ class PolymarketRtdsCryptoPriceService {
         if (sampleTimeMs <= 0) return
         val now = System.currentTimeMillis()
         latestPrice.compute(coin) { _, old ->
-            if (old == null || sampleTimeMs > old.sampleTimeMs) {
-                LatestPriceState(price, sampleTimeMs, now, priceMode)
-            } else {
-                old
+            val incoming = LatestPriceState(price, sampleTimeMs, now, priceMode)
+            when {
+                old == null -> incoming
+                // 实时更新：realtime 是权威实时源——覆盖任何 snapshot；realtime 之间按样本时间单调，防止旧实时 tick 倒灌。
+                priceMode == PRICE_MODE_REALTIME_UPDATE ->
+                    if (old.priceMode == PRICE_MODE_REALTIME_UPDATE) {
+                        if (sampleTimeMs > old.sampleTimeMs) incoming else old
+                    } else {
+                        incoming
+                    }
+                // 来的是 snapshot：若当前 latest 是仍新鲜的 realtime，绝不被 snapshot 覆盖
+                //（防止上游批处理/时钟偏移让旧 snapshot 的 sampleTime 偶然大于实时 tick 而倒灌污染新鲜度）。
+                old.priceMode == PRICE_MODE_REALTIME_UPDATE && (now - old.receivedAtMs) < freshnessMs -> old
+                // 其余（snapshot vs snapshot，或 realtime 已陈旧）：按样本时间单调覆盖。
+                sampleTimeMs > old.sampleTimeMs -> incoming
+                else -> old
             }
         }
     }

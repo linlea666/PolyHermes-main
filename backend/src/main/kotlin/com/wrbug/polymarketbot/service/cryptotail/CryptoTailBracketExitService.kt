@@ -675,20 +675,29 @@ class CryptoTailBracketExitService(
             "expectedExitPrice" to (expectedExitPrice?.toPlainString() ?: bestBid.toPlainString()),
             "expectedExitSlippage" to (expectedExitPrice?.let { bestBid.subtract(it).max(BigDecimal.ZERO).toPlainString() } ?: "")
         )
-        decisionRecorder.record(
-            CryptoTailDecisionEvent(
-                strategyId = trigger.strategyId,
-                periodStartUnix = trigger.periodStartUnix,
-                correlationId = "${trigger.strategyId}-${trigger.periodStartUnix}-exit-${trigger.id}",
-                eventType = "EXIT_CHECK",
-                gateName = decision.kind?.name,
-                passed = decision.kind != null,
-                reason = decision.reason,
-                payloadJson = payload.toJson(),
-                outcomeIndex = trigger.outcomeIndex,
-                triggerId = trigger.id
+        // EXIT_CHECK 去重：持仓平稳（continue hold，kind==null）时，每 interval 都会进来一条几乎相同的诊断行。
+        // 用 (triggerId + 决策类型 + 模型方向 + gap 符号 + 2% pWin 桶 + 30s 剩余时间桶) 作签名，
+        // 同签名窗口内只落库一次；真正的退出信号（kind != null）始终落库，不被去重抑制。
+        val isExitSignal = decision.kind != null
+        val exitCheckDedupKey = buildExitCheckDedupKey(trigger, holding, decision, remainingSeconds)
+        val shouldLogExitCheck = isExitSignal || decisionLoggedCache.getIfPresent(exitCheckDedupKey) == null
+        if (shouldLogExitCheck) {
+            if (!isExitSignal) decisionLoggedCache.put(exitCheckDedupKey, true)
+            decisionRecorder.record(
+                CryptoTailDecisionEvent(
+                    strategyId = trigger.strategyId,
+                    periodStartUnix = trigger.periodStartUnix,
+                    correlationId = "${trigger.strategyId}-${trigger.periodStartUnix}-exit-${trigger.id}",
+                    eventType = "EXIT_CHECK",
+                    gateName = decision.kind?.name,
+                    passed = decision.kind != null,
+                    reason = decision.reason,
+                    payloadJson = payload.toJson(),
+                    outcomeIndex = trigger.outcomeIndex,
+                    triggerId = trigger.id
+                )
             )
-        )
+        }
         if (decision.kind != null) {
             decisionRecorder.record(
                 CryptoTailDecisionEvent(
@@ -705,6 +714,22 @@ class CryptoTailBracketExitService(
                 )
             )
         }
+    }
+
+    /** EXIT_CHECK 去重签名：仅在决策类型/模型方向/gap 符号/pWin(2%桶)/剩余时间(30s桶)变化时才视为新行 */
+    private fun buildExitCheckDedupKey(
+        trigger: CryptoTailStrategyTrigger,
+        holding: HoldingState?,
+        decision: Decision,
+        remainingSeconds: Int
+    ): String {
+        val kind = decision.kind?.name ?: "HOLD"
+        val modelSide = holding?.modelSide ?: -1
+        val gapSign = holding?.gap?.signum() ?: 0
+        val pwinBucket = holding?.pWinHolding
+            ?.multiply(BigDecimal(50))?.setScale(0, RoundingMode.FLOOR)?.toInt() ?: -1
+        val remainingBucket = remainingSeconds / 30
+        return "exitcheck-${trigger.id}-$kind-$modelSide-$gapSign-$pwinBucket-$remainingBucket"
     }
 
     /**

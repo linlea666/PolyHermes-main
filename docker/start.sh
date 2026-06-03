@@ -69,8 +69,11 @@ echo "✅ 更新服务已启动 (PID: $UPDATE_SERVICE_PID, Port: 9090)"
 sleep 2
 
 # 2. 启动后端服务（后台运行，端口 8000）
+# 显式限制 JVM 堆，避免低配机（如 2C3.5G）默认堆无上限导致 GC 抖动/被 OOM Killer 杀。
+# 默认按容器内存的 60% 作堆上限（配合 compose 的 mem_limit）；可用 JAVA_OPTS 覆盖。
 echo "🚀 启动后端服务..."
-java -jar /app/app.jar --spring.profiles.active=${SPRING_PROFILES_ACTIVE:-prod} &
+DEFAULT_JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=30.0"
+java ${JAVA_OPTS:-$DEFAULT_JAVA_OPTS} -jar /app/app.jar --spring.profiles.active=${SPRING_PROFILES_ACTIVE:-prod} &
 BACKEND_PID=$!
 echo "✅ 后端服务已启动 (PID: $BACKEND_PID, Port: 8000)"
 

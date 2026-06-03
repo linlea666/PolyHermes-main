@@ -103,7 +103,9 @@ class CryptoTailExitPoller(
     ) {
         val tokenId = trigger.tokenId
         if (tokenId.isNullOrBlank()) return
-        recordPollEvent(trigger, strategy, "EXIT_POLL_TICK", true, "POLL", null)
+        // EXIT_POLL_TICK 仅为巡检心跳，不再写决策表（每持仓每 interval 一条纯噪声）；
+        // 真正的退出评估/退出信号由下方 evaluateAndExit → recordExitCheck/EXIT_SIGNAL 负责（已去重）。
+        logger.debug("crypto-tail 退出巡检 triggerId={} strategyId={} period={}", trigger.id, trigger.strategyId, trigger.periodStartUnix)
         val ctx = accountContextFactory.build(strategy)
         if (ctx == null) {
             backoffAndRecord(trigger, strategy, nowMs, "账户上下文不可用")

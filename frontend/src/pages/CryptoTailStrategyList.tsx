@@ -194,16 +194,23 @@ const CryptoTailStrategyList: React.FC = () => {
       kellyEnabled: false,
       kellyFraction: '0.25',
       allowDuplicateMarketPosition: false,
+      // Strong Gap Boost（V60）默认值：默认关闭、shadow 开启
+      enableStrongGapBoost: false,
+      strongGapBoostShadow: true,
+      strongGapMinPwin: '0.90',
+      strongGapMinSafeRatio: '1.50',
+      strongGapStakeMultiplier: '1.50',
+      ultraGapMinPwin: '0.95',
+      ultraGapMinSafeRatio: '2.00',
+      ultraGapStakeMultiplier: '2.00',
+      maxStrongGapStakeMultiplier: '2.00',
+      maxBoostedAmountUsdc: undefined,
+      maxBoostedPeriodExposureUsdc: undefined,
+      allowBoostWithKelly: false,
       // 阶梯模式默认值（与后端 V52 默认一致）
       bracketEntryProb: '0.80',
       bracketEntryEdge: '0.04',
       bracketMaxEntryPrice: '0.90',
-      tp1Price: '0.90',
-      tp1Ratio: '0.50',
-      tp1HoldPwin: '0.95',
-      tp2Price: '0.95',
-      tp2Ratio: '1.00',
-      tp2HoldPwin: '0.99',
       holdToSettlePwin: '0.97',
       holdToSettleSeconds: 30,
       stopProb: '0.55',
@@ -308,16 +315,23 @@ const CryptoTailStrategyList: React.FC = () => {
       kellyEnabled: record.kellyEnabled ?? false,
       kellyFraction: record.kellyFraction ?? '0.25',
       allowDuplicateMarketPosition: record.allowDuplicateMarketPosition ?? false,
+      // Strong Gap Boost（V60）
+      enableStrongGapBoost: record.enableStrongGapBoost ?? false,
+      strongGapBoostShadow: record.strongGapBoostShadow ?? true,
+      strongGapMinPwin: record.strongGapMinPwin ?? '0.90',
+      strongGapMinSafeRatio: record.strongGapMinSafeRatio ?? '1.50',
+      strongGapStakeMultiplier: record.strongGapStakeMultiplier ?? '1.50',
+      ultraGapMinPwin: record.ultraGapMinPwin ?? '0.95',
+      ultraGapMinSafeRatio: record.ultraGapMinSafeRatio ?? '2.00',
+      ultraGapStakeMultiplier: record.ultraGapStakeMultiplier ?? '2.00',
+      maxStrongGapStakeMultiplier: record.maxStrongGapStakeMultiplier ?? '2.00',
+      maxBoostedAmountUsdc: record.maxBoostedAmountUsdc ?? undefined,
+      maxBoostedPeriodExposureUsdc: record.maxBoostedPeriodExposureUsdc ?? undefined,
+      allowBoostWithKelly: record.allowBoostWithKelly ?? false,
       // 阶梯模式
       bracketEntryProb: record.bracketEntryProb ?? '0.80',
       bracketEntryEdge: record.bracketEntryEdge ?? '0.04',
       bracketMaxEntryPrice: record.bracketMaxEntryPrice ?? '0.90',
-      tp1Price: record.tp1Price ?? '0.90',
-      tp1Ratio: record.tp1Ratio ?? '0.50',
-      tp1HoldPwin: record.tp1HoldPwin ?? '0.95',
-      tp2Price: record.tp2Price ?? '0.95',
-      tp2Ratio: record.tp2Ratio ?? '1.00',
-      tp2HoldPwin: record.tp2HoldPwin ?? '0.99',
       holdToSettlePwin: record.holdToSettlePwin ?? '0.97',
       holdToSettleSeconds: record.holdToSettleSeconds ?? 30,
       stopProb: record.stopProb ?? '0.55',
@@ -454,12 +468,6 @@ const CryptoTailStrategyList: React.FC = () => {
         bracketEntryProb: v.bracketEntryProb != null ? String(v.bracketEntryProb) : undefined,
         bracketEntryEdge: v.bracketEntryEdge != null ? String(v.bracketEntryEdge) : undefined,
         bracketMaxEntryPrice: v.bracketMaxEntryPrice != null ? String(v.bracketMaxEntryPrice) : undefined,
-        tp1Price: v.tp1Price != null ? String(v.tp1Price) : undefined,
-        tp1Ratio: v.tp1Ratio != null ? String(v.tp1Ratio) : undefined,
-        tp1HoldPwin: v.tp1HoldPwin != null ? String(v.tp1HoldPwin) : undefined,
-        tp2Price: v.tp2Price != null ? String(v.tp2Price) : undefined,
-        tp2Ratio: v.tp2Ratio != null ? String(v.tp2Ratio) : undefined,
-        tp2HoldPwin: v.tp2HoldPwin != null ? String(v.tp2HoldPwin) : undefined,
         holdToSettlePwin: v.holdToSettlePwin != null ? String(v.holdToSettlePwin) : undefined,
         holdToSettleSeconds: v.holdToSettleSeconds != null ? Number(v.holdToSettleSeconds) : undefined,
         stopProb: v.stopProb != null ? String(v.stopProb) : undefined,
@@ -470,6 +478,19 @@ const CryptoTailStrategyList: React.FC = () => {
       const barrierParams = {
         mode: resolvedMode,
         barrierEnabled: barrierOn,
+        // Strong Gap Boost（强价差放量，V60）
+        enableStrongGapBoost: v.enableStrongGapBoost === true,
+        strongGapBoostShadow: v.strongGapBoostShadow !== false,
+        strongGapMinPwin: v.strongGapMinPwin != null ? String(v.strongGapMinPwin) : undefined,
+        strongGapMinSafeRatio: v.strongGapMinSafeRatio != null ? String(v.strongGapMinSafeRatio) : undefined,
+        strongGapStakeMultiplier: v.strongGapStakeMultiplier != null ? String(v.strongGapStakeMultiplier) : undefined,
+        ultraGapMinPwin: v.ultraGapMinPwin != null ? String(v.ultraGapMinPwin) : undefined,
+        ultraGapMinSafeRatio: v.ultraGapMinSafeRatio != null ? String(v.ultraGapMinSafeRatio) : undefined,
+        ultraGapStakeMultiplier: v.ultraGapStakeMultiplier != null ? String(v.ultraGapStakeMultiplier) : undefined,
+        maxStrongGapStakeMultiplier: v.maxStrongGapStakeMultiplier != null ? String(v.maxStrongGapStakeMultiplier) : undefined,
+        maxBoostedAmountUsdc: v.maxBoostedAmountUsdc != null && v.maxBoostedAmountUsdc !== '' ? String(v.maxBoostedAmountUsdc) : undefined,
+        maxBoostedPeriodExposureUsdc: v.maxBoostedPeriodExposureUsdc != null && v.maxBoostedPeriodExposureUsdc !== '' ? String(v.maxBoostedPeriodExposureUsdc) : undefined,
+        allowBoostWithKelly: v.allowBoostWithKelly === true,
         costBuffer: v.costBuffer != null ? String(v.costBuffer) : undefined,
         sigmaScale: v.sigmaScale != null ? String(v.sigmaScale) : undefined,
         dailyLossLimitUsdc: v.dailyLossLimitUsdc != null && v.dailyLossLimitUsdc !== '' ? String(v.dailyLossLimitUsdc) : null,
@@ -2157,84 +2178,9 @@ const CryptoTailStrategyList: React.FC = () => {
               >
                 <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
               </Form.Item>
-              <Form.Item
-                name="tp1Price"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.tp1Price')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.tp1PriceTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item
-                name="tp1Ratio"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.tp1Ratio')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.tp1RatioTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item
-                name="tp1HoldPwin"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.tp1HoldPwin')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.tp1HoldPwinTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item
-                name="tp2Price"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.tp2Price')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.tp2PriceTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item
-                name="tp2Ratio"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.tp2Ratio')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.tp2RatioTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item
-                name="tp2HoldPwin"
-                label={
-                  <Space size={4}>
-                    <span>{t('cryptoTailStrategy.form.tp2HoldPwin')}</span>
-                    <Tooltip title={t('cryptoTailStrategy.form.tp2HoldPwinTip')}>
-                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
-                    </Tooltip>
-                  </Space>
-                }
-              >
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
+              {/* tp1Price/tp1Ratio/tp1HoldPwin/tp2Price/tp2Ratio/tp2HoldPwin（V52 旧 bracket 原生止盈字段）已废弃：
+                  退出实际由退出管理（V54 takeProfitDelta1/takeProfitBid2/takeProfitSellPct1/2）驱动，这些字段不被退出逻辑读取。
+                  为避免误配（前端有字段但后端不生效），从表单移除；DB 列保留以兼容历史数据，退出阶梯请在"退出管理"区配置。 */}
               <Form.Item
                 name="holdToSettlePwin"
                 label={
@@ -2314,10 +2260,176 @@ const CryptoTailStrategyList: React.FC = () => {
                 <Select
                   options={[
                     { value: 'FAK', label: t('cryptoTailStrategy.form.exitOrderTypeFak') },
-                    { value: 'GTC', label: t('cryptoTailStrategy.form.exitOrderTypeGtc') },
                     { value: 'MAKER', label: t('cryptoTailStrategy.form.exitOrderTypeMaker') }
                   ]}
                 />
+              </Form.Item>
+            </>
+          )}
+          {barrierEnabled && (
+            <>
+              <Form.Item style={{ marginBottom: 12 }}>
+                <Typography.Text strong>{t('cryptoTailStrategy.form.strongGapBoostSection')}</Typography.Text>
+              </Form.Item>
+              <Alert type="warning" showIcon style={{ marginBottom: 16 }} message={t('cryptoTailStrategy.form.strongGapBoostInfo')} />
+              <Form.Item
+                name="enableStrongGapBoost"
+                valuePropName="checked"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.enableStrongGapBoost')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.enableStrongGapBoostTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Switch />
+              </Form.Item>
+              <Form.Item
+                name="strongGapBoostShadow"
+                valuePropName="checked"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.strongGapBoostShadow')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.strongGapBoostShadowTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Switch />
+              </Form.Item>
+              <Form.Item
+                name="strongGapMinPwin"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.strongGapMinPwin')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.strongGapMinPwinTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="strongGapMinSafeRatio"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.strongGapMinSafeRatio')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.strongGapMinSafeRatioTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} step={0.1} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="strongGapStakeMultiplier"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.strongGapStakeMultiplier')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.strongGapStakeMultiplierTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={1} step={0.1} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="ultraGapMinPwin"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.ultraGapMinPwin')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.ultraGapMinPwinTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="ultraGapMinSafeRatio"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.ultraGapMinSafeRatio')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.ultraGapMinSafeRatioTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} step={0.1} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="ultraGapStakeMultiplier"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.ultraGapStakeMultiplier')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.ultraGapStakeMultiplierTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={1} step={0.1} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="maxStrongGapStakeMultiplier"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.maxStrongGapStakeMultiplier')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.maxStrongGapStakeMultiplierTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={1} step={0.1} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="maxBoostedAmountUsdc"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.maxBoostedAmountUsdc')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.maxBoostedAmountUsdcTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} step={1} style={{ width: '100%' }} stringMode addonAfter="USDC" />
+              </Form.Item>
+              <Form.Item
+                name="maxBoostedPeriodExposureUsdc"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.maxBoostedPeriodExposureUsdc')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.maxBoostedPeriodExposureUsdcTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} step={1} style={{ width: '100%' }} stringMode addonAfter="USDC" />
+              </Form.Item>
+              <Form.Item
+                name="allowBoostWithKelly"
+                valuePropName="checked"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.allowBoostWithKelly')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.allowBoostWithKellyTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Switch />
               </Form.Item>
             </>
           )}

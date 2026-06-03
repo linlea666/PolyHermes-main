@@ -101,6 +101,21 @@ class PolymarketRtdsCryptoPriceServiceTest {
         assertEquals(PolymarketRtdsCryptoPriceService.PRICE_MODE_REALTIME_UPDATE, service.readiness("btc-updown").priceMode)
     }
 
+    @Test
+    fun `fresh realtime is not overwritten by snapshot even when snapshot sample time is newer`() {
+        val service = readyService()
+        val realtimeTs = System.currentTimeMillis() - 1_000
+        // 模拟上游批处理/时钟偏移：snapshot 样本时间反而比刚到的实时 tick 更新
+        val newerSnapshotTs = realtimeTs + 2_000
+
+        service.accept(update("btc/usd", realtimeTs, "66900000000000000000000", 66900.0))
+        service.accept(snapshot("btc/usd", newerSnapshotTs, 66000.0))
+
+        // 新鲜 realtime 必须保住，不被 snapshot 倒灌
+        assertEquals(BigDecimal("66900.00000000"), service.currentPrice("btc-updown"))
+        assertEquals(PolymarketRtdsCryptoPriceService.PRICE_MODE_REALTIME_UPDATE, service.readiness("btc-updown").priceMode)
+    }
+
     private fun readyService(): PolymarketRtdsCryptoPriceService {
         val service = PolymarketRtdsCryptoPriceService()
         val client = PolymarketWebSocketClient(

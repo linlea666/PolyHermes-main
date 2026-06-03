@@ -91,7 +91,8 @@ class CryptoTailStrategyExecutionService(
     private val periodPriceProvider: PeriodPriceProvider,
     private val calibrationService: CryptoTailCalibrationService,
     private val wickSignalService: CryptoTailWickSignalService,
-    private val orderbookSnapshotFetcher: CryptoTailOrderbookSnapshotFetcher
+    private val orderbookSnapshotFetcher: CryptoTailOrderbookSnapshotFetcher,
+    private val boostService: CryptoTailBoostService
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailStrategyExecutionService::class.java)
@@ -262,6 +263,8 @@ class CryptoTailStrategyExecutionService(
                 "configuredSlippage" to "",
                 "configuredLimit" to "",
                 "evSafeLimit" to "",
+                // evSafeMaxPrice 与 evSafeLimit 同义，统一与 ORDER_RESULT payload 命名，便于前端排查口径一致
+                "evSafeMaxPrice" to "",
                 "priceCap" to "",
                 "finalLimitPrice" to "",
                 "limitEdge" to "",
@@ -274,6 +277,8 @@ class CryptoTailStrategyExecutionService(
             "configuredSlippage" to pricing.configuredSlippage.toPlainString(),
             "configuredLimit" to pricing.configuredLimit.toPlainString(),
             "evSafeLimit" to pricing.evSafeLimit.toPlainString(),
+            // evSafeMaxPrice 与 evSafeLimit 同义，统一与 ORDER_RESULT payload 命名，便于前端排查口径一致
+            "evSafeMaxPrice" to pricing.evSafeLimit.toPlainString(),
             "priceCap" to pricing.priceCap.toPlainString(),
             "finalLimitPrice" to pricing.finalLimit.toPlainString(),
             "limitEdge" to pricing.limitEdge.toPlainString(),
@@ -979,6 +984,20 @@ class CryptoTailStrategyExecutionService(
         }
     }
 
+    /** 记录 Strong Gap Boost 决策（BOOST_*）。每周期去重一次（入场每周期至多一次）。 */
+    private fun recordBoostDecision(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        boost: CryptoTailBoostService.BoostDecision
+    ) {
+        recordDecisionOncePerPeriod(
+            strategy, periodStartUnix, "BOOST-${boost.eventType}", outcomeIndex,
+            eventType = boost.eventType, gateName = "STRONG_GAP_BOOST", passed = boost.applied,
+            reason = boost.reason, payloadJson = boost.payload.toJson(), triggerId = null
+        )
+    }
+
     private fun evaluateProbabilityEntryGates(
         strategy: CryptoTailStrategy,
         periodStartUnix: Long,
@@ -1581,6 +1600,23 @@ class CryptoTailStrategyExecutionService(
                 return
             }
 
+            // Strong Gap Boost：主闸全通过、金额已定后，按高置信放大下注（默认 shadow 不改实盘）。
+            // 仅对 BARRIER/BRACKET（有 metrics）且非放量闸 probe 小额覆盖场景生效；只改 amount，不改方向/限价/风控。
+            if (strategy.enableStrongGapBoost && metrics != null && amountOverrideUsdc == null) {
+                val boost = boostService.evaluate(
+                    strategy = strategy,
+                    pWin = metrics.pWin,
+                    safeRatio = metrics.safeRatio,
+                    baseAmount = amountUsdc,
+                    spendable = balanceSnapshot.spendable,
+                    usedKelly = useKelly
+                )
+                recordBoostDecision(strategy, periodStartUnix, outcomeIndex, boost)
+                if (boost.applied) {
+                    amountUsdc = boost.effectiveAmount
+                }
+            }
+
             val tokenId = tokenIds.getOrNull(outcomeIndex) ?: run {
                 saveTriggerRecord(
                     strategy,
@@ -1783,6 +1819,11 @@ class CryptoTailStrategyExecutionService(
         val filledAmount = result.filledAmount
         val realFill = filledSize != null && filledAmount != null &&
                 filledSize > BigDecimal.ZERO && filledAmount > BigDecimal.ZERO
+        // FAK 成交立即记 'success'，sumPendingEntryAmountByAccountId 查不到；登记账户级短时预留，
+        // 防止同账户另一策略在链上余额 API 滞后期间误判资金可用而超额下单。
+        if (realFill) {
+            entryGuardService.reserveRecentFill(strategy.accountId, filledAmount!!)
+        }
         val isManagedFilled = realFill && strategy.mode != TradingMode.LEGACY_SPREAD && strategy.enableExitManager
         val entryFillPrice = avgFillPrice(filledSize, filledAmount)
         saveTriggerRecord(
@@ -2316,14 +2357,27 @@ class CryptoTailStrategyExecutionService(
                 return Result.failure(IllegalArgumentException("总金额不能少于 \$1"))
             }
 
+            // 手动单也纳入账户级串行：与自动入场共用 accountEntryMutex，避免同账户多策略/手动单并发抢余额；
+            // 重复持仓与余额预留必须生效（风控日亏/并发对手动单保持放行，手动属用户主动行为）。
+            val accountMutex = getAccountEntryMutex(strategy.accountId)
             val mutex = getTriggerMutex(strategy.id!!, request.periodStartUnix)
-            mutex.withLock {
+            accountMutex.withLock {
+              mutex.withLock {
                 if (triggerRepository.findByStrategyIdAndPeriodStartUnix(
                         strategy.id!!,
                         request.periodStartUnix
                     ) != null
                 ) {
                     return@withLock Result.failure(IllegalArgumentException("当前周期已下单"))
+                }
+
+                if (entryGuardService.hasDuplicateMarketPosition(strategy, request.periodStartUnix, outcomeIndex)) {
+                    return@withLock Result.failure(IllegalArgumentException("同账户同 market+period+outcome 已有持仓或挂单，禁止重复开仓"))
+                }
+
+                val balanceSnapshot = entryGuardService.loadEntryBalanceSnapshot(strategy.accountId)
+                if (amountUsdc > balanceSnapshot.spendable) {
+                    return@withLock Result.failure(IllegalArgumentException(entryGuardService.insufficientBalanceReason(amountUsdc, balanceSnapshot)))
                 }
 
                 var ctx = getOrInvalidatePeriodContext(strategy, request.periodStartUnix)
@@ -2393,6 +2447,7 @@ class CryptoTailStrategyExecutionService(
                 } else {
                     Result.failure(IllegalArgumentException("账户未配置或凭证不足"))
                 }
+              }
             }
         } catch (e: Exception) {
             logger.error("手动下单异常: strategyId=${request.strategyId}, ${e.message}", e)
@@ -2442,6 +2497,8 @@ class CryptoTailStrategyExecutionService(
                         peakBid = price
                     )
                     if (realFill) {
+                        // 手动成交同样登记账户级短时预留，防止链上余额滞后期间其他策略超额下单
+                        entryGuardService.reserveRecentFill(strategy.accountId, filledAmount)
                         logger.info("手动下单成交: strategyId=${strategy.id}, periodStartUnix=$periodStartUnix, outcomeIndex=$outcomeIndex, orderId=${body.orderId}, filledSize=${filledSize.toPlainString()}, filledAmount=${filledAmount.toPlainString()}, mode=${strategy.mode.name}")
                         Result.success(body.orderId)
                     } else {

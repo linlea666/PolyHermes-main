@@ -117,6 +117,19 @@ class CryptoTailStrategyService(
             val kellyEnabled = request.kellyEnabled ?: false
             val kellyFraction = request.kellyFraction?.toSafeBigDecimal() ?: BigDecimal("0.25")
             val allowDuplicateMarketPosition = request.allowDuplicateMarketPosition ?: false
+            // Strong Gap Boost（V60）
+            val enableStrongGapBoost = request.enableStrongGapBoost ?: false
+            val strongGapBoostShadow = request.strongGapBoostShadow ?: true
+            val strongGapMinPwin = request.strongGapMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.90")
+            val strongGapMinSafeRatio = request.strongGapMinSafeRatio?.toSafeBigDecimal() ?: BigDecimal("1.50")
+            val strongGapStakeMultiplier = request.strongGapStakeMultiplier?.toSafeBigDecimal() ?: BigDecimal("1.50")
+            val ultraGapMinPwin = request.ultraGapMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.95")
+            val ultraGapMinSafeRatio = request.ultraGapMinSafeRatio?.toSafeBigDecimal() ?: BigDecimal("2.00")
+            val ultraGapStakeMultiplier = request.ultraGapStakeMultiplier?.toSafeBigDecimal() ?: BigDecimal("2.00")
+            val maxStrongGapStakeMultiplier = request.maxStrongGapStakeMultiplier?.toSafeBigDecimal() ?: BigDecimal("2.00")
+            val maxBoostedAmountUsdc = request.maxBoostedAmountUsdc?.takeIf { it.isNotBlank() }?.toSafeBigDecimal()
+            val maxBoostedPeriodExposureUsdc = request.maxBoostedPeriodExposureUsdc?.takeIf { it.isNotBlank() }?.toSafeBigDecimal()
+            val allowBoostWithKelly = request.allowBoostWithKelly ?: false
 
             // V52：mode 字段优先；request.mode 缺失时回退 barrierEnabled 兼容（旧前端不带 mode 也能运行）
             val resolvedMode = when {
@@ -254,6 +267,18 @@ class CryptoTailStrategyService(
                 kellyEnabled = kellyEnabled,
                 kellyFraction = kellyFraction,
                 allowDuplicateMarketPosition = allowDuplicateMarketPosition,
+                enableStrongGapBoost = enableStrongGapBoost,
+                strongGapBoostShadow = strongGapBoostShadow,
+                strongGapMinPwin = strongGapMinPwin,
+                strongGapMinSafeRatio = strongGapMinSafeRatio,
+                strongGapStakeMultiplier = strongGapStakeMultiplier,
+                ultraGapMinPwin = ultraGapMinPwin,
+                ultraGapMinSafeRatio = ultraGapMinSafeRatio,
+                ultraGapStakeMultiplier = ultraGapStakeMultiplier,
+                maxStrongGapStakeMultiplier = maxStrongGapStakeMultiplier,
+                maxBoostedAmountUsdc = maxBoostedAmountUsdc,
+                maxBoostedPeriodExposureUsdc = maxBoostedPeriodExposureUsdc,
+                allowBoostWithKelly = allowBoostWithKelly,
                 mode = resolvedMode,
                 // 同步 barrierEnabled 兼容字段：mode==BARRIER_HOLD ⇔ barrierEnabled=true
                 barrierEnabled = resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD,
@@ -402,6 +427,19 @@ class CryptoTailStrategyService(
             val newKellyEnabled = request.kellyEnabled ?: existing.kellyEnabled
             val newKellyFraction = request.kellyFraction?.toSafeBigDecimal() ?: existing.kellyFraction
             val newAllowDuplicateMarketPosition = request.allowDuplicateMarketPosition ?: existing.allowDuplicateMarketPosition
+            // Strong Gap Boost（V60）
+            val newEnableStrongGapBoost = request.enableStrongGapBoost ?: existing.enableStrongGapBoost
+            val newStrongGapBoostShadow = request.strongGapBoostShadow ?: existing.strongGapBoostShadow
+            val newStrongGapMinPwin = request.strongGapMinPwin?.toSafeBigDecimal() ?: existing.strongGapMinPwin
+            val newStrongGapMinSafeRatio = request.strongGapMinSafeRatio?.toSafeBigDecimal() ?: existing.strongGapMinSafeRatio
+            val newStrongGapStakeMultiplier = request.strongGapStakeMultiplier?.toSafeBigDecimal() ?: existing.strongGapStakeMultiplier
+            val newUltraGapMinPwin = request.ultraGapMinPwin?.toSafeBigDecimal() ?: existing.ultraGapMinPwin
+            val newUltraGapMinSafeRatio = request.ultraGapMinSafeRatio?.toSafeBigDecimal() ?: existing.ultraGapMinSafeRatio
+            val newUltraGapStakeMultiplier = request.ultraGapStakeMultiplier?.toSafeBigDecimal() ?: existing.ultraGapStakeMultiplier
+            val newMaxStrongGapStakeMultiplier = request.maxStrongGapStakeMultiplier?.toSafeBigDecimal() ?: existing.maxStrongGapStakeMultiplier
+            val newMaxBoostedAmountUsdc = request.maxBoostedAmountUsdc?.let { if (it.isBlank()) null else it.toSafeBigDecimal() } ?: existing.maxBoostedAmountUsdc
+            val newMaxBoostedPeriodExposureUsdc = request.maxBoostedPeriodExposureUsdc?.let { if (it.isBlank()) null else it.toSafeBigDecimal() } ?: existing.maxBoostedPeriodExposureUsdc
+            val newAllowBoostWithKelly = request.allowBoostWithKelly ?: existing.allowBoostWithKelly
 
             // V52：mode 字段优先；缺失时按 barrierEnabled 兼容
             val newMode = when {
@@ -537,6 +575,18 @@ class CryptoTailStrategyService(
                 kellyEnabled = newKellyEnabled,
                 kellyFraction = newKellyFraction,
                 allowDuplicateMarketPosition = newAllowDuplicateMarketPosition,
+                enableStrongGapBoost = newEnableStrongGapBoost,
+                strongGapBoostShadow = newStrongGapBoostShadow,
+                strongGapMinPwin = newStrongGapMinPwin,
+                strongGapMinSafeRatio = newStrongGapMinSafeRatio,
+                strongGapStakeMultiplier = newStrongGapStakeMultiplier,
+                ultraGapMinPwin = newUltraGapMinPwin,
+                ultraGapMinSafeRatio = newUltraGapMinSafeRatio,
+                ultraGapStakeMultiplier = newUltraGapStakeMultiplier,
+                maxStrongGapStakeMultiplier = newMaxStrongGapStakeMultiplier,
+                maxBoostedAmountUsdc = newMaxBoostedAmountUsdc,
+                maxBoostedPeriodExposureUsdc = newMaxBoostedPeriodExposureUsdc,
+                allowBoostWithKelly = newAllowBoostWithKelly,
                 mode = newMode,
                 barrierEnabled = newMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD,
                 bracketEntryProb = newBracketEntryProb,
@@ -1326,6 +1376,18 @@ class CryptoTailStrategyService(
             kellyEnabled = e.kellyEnabled,
             kellyFraction = e.kellyFraction.toPlainString(),
             allowDuplicateMarketPosition = e.allowDuplicateMarketPosition,
+            enableStrongGapBoost = e.enableStrongGapBoost,
+            strongGapBoostShadow = e.strongGapBoostShadow,
+            strongGapMinPwin = e.strongGapMinPwin.toPlainString(),
+            strongGapMinSafeRatio = e.strongGapMinSafeRatio.toPlainString(),
+            strongGapStakeMultiplier = e.strongGapStakeMultiplier.toPlainString(),
+            ultraGapMinPwin = e.ultraGapMinPwin.toPlainString(),
+            ultraGapMinSafeRatio = e.ultraGapMinSafeRatio.toPlainString(),
+            ultraGapStakeMultiplier = e.ultraGapStakeMultiplier.toPlainString(),
+            maxStrongGapStakeMultiplier = e.maxStrongGapStakeMultiplier.toPlainString(),
+            maxBoostedAmountUsdc = e.maxBoostedAmountUsdc?.toPlainString(),
+            maxBoostedPeriodExposureUsdc = e.maxBoostedPeriodExposureUsdc?.toPlainString(),
+            allowBoostWithKelly = e.allowBoostWithKelly,
             mode = e.mode.value,
             bracketEntryProb = e.bracketEntryProb.toPlainString(),
             bracketEntryEdge = e.bracketEntryEdge.toPlainString(),

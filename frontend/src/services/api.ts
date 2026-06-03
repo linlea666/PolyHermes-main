@@ -561,6 +561,19 @@ export const apiService = {
       kellyEnabled?: boolean
       kellyFraction?: string
       allowDuplicateMarketPosition?: boolean
+      // Strong Gap Boost（强价差放量，V60）
+      enableStrongGapBoost?: boolean
+      strongGapBoostShadow?: boolean
+      strongGapMinPwin?: string
+      strongGapMinSafeRatio?: string
+      strongGapStakeMultiplier?: string
+      ultraGapMinPwin?: string
+      ultraGapMinSafeRatio?: string
+      ultraGapStakeMultiplier?: string
+      maxStrongGapStakeMultiplier?: string
+      maxBoostedAmountUsdc?: string
+      maxBoostedPeriodExposureUsdc?: string
+      allowBoostWithKelly?: boolean
       /** FAK 进场限价滑点（V53），BARRIER + BRACKET 共用 */
       entryFakSlippage?: string
       // 阶梯模式（V52）
@@ -656,6 +669,19 @@ export const apiService = {
       kellyEnabled?: boolean
       kellyFraction?: string
       allowDuplicateMarketPosition?: boolean
+      // Strong Gap Boost（强价差放量，V60）
+      enableStrongGapBoost?: boolean
+      strongGapBoostShadow?: boolean
+      strongGapMinPwin?: string
+      strongGapMinSafeRatio?: string
+      strongGapStakeMultiplier?: string
+      ultraGapMinPwin?: string
+      ultraGapMinSafeRatio?: string
+      ultraGapStakeMultiplier?: string
+      maxStrongGapStakeMultiplier?: string
+      maxBoostedAmountUsdc?: string
+      maxBoostedPeriodExposureUsdc?: string
+      allowBoostWithKelly?: boolean
       /** FAK 进场限价滑点（V53），BARRIER + BRACKET 共用 */
       entryFakSlippage?: string
       // 阶梯模式（V52）

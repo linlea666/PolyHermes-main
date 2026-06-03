@@ -82,6 +82,34 @@ class CryptoTailOrderbookWsService(
     /** 标记是否正在刷新订阅，避免重复调用 */
     private val isRefreshing = AtomicBoolean(false)
 
+    /**
+     * 启用策略列表短时缓存：handleMessage 每条 WS 消息都要做"周期是否变化"检查（maybeRefreshSubscriptionIfPeriodChanged），
+     * 原实现每条消息都 findAllByEnabledTrue() 查库，高频盘口下放大 DB 负载。这里加 1s TTL 缓存；
+     * 策略增删改由 onStrategyChanged 直接触发 refreshAndSubscribe，缓存失效在那里强制刷新即可，故 1s 陈旧无副作用。
+     */
+    @Volatile
+    private var cachedEnabledStrategies: List<CryptoTailStrategy> = emptyList()
+
+    @Volatile
+    private var cachedEnabledAt: Long = 0L
+
+    private val enabledCacheTtlMs = 1_000L
+
+    /** per-subscriptionKey 入场评估在途守卫：同一订阅同时只跑一个入场评估，避免高频盘口下协程无界扇出吃满 CPU */
+    private val entryEvalInFlight = java.util.concurrent.ConcurrentHashMap<String, AtomicBoolean>()
+
+    /** per-subscriptionKey 退出评估在途守卫：同上，避免退出评估协程堆积 */
+    private val exitEvalInFlight = java.util.concurrent.ConcurrentHashMap<String, AtomicBoolean>()
+
+    private fun enabledStrategiesCached(): List<CryptoTailStrategy> {
+        val now = System.currentTimeMillis()
+        if (now - cachedEnabledAt < enabledCacheTtlMs) return cachedEnabledStrategies
+        val fresh = strategyRepository.findAllByEnabledTrue()
+        cachedEnabledStrategies = fresh
+        cachedEnabledAt = now
+        return fresh
+    }
+
     data class WsBookEntry(
         val strategy: CryptoTailStrategy,
         val periodStartUnix: Long,
@@ -279,22 +307,29 @@ class CryptoTailOrderbookWsService(
             val windowEnd = e.periodStartUnix + e.strategy.windowEndSeconds
             val inEntryWindow = nowSeconds >= windowStart && nowSeconds < windowEnd
 
-            // 入场分支：仅在时间窗内评估（旧行为不变）
+            // 入场分支：仅在时间窗内评估（旧行为不变）。
+            // per-subscriptionKey 在途守卫：同一订阅已有入场评估在跑则跳过本 tick，避免协程无界堆积；
+            // 下一条盘口消息会用更新的快照重新评估，不会漏单。
             if (inEntryWindow) {
-                scope.launch {
-                    try {
-                        executionService.tryTriggerWithPriceFromWs(
-                            strategy = e.strategy,
-                            periodStartUnix = e.periodStartUnix,
-                            marketTitle = e.marketTitle,
-                            tokenIds = e.tokenIds,
-                            outcomeIndex = e.outcomeIndex,
-                            bestBid = orderbook.bestBid,
-                            bestAsk = orderbook.bestAsk,
-                            orderbook = orderbook
-                        )
-                    } catch (ex: Exception) {
-                        logger.error("WS 触发下单异常: strategyId=${e.strategy.id}, ${ex.message}", ex)
+                val entryGuard = entryEvalInFlight.getOrPut(e.subscriptionKey) { AtomicBoolean(false) }
+                if (entryGuard.compareAndSet(false, true)) {
+                    scope.launch {
+                        try {
+                            executionService.tryTriggerWithPriceFromWs(
+                                strategy = e.strategy,
+                                periodStartUnix = e.periodStartUnix,
+                                marketTitle = e.marketTitle,
+                                tokenIds = e.tokenIds,
+                                outcomeIndex = e.outcomeIndex,
+                                bestBid = orderbook.bestBid,
+                                bestAsk = orderbook.bestAsk,
+                                orderbook = orderbook
+                            )
+                        } catch (ex: Exception) {
+                            logger.error("WS 触发下单异常: strategyId=${e.strategy.id}, ${ex.message}", ex)
+                        } finally {
+                            entryGuard.set(false)
+                        }
                     }
                 }
             }
@@ -303,18 +338,23 @@ class CryptoTailOrderbookWsService(
             //  - 持仓监听整个周期内都需活跃，包括 forceExitBeforeSettleSeconds 兜底窗口
             //  - 跨周期由 SettlementService 兜底（HELD_TO_SETTLE）
             if (e.strategy.mode != TradingMode.LEGACY_SPREAD && e.strategy.enableExitManager) {
-                scope.launch {
-                    try {
-                        bracketExitService.evaluatePeriodOutcome(
-                            strategy = e.strategy,
-                            periodStartUnix = e.periodStartUnix,
-                            outcomeIndex = e.outcomeIndex,
-                            bestBid = orderbook.bestBid,
-                            nowSeconds = nowSeconds,
-                            orderbook = orderbook
-                        )
-                    } catch (ex: Exception) {
-                        logger.error("WS 阶梯退出评估异常: strategyId=${e.strategy.id}, ${ex.message}", ex)
+                val exitGuard = exitEvalInFlight.getOrPut(e.subscriptionKey) { AtomicBoolean(false) }
+                if (exitGuard.compareAndSet(false, true)) {
+                    scope.launch {
+                        try {
+                            bracketExitService.evaluatePeriodOutcome(
+                                strategy = e.strategy,
+                                periodStartUnix = e.periodStartUnix,
+                                outcomeIndex = e.outcomeIndex,
+                                bestBid = orderbook.bestBid,
+                                nowSeconds = nowSeconds,
+                                orderbook = orderbook
+                            )
+                        } catch (ex: Exception) {
+                            logger.error("WS 阶梯退出评估异常: strategyId=${e.strategy.id}, ${ex.message}", ex)
+                        } finally {
+                            exitGuard.set(false)
+                        }
                     }
                 }
             }
@@ -328,7 +368,7 @@ class CryptoTailOrderbookWsService(
         val subscribed = tokenToEntries.get().values.flatten().distinctBy { it.strategy.id }
             .associate { it.strategy.id!! to it.periodStartUnix }
         if (subscribed.isEmpty()) return
-        val strategies = strategyRepository.findAllByEnabledTrue()
+        val strategies = enabledStrategiesCached()
         val nowSeconds = System.currentTimeMillis() / 1000
         val currentStrategyIds = strategies.map { it.id!! }.toSet()
         if (subscribed.keys != currentStrategyIds) {
@@ -602,6 +642,7 @@ class CryptoTailOrderbookWsService(
 
     @EventListener
     fun onStrategyChanged(event: CryptoTailStrategyChangedEvent) {
+        cachedEnabledAt = 0L  // 强制下次周期检查重新查库，避免用陈旧缓存漏掉启用/停用变更
         refreshAndSubscribe()
     }
 }

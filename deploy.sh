@@ -207,15 +207,30 @@ check_security_config() {
     info "安全配置检查通过"
 }
 
+# 计算宿主机编译进程的低优先级前缀（nice/ionice），降低对实盘 JVM 的 CPU/IO 抢占。
+# nice/ionice 作用于 docker 客户端进程有限，配合 docker run 的 --cpu-shares 才真正在 CPU 争用时让出。
+BUILD_PRIORITY_PREFIX=""
+compute_build_priority_prefix() {
+    local prefix=""
+    if command -v nice >/dev/null 2>&1; then prefix="nice -n 10"; fi
+    if command -v ionice >/dev/null 2>&1; then prefix="$prefix ionice -c2 -n7"; fi
+    BUILD_PRIORITY_PREFIX="$prefix"
+}
+
 # 在宿主机预编译前后端产物（不在镜像内编译）
 # 使用 gradle / node 官方镜像 + 持久化缓存做增量编译，避免镜像阶段 gradle --no-daemon 全量冷编译导致 :compileKotlin 卡死/OOM
 build_artifacts_on_host() {
     info "在宿主机预编译产物（BUILD_IN_DOCKER=false，镜像阶段不再编译）..."
+    compute_build_priority_prefix
+    if [ -n "$BUILD_PRIORITY_PREFIX" ]; then
+        info "编译进程降优先级前缀: ${BUILD_PRIORITY_PREFIX}（并对构建容器设 --cpu-shares 512，CPU 争用时优先保实盘）"
+    fi
 
     # 后端：用 gradle 容器编译 JAR，挂载缓存卷复用依赖与增量编译结果
     info "编译后端 JAR（增量编译，缓存复用）..."
-    docker run --rm \
+    $BUILD_PRIORITY_PREFIX docker run --rm \
         --user root \
+        --cpu-shares 512 \
         --memory 1536m \
         --memory-swap 1536m \
         -e GRADLE_USER_HOME=/gradle-cache \
@@ -246,8 +261,9 @@ build_artifacts_on_host() {
         fe_container_mem_mb="$fe_mem_mb"
     fi
     info "编译前端产物（NODE_OPTIONS 堆上限=${fe_mem_mb}MB，容器内存=${fe_container_mem_mb}MB）..."
-    docker run --rm \
+    $BUILD_PRIORITY_PREFIX docker run --rm \
         --user root \
+        --cpu-shares 512 \
         --memory "${fe_container_mem_mb}m" \
         --memory-swap "${fe_container_mem_mb}m" \
         -e VERSION="${DOCKER_VERSION}" \
@@ -289,6 +305,29 @@ build_artifacts_on_host() {
     info "前端产物编译完成"
 }
 
+# full-build 会在服务器上抢占 CPU/IO 编译；若正在跑实盘策略，先提示暂停或改走 CI 镜像。
+# 非交互（CI/无 TTY）或显式 SKIP_TRADING_PAUSE_CONFIRM=true 时跳过。
+confirm_full_build_when_trading() {
+    if [ "${SKIP_TRADING_PAUSE_CONFIRM:-false}" = "true" ]; then
+        return
+    fi
+    if [ ! -t 0 ]; then
+        warn "非交互环境，跳过 full-build 实盘暂停确认（建议 CI 出镜像 + --pull-image）"
+        return
+    fi
+    echo ""
+    warn "即将执行 full-build：将在本机编译前后端，显著占用 CPU/IO。"
+    warn "若本服务器正在运行实盘 crypto-tail 策略，强烈建议二选一："
+    warn "  1) 先在前端关闭相关策略的自动下单（enabled=off）再继续；或"
+    warn "  2) 改用 CI 构建镜像 + ./deploy.sh --pull-image（几乎不占本机编译 CPU，推荐）。"
+    printf "确认已暂停实盘或愿意继续 full-build? [y/N] "
+    read -r _ans
+    case "$_ans" in
+        [yY]|[yY][eE][sS]) info "继续 full-build。" ;;
+        *) error "已取消 full-build。可改用 ./deploy.sh --pull-image"; exit 1 ;;
+    esac
+}
+
 # 构建并启动
 deploy() {
     # 检查安全配置
@@ -317,6 +356,9 @@ deploy() {
         show_status
         return
     fi
+
+    # full-build：编译前提示实盘暂停（保护正在运行的实盘策略）
+    confirm_full_build_when_trading
 
     # 版本号：优先环境变量 DOCKER_VERSION，其次 .env 中的 DOCKER_VERSION，否则用当前分支名
     if [ -z "${DOCKER_VERSION}" ] && [ -f ".env" ]; then
@@ -377,6 +419,13 @@ usage() {
 
 兼容参数：
   --use-docker-hub, -d  等同于 --pull-image
+
+环境变量：
+  SKIP_TRADING_PAUSE_CONFIRM=true  跳过 full-build 前的实盘暂停确认（CI/无 TTY 自动跳过）
+
+实盘建议：
+  服务器实盘运行期不建议 full-build（编译抢占 CPU 可能影响下单/退出时延）。
+  推荐用 CI（.github/workflows 出镜像）构建并推送，服务器只执行 ./deploy.sh --pull-image。
 
 示例：
   $0 --restart
