@@ -168,6 +168,7 @@ class CryptoTailStrategyService(
             val takeProfitSellPct1 = request.takeProfitSellPct1?.toSafeBigDecimal() ?: BigDecimal("0.50")
             val takeProfitBid2 = request.takeProfitBid2?.toSafeBigDecimal() ?: BigDecimal("0.93")
             val takeProfitSellPct2 = request.takeProfitSellPct2?.toSafeBigDecimal() ?: BigDecimal("0.80")
+            val enableSmartHardStop = request.enableSmartHardStop ?: false
             val emergencyExitOnModelFlip = request.emergencyExitOnModelFlip ?: true
             val emergencyExitOnGapFlip = request.emergencyExitOnGapFlip ?: true
             val exitPollIntervalMs = request.exitPollIntervalMs ?: 3000
@@ -312,6 +313,7 @@ class CryptoTailStrategyService(
                 takeProfitSellPct1 = takeProfitSellPct1,
                 takeProfitBid2 = takeProfitBid2,
                 takeProfitSellPct2 = takeProfitSellPct2,
+                enableSmartHardStop = enableSmartHardStop,
                 emergencyExitOnModelFlip = emergencyExitOnModelFlip,
                 emergencyExitOnGapFlip = emergencyExitOnGapFlip,
                 exitPollIntervalMs = exitPollIntervalMs,
@@ -478,6 +480,7 @@ class CryptoTailStrategyService(
             val newTakeProfitSellPct1 = request.takeProfitSellPct1?.toSafeBigDecimal() ?: existing.takeProfitSellPct1
             val newTakeProfitBid2 = request.takeProfitBid2?.toSafeBigDecimal() ?: existing.takeProfitBid2
             val newTakeProfitSellPct2 = request.takeProfitSellPct2?.toSafeBigDecimal() ?: existing.takeProfitSellPct2
+            val newEnableSmartHardStop = request.enableSmartHardStop ?: existing.enableSmartHardStop
             val newEmergencyExitOnModelFlip = request.emergencyExitOnModelFlip ?: existing.emergencyExitOnModelFlip
             val newEmergencyExitOnGapFlip = request.emergencyExitOnGapFlip ?: existing.emergencyExitOnGapFlip
             val newExitPollIntervalMs = request.exitPollIntervalMs ?: existing.exitPollIntervalMs
@@ -619,6 +622,7 @@ class CryptoTailStrategyService(
                 takeProfitSellPct1 = newTakeProfitSellPct1,
                 takeProfitBid2 = newTakeProfitBid2,
                 takeProfitSellPct2 = newTakeProfitSellPct2,
+                enableSmartHardStop = newEnableSmartHardStop,
                 emergencyExitOnModelFlip = newEmergencyExitOnModelFlip,
                 emergencyExitOnGapFlip = newEmergencyExitOnGapFlip,
                 exitPollIntervalMs = newExitPollIntervalMs,
@@ -1419,6 +1423,7 @@ class CryptoTailStrategyService(
             takeProfitSellPct1 = e.takeProfitSellPct1.toPlainString(),
             takeProfitBid2 = e.takeProfitBid2.toPlainString(),
             takeProfitSellPct2 = e.takeProfitSellPct2.toPlainString(),
+            enableSmartHardStop = e.enableSmartHardStop,
             emergencyExitOnModelFlip = e.emergencyExitOnModelFlip,
             emergencyExitOnGapFlip = e.emergencyExitOnGapFlip,
             exitPollIntervalMs = e.exitPollIntervalMs,

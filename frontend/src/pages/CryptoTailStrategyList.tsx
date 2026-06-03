@@ -232,6 +232,7 @@ const CryptoTailStrategyList: React.FC = () => {
       takeProfitSellPct1: '0.50',
       takeProfitBid2: '0.93',
       takeProfitSellPct2: '0.80',
+      enableSmartHardStop: false,
       emergencyExitOnModelFlip: true,
       emergencyExitOnGapFlip: true,
       exitPollIntervalMs: 3000,
@@ -353,6 +354,7 @@ const CryptoTailStrategyList: React.FC = () => {
       takeProfitSellPct1: record.takeProfitSellPct1 ?? '0.50',
       takeProfitBid2: record.takeProfitBid2 ?? '0.93',
       takeProfitSellPct2: record.takeProfitSellPct2 ?? '0.80',
+      enableSmartHardStop: record.enableSmartHardStop ?? false,
       emergencyExitOnModelFlip: record.emergencyExitOnModelFlip ?? true,
       emergencyExitOnGapFlip: record.emergencyExitOnGapFlip ?? true,
       exitPollIntervalMs: record.exitPollIntervalMs ?? 3000,
@@ -515,6 +517,7 @@ const CryptoTailStrategyList: React.FC = () => {
         takeProfitSellPct1: v.takeProfitSellPct1 != null ? String(v.takeProfitSellPct1) : undefined,
         takeProfitBid2: v.takeProfitBid2 != null ? String(v.takeProfitBid2) : undefined,
         takeProfitSellPct2: v.takeProfitSellPct2 != null ? String(v.takeProfitSellPct2) : undefined,
+        enableSmartHardStop: v.enableSmartHardStop === true,
         emergencyExitOnModelFlip: v.emergencyExitOnModelFlip === true,
         emergencyExitOnGapFlip: v.emergencyExitOnGapFlip === true,
         exitPollIntervalMs: v.exitPollIntervalMs != null ? Number(v.exitPollIntervalMs) : undefined,
@@ -1712,6 +1715,14 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="takeProfitSellPct2" label="第二档卖出比例">
                 <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="enableSmartHardStop"
+                label="智能硬止损(临近结算强势时持有到结算)"
+                valuePropName="checked"
+                extra="开启后:硬止损命中时,若价源新鲜、模型方向未反、gap 仍顺、临近结算(<=holdToSettleSeconds)且 pWin>=holdToSettlePwin、safeRatio>=max(exitSafeRatio,1.30),则放弃机械止损、持有到结算。默认关闭,行为与历史一致。"
+              >
+                <Switch />
               </Form.Item>
               <Form.Item name="emergencyExitOnModelFlip" label="模型方向反转立即退出" valuePropName="checked">
                 <Switch />

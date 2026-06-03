@@ -120,6 +120,8 @@ data class CryptoTailStrategyCreateRequest(
     val takeProfitSellPct1: String? = null,
     val takeProfitBid2: String? = null,
     val takeProfitSellPct2: String? = null,
+    /** 智能硬止损开关（V61）：HARD_STOP 命中后强势临近结算时豁免持有到结算 */
+    val enableSmartHardStop: Boolean? = null,
     val emergencyExitOnModelFlip: Boolean? = null,
     val emergencyExitOnGapFlip: Boolean? = null,
     val exitPollIntervalMs: Int? = null,
@@ -248,6 +250,8 @@ data class CryptoTailStrategyUpdateRequest(
     val takeProfitSellPct1: String? = null,
     val takeProfitBid2: String? = null,
     val takeProfitSellPct2: String? = null,
+    /** 智能硬止损开关（V61） */
+    val enableSmartHardStop: Boolean? = null,
     val emergencyExitOnModelFlip: Boolean? = null,
     val emergencyExitOnGapFlip: Boolean? = null,
     val exitPollIntervalMs: Int? = null,
@@ -401,6 +405,8 @@ data class CryptoTailStrategyDto(
     val takeProfitSellPct1: String = "0.50",
     val takeProfitBid2: String = "0.93",
     val takeProfitSellPct2: String = "0.80",
+    /** 智能硬止损开关（V61），默认 false */
+    val enableSmartHardStop: Boolean = false,
     val emergencyExitOnModelFlip: Boolean = true,
     val emergencyExitOnGapFlip: Boolean = true,
     val exitPollIntervalMs: Int = 3000,

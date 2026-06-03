@@ -180,6 +180,14 @@ data class CryptoTailStrategy(
     @Column(name = "take_profit_sell_pct2", nullable = false, precision = 20, scale = 8)
     val takeProfitSellPct2: BigDecimal = BigDecimal("0.80"),
 
+    /**
+     * 智能硬止损（Smart Hard Stop）开关（V61）：默认 false=关闭，行为与历史一致。
+     * 开启后，HARD_STOP 命中时先复核：若价源新鲜、模型方向未反、gap 仍顺、临近结算且 pWin/safeRatio 达标，
+     * 则放弃机械硬止损、继续持有到结算（记 HARD_STOP_BYPASSED_BY_HOLD_TO_SETTLE）。复用 holdToSettlePwin/holdToSettleSeconds/exitSafeRatio 阈值。
+     */
+    @Column(name = "enable_smart_hard_stop", nullable = false)
+    val enableSmartHardStop: Boolean = false,
+
     @Column(name = "emergency_exit_on_model_flip", nullable = false)
     val emergencyExitOnModelFlip: Boolean = true,
 

@@ -1569,6 +1569,7 @@ export interface CryptoTailStrategyDto {
   takeProfitSellPct1?: string
   takeProfitBid2?: string
   takeProfitSellPct2?: string
+  enableSmartHardStop?: boolean
   emergencyExitOnModelFlip?: boolean
   emergencyExitOnGapFlip?: boolean
   exitPollIntervalMs?: number

@@ -254,8 +254,20 @@ class CryptoTailBracketExitService(
         val modelSide: Int,
         val pWinModel: BigDecimal,
         val pWinHolding: BigDecimal,
-        val safeRatio: BigDecimal
-    )
+        val safeRatio: BigDecimal,
+        /** 当前价缓存年龄（毫秒）；价源无法提供时为 null。用于 Smart Hard Stop 价源新鲜度复核。 */
+        val priceAgeMs: Long?
+    ) {
+        /**
+         * 价源是否新鲜（用于智能硬止损豁免）：年龄非空且 <= maxPriceAgeMs（maxPriceAgeMs<=0 视为关闭限制=新鲜）。
+         * 年龄缺失（null）一律视为不新鲜，绝不允许用过期/不可知数据豁免硬止损。
+         */
+        fun priceReady(maxPriceAgeMs: Int): Boolean {
+            if (maxPriceAgeMs <= 0) return priceAgeMs != null
+            val age = priceAgeMs ?: return false
+            return age <= maxPriceAgeMs
+        }
+    }
 
     private fun computeHoldingState(
         strategy: CryptoTailStrategy,
@@ -281,7 +293,8 @@ class CryptoTailBracketExitService(
             modelSide = r.side,
             pWinModel = r.pWin,
             pWinHolding = holdingPWin,
-            safeRatio = r.safeRatio
+            safeRatio = r.safeRatio,
+            priceAgeMs = periodPriceProvider.getCurrentPriceAgeMs(strategy.marketSlugPrefix)
         )
     }
 
@@ -293,7 +306,9 @@ class CryptoTailBracketExitService(
         val ratio: BigDecimal,
         val reason: String,
         val tp1HoldStartedAt: Long? = null,
-        val clearTp1HoldStartedAt: Boolean = false
+        val clearTp1HoldStartedAt: Boolean = false,
+        /** true = 本次 HARD_STOP 被 Smart Hard Stop 复核豁免、改为持有到结算（kind 为 null）。仅用于审计日志。 */
+        val bypassedHardStop: Boolean = false
     )
 
     private fun decideExit(
@@ -316,6 +331,33 @@ class CryptoTailBracketExitService(
         if (entryFillPrice != null) {
             val stopLine = entryFillPrice.multiply(BigDecimal.ONE.subtract(strategy.maxLossPct))
             if (bestBid <= stopLine) {
+                // Smart Hard Stop 复核：HARD_STOP 命中后先判断是否满足"强势持有到结算"豁免条件。
+                // 仅当开关开启 + 价源新鲜 + 模型方向未反 + gap 仍顺 + 临近结算 + pWin/safeRatio 达标时，
+                // 才放弃机械硬止损、继续持有到结算（kind=null）；任一不满足都强制 HARD_STOP。
+                if (strategy.enableSmartHardStop && holding != null) {
+                    val bypass = CryptoTailHoldToSettlePolicy.evaluateHardStopBypass(
+                        enabled = true,
+                        priceReady = holding.priceReady(strategy.maxPriceAgeMs),
+                        outcomeIndex = trigger.outcomeIndex,
+                        modelSide = holding.modelSide,
+                        gap = holding.gap,
+                        pWinHolding = holding.pWinHolding,
+                        safeRatio = holding.safeRatio,
+                        remainingSeconds = remainingSeconds,
+                        holdToSettlePwin = strategy.holdToSettlePwin,
+                        holdToSettleSeconds = strategy.holdToSettleSeconds,
+                        exitSafeRatio = strategy.exitSafeRatio
+                    )
+                    if (bypass.bypass) {
+                        return Decision(
+                            null,
+                            BigDecimal.ZERO,
+                            "HARD_STOP_BYPASSED_BY_HOLD_TO_SETTLE: bestBid=${bestBid.toPlainString()}<=hardStopLine=${stopLine.toPlainString()} 但 currentPWin=${holding.pWinHolding.toPlainString()}>=holdToSettlePwin=${strategy.holdToSettlePwin.toPlainString()} safeRatio=${holding.safeRatio.toPlainString()} modelSide=${holding.modelSide} outcomeIndex=${trigger.outcomeIndex} gap=${holding.gap.toPlainString()} remainingSeconds=$remainingSeconds priceReady=true",
+                            clearTp1HoldStartedAt = true,
+                            bypassedHardStop = true
+                        )
+                    }
+                }
                 return Decision(ExitKind.HARD_STOP, BigDecimal.ONE, "硬止损: bestBid=${bestBid.toPlainString()}<=${stopLine.toPlainString()}")
             }
         }
@@ -358,9 +400,14 @@ class CryptoTailBracketExitService(
             return Decision(ExitKind.WICK_REVERSAL, BigDecimal.ONE, "影线反转止损: score=${wick.reversalScore}>=${strategy.wickExitScore}", clearTp1HoldStartedAt = true)
         }
         if (holding != null &&
-            remainingSeconds <= strategy.holdToSettleSeconds &&
-            holding.pWinHolding >= strategy.holdToSettlePwin &&
-            gapSupportsHolding(trigger, holding)
+            CryptoTailHoldToSettlePolicy.canHoldToSettle(
+                outcomeIndex = trigger.outcomeIndex,
+                gap = holding.gap,
+                pWinHolding = holding.pWinHolding,
+                remainingSeconds = remainingSeconds,
+                holdToSettlePwin = strategy.holdToSettlePwin,
+                holdToSettleSeconds = strategy.holdToSettleSeconds
+            )
         ) {
             return Decision(
                 null,
@@ -575,14 +622,6 @@ class CryptoTailBracketExitService(
         )
     }
 
-    private fun gapSupportsHolding(trigger: CryptoTailStrategyTrigger, holding: HoldingState): Boolean {
-        return when (trigger.outcomeIndex) {
-            0 -> holding.gap > BigDecimal.ZERO
-            1 -> holding.gap < BigDecimal.ZERO
-            else -> false
-        }
-    }
-
     private fun persistTp1HoldStateIfNeeded(trigger: CryptoTailStrategyTrigger, decision: Decision) {
         val triggerId = trigger.id ?: return
         val next = when {
@@ -712,6 +751,44 @@ class CryptoTailBracketExitService(
                     outcomeIndex = trigger.outcomeIndex,
                     triggerId = trigger.id
                 )
+            )
+        }
+        // Smart Hard Stop 豁免审计：HARD_STOP 命中但被强势持有覆盖时，始终落一条专用诊断行（不被去重抑制），
+        // 便于事后复盘"到底是正常止损，还是模型强势下选择持有到结算"。
+        if (decision.bypassedHardStop) {
+            val hardStopLine = (trigger.entryFillPrice ?: BigDecimal.ZERO)
+                .multiply(BigDecimal.ONE.subtract(strategy.maxLossPct))
+            val bypassPayload = payload.plus(
+                mapOf(
+                    "positionSide" to if (trigger.outcomeIndex == 0) "UP" else "DOWN",
+                    "hardStopLine" to hardStopLine.toPlainString(),
+                    "currentPWinModel" to (holding?.pWinModel?.toPlainString() ?: ""),
+                    "pWinHolding" to (holding?.pWinHolding?.toPlainString() ?: ""),
+                    "gap" to (holding?.gap?.toPlainString() ?: ""),
+                    "gapSupportsHolding" to (holding != null && CryptoTailHoldToSettlePolicy.gapSupportsHolding(trigger.outcomeIndex, holding.gap)),
+                    "priceReadyReason" to (if (holding != null && holding.priceReady(strategy.maxPriceAgeMs)) "OK" else "STALE_OR_MISSING"),
+                    "priceAgeMs" to (holding?.priceAgeMs ?: ""),
+                    "maxPriceAgeMs" to strategy.maxPriceAgeMs
+                )
+            )
+            decisionRecorder.record(
+                CryptoTailDecisionEvent(
+                    strategyId = trigger.strategyId,
+                    periodStartUnix = trigger.periodStartUnix,
+                    correlationId = "${trigger.strategyId}-${trigger.periodStartUnix}-exit-${trigger.id}",
+                    eventType = "EXIT_CHECK",
+                    gateName = "HARD_STOP_BYPASSED_BY_HOLD_TO_SETTLE",
+                    passed = false,
+                    reason = decision.reason,
+                    payloadJson = bypassPayload.toJson(),
+                    outcomeIndex = trigger.outcomeIndex,
+                    triggerId = trigger.id
+                )
+            )
+            logger.info(
+                "Smart Hard Stop 豁免: triggerId=${trigger.id} bestBid=${bestBid.toPlainString()} " +
+                    "hardStopLine=${hardStopLine.toPlainString()} pWin=${holding?.pWinHolding?.toPlainString()} " +
+                    "safeRatio=${holding?.safeRatio?.toPlainString()} remainingSeconds=$remainingSeconds → 持有到结算"
             )
         }
     }

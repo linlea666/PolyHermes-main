@@ -608,6 +608,7 @@ export const apiService = {
       takeProfitSellPct1?: string
       takeProfitBid2?: string
       takeProfitSellPct2?: string
+      enableSmartHardStop?: boolean
       emergencyExitOnModelFlip?: boolean
       emergencyExitOnGapFlip?: boolean
       exitPollIntervalMs?: number
@@ -716,6 +717,7 @@ export const apiService = {
       takeProfitSellPct1?: string
       takeProfitBid2?: string
       takeProfitSellPct2?: string
+      enableSmartHardStop?: boolean
       emergencyExitOnModelFlip?: boolean
       emergencyExitOnGapFlip?: boolean
       exitPollIntervalMs?: number
