@@ -19,7 +19,8 @@ import java.util.concurrent.ConcurrentHashMap
 @Service
 class RtdsPeriodPriceProvider(
     private val rtds: PolymarketRtdsCryptoPriceService,
-    private val sigmaEstimator: BarrierSigmaEstimator
+    private val sigmaEstimator: BarrierSigmaEstimator,
+    private val officialOpenResolver: CryptoTailOfficialOpenResolver
 ) : PeriodPriceProvider {
 
     /** σ 基准缓存：(slug-interval-period-method) -> sigmaPerSqrtS，按周期复用，避免每 tick 重复采样 */
@@ -32,13 +33,17 @@ class RtdsPeriodPriceProvider(
         rtds.readiness(marketSlugPrefix)
 
     override fun getCurrentOpenClose(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? {
-        val open = rtds.priceAt(marketSlugPrefix, periodStartUnix) ?: return null
+        val open = officialOpenResolver.resolve(marketSlugPrefix, intervalSeconds, periodStartUnix)
+            ?: rtds.priceAt(marketSlugPrefix, periodStartUnix)
+            ?: return null
         val current = rtds.currentPrice(marketSlugPrefix) ?: return null
         return open to current
     }
 
     override fun getFinalOpenClose(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? {
-        val open = rtds.priceAt(marketSlugPrefix, periodStartUnix) ?: return null
+        val open = officialOpenResolver.resolve(marketSlugPrefix, intervalSeconds, periodStartUnix)
+            ?: rtds.priceAt(marketSlugPrefix, periodStartUnix)
+            ?: return null
         val close = rtds.priceAt(marketSlugPrefix, periodStartUnix + intervalSeconds) ?: return null
         return open to close
     }

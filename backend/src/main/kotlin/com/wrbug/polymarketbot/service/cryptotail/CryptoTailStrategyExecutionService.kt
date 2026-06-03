@@ -353,16 +353,16 @@ class CryptoTailStrategyExecutionService(
             val logKey = triggerLockKey(strategy.id!!, periodStartUnix)
             if (conditionLoggedCache.getIfPresent(logKey) == null) {
                 conditionLoggedCache.put(logKey, periodStartUnix + strategy.intervalSeconds)
-                // V53 修正：障碍/阶梯模式优先用与结算同源的 Chainlink/RTDS 取价（不限于 BARRIER），冷启动回退币安；旧模式仍用币安。
-                // 此前用 strategy.barrierEnabled 会让 BRACKET 退化到币安取价，与结算源不一致。
-                val oc = (if (strategy.mode != TradingMode.LEGACY_SPREAD)
+                // 非 LEGACY 模式日志也保持结算同源口径；价源缺失时宁可记未知，不能用 Binance 混源。
+                val oc = if (strategy.mode != TradingMode.LEGACY_SPREAD) {
                     periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
-                else null)
-                    ?: binanceKlineService.getCurrentOpenClose(
+                } else {
+                    binanceKlineService.getCurrentOpenClose(
                         strategy.marketSlugPrefix,
                         strategy.intervalSeconds,
                         periodStartUnix
                     )
+                }
                 val openP = oc?.first
                 val closeP = oc?.second
                 val openPrice = openP?.toPlainString() ?: "-"
@@ -455,7 +455,12 @@ class CryptoTailStrategyExecutionService(
         val coin: String?,
         val officialPriceSource: String,
         val officialPriceAgeMs: Long?,
-        val priceReadyReason: String
+        val priceReadyReason: String,
+        val priceMode: String?,
+        val lastSnapshotAt: Long?,
+        val lastRealtimeUpdateAt: Long?,
+        val latestPriceAgeMs: Long?,
+        val latestSampleTime: Long?
     )
 
     private data class FakOrderAttempt(
@@ -500,6 +505,22 @@ class CryptoTailStrategyExecutionService(
         )
     }
 
+    private fun readinessDiagnostics(status: PeriodPriceProvider.PriceReadiness): Map<String, Any> = mapOf(
+        "priceMode" to (status.priceMode ?: ""),
+        "lastSnapshotAt" to (status.lastSnapshotAt ?: ""),
+        "lastRealtimeUpdateAt" to (status.lastRealtimeUpdateAt ?: ""),
+        "latestPriceAgeMs" to (status.latestPriceAgeMs ?: ""),
+        "latestSampleTime" to (status.latestSampleTime ?: "")
+    )
+
+    private fun metricsDiagnostics(metrics: BarrierMetrics): Map<String, Any> = mapOf(
+        "priceMode" to (metrics.priceMode ?: ""),
+        "lastSnapshotAt" to (metrics.lastSnapshotAt ?: ""),
+        "lastRealtimeUpdateAt" to (metrics.lastRealtimeUpdateAt ?: ""),
+        "latestPriceAgeMs" to (metrics.latestPriceAgeMs ?: ""),
+        "latestSampleTime" to (metrics.latestSampleTime ?: "")
+    )
+
     private fun statusPayload(status: PeriodPriceProvider.PriceReadiness): Map<String, Any> = mapOf(
         "priceSource" to status.source,
         "coin" to (status.coin ?: ""),
@@ -510,7 +531,7 @@ class CryptoTailStrategyExecutionService(
         "priceReadyReason" to status.reason,
         "priceAgeMs" to (status.ageMs ?: ""),
         "fallbackUsed" to false
-    )
+    ).plus(readinessDiagnostics(status))
 
     private fun checkEntryMarketQuality(
         strategy: CryptoTailStrategy,
@@ -623,7 +644,7 @@ class CryptoTailStrategyExecutionService(
             "modelSideByGap" to sideByGap,
             "modelSideByGapText" to (if (sideByGap == 0) "Up(涨)" else "Down(跌)"),
             "evalOutcomeIndex" to outcomeIndex
-        ).toJson()
+        ).plus(readinessDiagnostics(priceStatus)).toJson()
         val sigma = periodPriceProvider.getSigmaPerSqrtS(
             strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix, outcomeIndex, strategy.sigmaScale,
             strategy.sigmaMethod, strategy.ewmaLambda
@@ -662,7 +683,12 @@ class CryptoTailStrategyExecutionService(
             coin = priceStatus.coin,
             officialPriceSource = priceStatus.source,
             officialPriceAgeMs = priceStatus.ageMs,
-            priceReadyReason = priceStatus.reason
+            priceReadyReason = priceStatus.reason,
+            priceMode = priceStatus.priceMode,
+            lastSnapshotAt = priceStatus.lastSnapshotAt,
+            lastRealtimeUpdateAt = priceStatus.lastRealtimeUpdateAt,
+            latestPriceAgeMs = priceStatus.latestPriceAgeMs,
+            latestSampleTime = priceStatus.latestSampleTime
         )
         val payload = mutableMapOf<String, Any>(
             "gap" to gap.toPlainString(),
@@ -702,6 +728,7 @@ class CryptoTailStrategyExecutionService(
             "maxOrderbookAgeMs" to strategy.maxOrderbookAgeMs,
             "maxPriceAgeMs" to strategy.maxPriceAgeMs
         )
+        payload.putAll(readinessDiagnostics(priceStatus))
         payload.putAll(orderbookPayload(orderbook))
         fun snapshot(): String = payload.toJson()
 
@@ -788,7 +815,7 @@ class CryptoTailStrategyExecutionService(
             "modelSideByGap" to sideByGap,
             "modelSideByGapText" to (if (sideByGap == 0) "Up(涨)" else "Down(跌)"),
             "evalOutcomeIndex" to outcomeIndex
-        ).toJson()
+        ).plus(readinessDiagnostics(priceStatus)).toJson()
         val sigma = periodPriceProvider.getSigmaPerSqrtS(
             strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix, outcomeIndex, strategy.sigmaScale,
             strategy.sigmaMethod, strategy.ewmaLambda
@@ -816,7 +843,12 @@ class CryptoTailStrategyExecutionService(
             coin = priceStatus.coin,
             officialPriceSource = priceStatus.source,
             officialPriceAgeMs = priceStatus.ageMs,
-            priceReadyReason = priceStatus.reason
+            priceReadyReason = priceStatus.reason,
+            priceMode = priceStatus.priceMode,
+            lastSnapshotAt = priceStatus.lastSnapshotAt,
+            lastRealtimeUpdateAt = priceStatus.lastRealtimeUpdateAt,
+            latestPriceAgeMs = priceStatus.latestPriceAgeMs,
+            latestSampleTime = priceStatus.latestSampleTime
         )
         val entryProb = probabilityEntryProb(strategy)
         val entryEdge = probabilityEntryEdge(strategy)
@@ -862,6 +894,7 @@ class CryptoTailStrategyExecutionService(
             "maxOrderbookAgeMs" to strategy.maxOrderbookAgeMs,
             "maxPriceAgeMs" to strategy.maxPriceAgeMs
         )
+        payload.putAll(readinessDiagnostics(priceStatus))
         payload.putAll(orderbookPayload(orderbook))
         fun snapshot(): String = payload.toJson()
 
@@ -1006,7 +1039,8 @@ class CryptoTailStrategyExecutionService(
             "scalingReason" to (scaling?.reason ?: ""),
             "probeAmountUsdc" to strategy.probeAmountUsdc.toPlainString(),
             "effectiveAmountUsdc" to (amountOverrideUsdc?.toPlainString() ?: strategy.amountValue.toPlainString())
-        ).plus(pricingPayload(pricing, orderbookRefreshed))
+        ).plus(metricsDiagnostics(metrics))
+            .plus(pricingPayload(pricing, orderbookRefreshed))
             .plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, orderbookRefreshed))
             .toJson()
         val scalingNote = if (scaling != null && scaling.useProbe) " [放量闸:小额 ${strategy.probeAmountUsdc.toPlainString()}]" else ""
@@ -1082,7 +1116,8 @@ class CryptoTailStrategyExecutionService(
             "orderType" to "FAK",
             "targetPrice" to targetPrice.toPlainString(),
             "effectiveAmountUsdc" to strategy.amountValue.toPlainString()
-        ).plus(pricingPayload(pricing, orderbookRefreshed))
+        ).plus(metricsDiagnostics(metrics))
+            .plus(pricingPayload(pricing, orderbookRefreshed))
             .plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, orderbookRefreshed))
             .toJson()
         recordDecisionOncePerPeriod(

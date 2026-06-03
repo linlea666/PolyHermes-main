@@ -46,6 +46,10 @@ data class GammaEventBySlugResponse(
     val title: String? = null,
     val startDate: String? = null,
     val endDate: String? = null,
+    val targetPrice: String? = null,
+    val openPrice: String? = null,
+    val initialValue: String? = null,
+    val startPrice: String? = null,
     val markets: List<GammaEventMarketItem>? = null
 )
 
@@ -57,6 +61,10 @@ data class GammaEventMarketItem(
     val question: String? = null,
     val endDate: String? = null,
     val startDate: String? = null,
+    val targetPrice: String? = null,
+    val openPrice: String? = null,
+    val initialValue: String? = null,
+    val startPrice: String? = null,
     val clobTokenIds: String? = null
 )
 
@@ -112,4 +120,3 @@ data class MarketResponse(
     val negRisk: Boolean? = null,       // 事件级 neg risk（部分 API 直接返回在 market）
     val negRiskOther: Boolean? = null  // Market 级 neg risk 标记
 )
-

@@ -946,6 +946,9 @@ const CryptoTailMonitor: React.FC = () => {
   const currentSpread = pushData?.spreadBtc
   const officialSource = pushData?.officialPriceSource ?? initData?.officialPriceSource
   const officialAge = pushData?.officialPriceAgeMs ?? initData?.officialPriceAgeMs
+  const priceMode = pushData?.priceMode ?? initData?.priceMode
+  const latestPriceAge = pushData?.latestPriceAgeMs ?? initData?.latestPriceAgeMs ?? officialAge
+  const latestSampleTime = pushData?.latestSampleTime ?? initData?.latestSampleTime
   const priceReadyReason = pushData?.priceReadyReason ?? initData?.priceReadyReason
   const fallbackUsed = pushData?.fallbackUsed ?? initData?.fallbackUsed
   const minSpreadUpStr = pushData?.minSpreadLineUp ?? initData?.autoMinSpreadUp
@@ -1284,7 +1287,11 @@ const CryptoTailMonitor: React.FC = () => {
                 {officialSource || '-'}
               </Tag>
               <Text type="secondary">状态: {priceReadyReason || '-'}</Text>
-              <Text type="secondary">年龄: {officialAge != null ? `${officialAge}ms` : '-'}</Text>
+              <Text type="secondary">模式: {priceMode || '-'}</Text>
+              <Text type="secondary">年龄: {latestPriceAge != null ? `${latestPriceAge}ms` : '-'}</Text>
+              <Text type="secondary">
+                样本: {latestSampleTime != null ? new Date(latestSampleTime).toLocaleTimeString() : '-'}
+              </Text>
               <Text type="secondary">Open: {openPrice ? formatNumber(openPrice, 2) : '-'}</Text>
               <Text type="secondary">Close: {currentPrice ? formatNumber(currentPrice, 2) : '-'}</Text>
             </Space>

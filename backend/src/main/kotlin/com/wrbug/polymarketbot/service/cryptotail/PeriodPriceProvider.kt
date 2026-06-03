@@ -19,7 +19,12 @@ interface PeriodPriceProvider {
         val coin: String?,
         val ready: Boolean,
         val reason: String,
-        val ageMs: Long? = null
+        val ageMs: Long? = null,
+        val priceMode: String? = null,
+        val lastSnapshotAt: Long? = null,
+        val lastRealtimeUpdateAt: Long? = null,
+        val latestPriceAgeMs: Long? = ageMs,
+        val latestSampleTime: Long? = null
     )
 
     data class Ohlc1m(

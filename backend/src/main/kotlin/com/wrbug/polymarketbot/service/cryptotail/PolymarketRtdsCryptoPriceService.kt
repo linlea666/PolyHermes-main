@@ -9,6 +9,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -17,6 +19,7 @@ import java.math.BigInteger
 import java.math.RoundingMode
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentSkipListMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Polymarket RTDS 加密价源服务（crypto-tail 障碍模式免凭证价源）。
@@ -45,24 +48,41 @@ class PolymarketRtdsCryptoPriceService {
     @Volatile
     private var started = false
 
-    /** 当前最新价：coin -> (price, tsMillis) */
-    private val latestPrice = ConcurrentHashMap<String, Pair<BigDecimal, Long>>()
+    private data class LatestPriceState(
+        val price: BigDecimal,
+        val sampleTimeMs: Long,
+        val receivedAtMs: Long,
+        val priceMode: String
+    )
 
-    /** 稀疏历史价：coin -> (tsSeconds 网格 -> price)，floorEntry 取期初/边界价 */
+    /** 当前最新价：coin -> RTDS 样本价；新鲜度必须按 sampleTimeMs 计算，不能用收到消息的时间伪造。 */
+    private val latestPrice = ConcurrentHashMap<String, LatestPriceState>()
+
+    /** 稀疏历史价：coin -> (RTDS 样本秒 -> price)，floorEntry 取期初/边界价 */
     private val priceHistory = ConcurrentHashMap<String, ConcurrentSkipListMap<Long, BigDecimal>>()
+
+    /** 历史样本去重：coin -> exact sampleTimeMs 集合，避免重复 snapshot 污染 OHLC/sigma/wick。 */
+    private val seenHistorySamples = ConcurrentHashMap<String, MutableSet<Long>>()
+
+    private val lastSnapshotAt = ConcurrentHashMap<String, Long>()
+    private val lastRealtimeUpdateAt = ConcurrentHashMap<String, Long>()
+    private val nextRefreshAllowedAt = ConcurrentHashMap<String, AtomicLong>()
 
     /** 历史价保留时长（秒）：覆盖最深 σ 回看（15m × 20 周期 = 5h），留足 6h */
     private val historyRetentionSeconds = 6L * 3600
-    /** 历史价采样网格（秒）：控制内存与 floorEntry 精度，5s 对 gap/σ 量级可忽略 */
-    private val historyGridSeconds = 5L
     /** 最新价新鲜度阈值（毫秒）：RTDS 约每秒一推，超过则视为未就绪 */
     private val freshnessMs = 30_000L
+    /** snapshot 刷新节流：只给缺 realtime / 缺 latest / stale 的币种补订阅。 */
+    private val snapshotRefreshIntervalMs = 4_000L
+    private val snapshotRefreshBackoffMs = 15_000L
     private val priceScale = 8
 
     companion object {
         /** RTDS chainlink 支持的币种（btc/usd、eth/usd、sol/usd、xrp/usd） */
         private val SUPPORTED_COINS = CryptoTailCoinResolver.supportedCoins
         private val WEI = BigDecimal.TEN.pow(18)
+        const val PRICE_MODE_REALTIME_UPDATE = "REALTIME_UPDATE"
+        const val PRICE_MODE_SUBSCRIBE_SNAPSHOT = "SUBSCRIBE_SNAPSHOT"
     }
 
     // ---------------- 对外接口 ----------------
@@ -77,7 +97,7 @@ class PolymarketRtdsCryptoPriceService {
         val coin = coinOfSlug(marketSlugPrefix) ?: return false
         ensureStarted()
         val cached = latestPrice[coin] ?: return false
-        return wsClient?.isConnected() == true && System.currentTimeMillis() - cached.second <= freshnessMs
+        return wsClient?.isConnected() == true && priceAgeMs(cached) <= freshnessMs
     }
 
     /** 当前最新价；未连接/不新鲜返回 null */
@@ -85,15 +105,15 @@ class PolymarketRtdsCryptoPriceService {
         val coin = coinOfSlug(marketSlugPrefix) ?: return null
         ensureStarted()
         val cached = latestPrice[coin] ?: return null
-        if (System.currentTimeMillis() - cached.second > freshnessMs) return null
-        return cached.first
+        if (priceAgeMs(cached) > freshnessMs) return null
+        return cached.price
     }
 
     fun currentPriceAgeMs(marketSlugPrefix: String): Long? {
         val coin = coinOfSlug(marketSlugPrefix) ?: return null
         ensureStarted()
         val cached = latestPrice[coin] ?: return null
-        return (System.currentTimeMillis() - cached.second).coerceAtLeast(0L)
+        return priceAgeMs(cached)
     }
 
     fun readiness(marketSlugPrefix: String): PeriodPriceProvider.PriceReadiness {
@@ -101,14 +121,14 @@ class PolymarketRtdsCryptoPriceService {
             ?: return PeriodPriceProvider.PriceReadiness("RTDS", null, false, "UNSUPPORTED_SLUG")
         ensureStarted()
         val connected = wsClient?.isConnected() == true
-        if (!connected) return PeriodPriceProvider.PriceReadiness("RTDS", coin, false, "WS_DISCONNECTED")
+        if (!connected) return readinessFor(coin, false, "WS_DISCONNECTED")
         val cached = latestPrice[coin]
-            ?: return PeriodPriceProvider.PriceReadiness("RTDS", coin, false, "NO_LATEST_PRICE")
-        val age = (System.currentTimeMillis() - cached.second).coerceAtLeast(0L)
+            ?: return readinessFor(coin, false, "NO_LATEST_PRICE")
+        val age = priceAgeMs(cached)
         return if (age <= freshnessMs) {
-            PeriodPriceProvider.PriceReadiness("RTDS", coin, true, "OK", age)
+            readinessFor(coin, true, "OK", cached)
         } else {
-            PeriodPriceProvider.PriceReadiness("RTDS", coin, false, "STALE_PRICE", age)
+            readinessFor(coin, false, "STALE_PRICE", cached)
         }
     }
 
@@ -157,6 +177,7 @@ class PolymarketRtdsCryptoPriceService {
             if (started) return
             started = true
             connect()
+            startSnapshotRefreshLoop()
         }
     }
 
@@ -181,14 +202,59 @@ class PolymarketRtdsCryptoPriceService {
     private fun subscribe() {
         try {
             // 按已验证的报文格式逐币种订阅（filters 为 JSON 字符串 {"symbol":"btc/usd"}），稳妥且与 Polymarket 协议一致
-            val subs = SUPPORTED_COINS.joinToString(",") { coin ->
-                "{\"topic\":\"crypto_prices_chainlink\",\"type\":\"*\",\"filters\":\"{\\\"symbol\\\":\\\"$coin/usd\\\"}\"}"
-            }
-            wsClient?.sendMessage("{\"action\":\"subscribe\",\"subscriptions\":[$subs]}")
+            wsClient?.sendMessage(subscribeMessage(SUPPORTED_COINS))
             logger.info("RTDS 加密价源已订阅 crypto_prices_chainlink（$SUPPORTED_COINS）")
         } catch (e: Exception) {
             logger.warn("RTDS 加密价源订阅失败: ${e.message}")
+            backoffAllRefreshes()
         }
+    }
+
+    private fun subscribeCoins(coins: Collection<String>): Boolean {
+        if (coins.isEmpty()) return true
+        return try {
+            wsClient?.sendMessage(subscribeMessage(coins))
+            true
+        } catch (e: Exception) {
+            val now = System.currentTimeMillis()
+            coins.forEach { nextRefreshAllowedAt.computeIfAbsent(it) { AtomicLong(0) }.set(now + snapshotRefreshBackoffMs) }
+            logger.warn("RTDS 加密价源补订阅失败 coins=$coins: ${e.message}")
+            false
+        }
+    }
+
+    private fun subscribeMessage(coins: Collection<String>): String {
+        val subs = coins.joinToString(",") { coin ->
+            "{\"topic\":\"crypto_prices_chainlink\",\"type\":\"*\",\"filters\":\"{\\\"symbol\\\":\\\"$coin/usd\\\"}\"}"
+        }
+        return "{\"action\":\"subscribe\",\"subscriptions\":[$subs]}"
+    }
+
+    private fun startSnapshotRefreshLoop() {
+        scope.launch {
+            while (isActive) {
+                delay(1_000L)
+                refreshSnapshotSubscriptionsIfNeeded()
+            }
+        }
+    }
+
+    private fun refreshSnapshotSubscriptionsIfNeeded(now: Long = System.currentTimeMillis()) {
+        val client = wsClient
+        if (client?.isConnected() != true) {
+            SUPPORTED_COINS.forEach { nextRefreshAllowedAt.computeIfAbsent(it) { AtomicLong(0) }.set(now + snapshotRefreshIntervalMs) }
+            return
+        }
+        val due = SUPPORTED_COINS.filter { coin ->
+            val allowedAt = nextRefreshAllowedAt.computeIfAbsent(coin) { AtomicLong(0) }
+            if (now < allowedAt.get()) return@filter false
+            val latest = latestPrice[coin]
+            val noFreshRealtime = lastRealtimeUpdateAt[coin]?.let { now - it > freshnessMs } ?: true
+            latest == null || priceAgeMs(latest, now) > freshnessMs || noFreshRealtime
+        }
+        if (due.isEmpty()) return
+        due.forEach { nextRefreshAllowedAt.computeIfAbsent(it) { AtomicLong(0) }.set(now + snapshotRefreshIntervalMs) }
+        subscribeCoins(due)
     }
 
     private fun handleMessage(text: String) {
@@ -199,44 +265,87 @@ class PolymarketRtdsCryptoPriceService {
         when {
             // 订阅回填快照：data 数组（最近约 2 分钟逐秒价）
             payload.data != null -> {
+                lastSnapshotAt[coin] = System.currentTimeMillis()
                 for (point in payload.data) {
                     val price = doubleToPrice(point.value) ?: continue
-                    if (point.timestamp > 0) recordHistory(coin, point.timestamp / 1000, price)
+                    val sampleTimeMs = point.timestamp.takeIf { it > 0 } ?: continue
+                    recordHistory(coin, sampleTimeMs, price)
+                    updateLatest(coin, price, sampleTimeMs, PRICE_MODE_SUBSCRIBE_SNAPSHOT)
                 }
             }
             // 实时更新：单点
             else -> {
                 val price = payload.priceBd() ?: return
-                val tsMs = when {
+                val sampleTimeMs = when {
                     payload.timestamp > 0 -> payload.timestamp
                     msg.timestamp > 0 -> msg.timestamp
-                    else -> System.currentTimeMillis()
+                    else -> return
                 }
-                updateLatest(coin, price, tsMs)
-                recordHistory(coin, tsMs / 1000, price)
+                lastRealtimeUpdateAt[coin] = System.currentTimeMillis()
+                updateLatest(coin, price, sampleTimeMs, PRICE_MODE_REALTIME_UPDATE)
+                recordHistory(coin, sampleTimeMs, price)
             }
         }
     }
 
     // ---------------- 内部缓存 ----------------
 
-    private fun updateLatest(coin: String, price: BigDecimal, tsMs: Long) {
+    private fun updateLatest(coin: String, price: BigDecimal, sampleTimeMs: Long, priceMode: String) {
+        if (sampleTimeMs <= 0) return
+        val now = System.currentTimeMillis()
         latestPrice.compute(coin) { _, old ->
-            if (old == null || tsMs >= old.second) price to tsMs else old
+            if (old == null || sampleTimeMs > old.sampleTimeMs) {
+                LatestPriceState(price, sampleTimeMs, now, priceMode)
+            } else {
+                old
+            }
         }
     }
 
-    /** 按 historyGridSeconds 网格落点写入（同槽位以最新价覆盖），并裁剪超期数据 */
-    private fun recordHistory(coin: String, tsSeconds: Long, price: BigDecimal) {
+    /** 按 RTDS 样本秒写入历史，并用 exact sampleTimeMs 去重。 */
+    private fun recordHistory(coin: String, sampleTimeMs: Long, price: BigDecimal) {
+        if (sampleTimeMs <= 0) return
+        val seen = seenHistorySamples.computeIfAbsent(coin) { ConcurrentHashMap.newKeySet() }
+        if (!seen.add(sampleTimeMs)) return
+        val tsSeconds = sampleTimeMs / 1000
         if (tsSeconds <= 0) return
         val map = priceHistory.computeIfAbsent(coin) { ConcurrentSkipListMap() }
-        val slot = tsSeconds - (tsSeconds % historyGridSeconds)
-        map[slot] = price
+        map[tsSeconds] = price
         val cutoff = (System.currentTimeMillis() / 1000) - historyRetentionSeconds
-        val first = map.firstKey()
+        val first = if (map.isEmpty()) null else map.firstKey()
         if (first != null && first < cutoff) {
             map.headMap(cutoff).clear()
+            seen.removeIf { (it / 1000) < cutoff }
         }
+    }
+
+    private fun priceAgeMs(state: LatestPriceState, now: Long = System.currentTimeMillis()): Long =
+        (now - state.sampleTimeMs).coerceAtLeast(0L)
+
+    private fun readinessFor(
+        coin: String,
+        ready: Boolean,
+        reason: String,
+        latest: LatestPriceState? = latestPrice[coin]
+    ): PeriodPriceProvider.PriceReadiness {
+        val age = latest?.let { priceAgeMs(it) }
+        return PeriodPriceProvider.PriceReadiness(
+            source = "RTDS",
+            coin = coin,
+            ready = ready,
+            reason = reason,
+            ageMs = age,
+            priceMode = latest?.priceMode,
+            lastSnapshotAt = lastSnapshotAt[coin],
+            lastRealtimeUpdateAt = lastRealtimeUpdateAt[coin],
+            latestPriceAgeMs = age,
+            latestSampleTime = latest?.sampleTimeMs
+        )
+    }
+
+    private fun backoffAllRefreshes() {
+        val next = System.currentTimeMillis() + snapshotRefreshBackoffMs
+        SUPPORTED_COINS.forEach { nextRefreshAllowedAt.computeIfAbsent(it) { AtomicLong(0) }.set(next) }
     }
 
     private fun coinOfSymbol(symbol: String): String? {

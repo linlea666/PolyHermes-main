@@ -1930,6 +1930,11 @@ export interface CryptoTailMonitorInitResponse {
   officialClose?: string
   officialPriceSource?: string
   officialPriceAgeMs?: number | null
+  priceMode?: string
+  lastSnapshotAt?: number | null
+  lastRealtimeUpdateAt?: number | null
+  latestPriceAgeMs?: number | null
+  latestSampleTime?: number | null
   priceReadyReason?: string
   coin?: string
   fallbackUsed?: boolean
@@ -1984,6 +1989,11 @@ export interface CryptoTailMonitorPushData {
   officialClose?: string
   officialPriceSource?: string
   officialPriceAgeMs?: number | null
+  priceMode?: string
+  lastSnapshotAt?: number | null
+  lastRealtimeUpdateAt?: number | null
+  latestPriceAgeMs?: number | null
+  latestSampleTime?: number | null
   priceReadyReason?: string
   coin?: string
   fallbackUsed?: boolean

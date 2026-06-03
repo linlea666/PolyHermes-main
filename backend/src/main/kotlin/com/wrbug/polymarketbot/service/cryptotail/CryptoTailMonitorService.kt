@@ -68,6 +68,11 @@ class CryptoTailMonitorService(
         val reason: String,
         val coin: String?,
         val fallbackUsed: Boolean,
+        val priceMode: String? = null,
+        val lastSnapshotAt: Long? = null,
+        val lastRealtimeUpdateAt: Long? = null,
+        val latestPriceAgeMs: Long? = null,
+        val latestSampleTime: Long? = null,
         val legacyOpen: BigDecimal? = null,
         val legacyClose: BigDecimal? = null,
         val legacySource: String? = null
@@ -77,7 +82,7 @@ class CryptoTailMonitorService(
         val status = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
         val official = periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
         if (official != null) {
-            return OfficialPriceSnapshot(official.first, official.second, status.source, status.ageMs, status.reason, status.coin, false)
+            return officialSnapshot(official.first, official.second, status, false)
         }
         if (strategy.mode == com.wrbug.polymarketbot.enums.TradingMode.LEGACY_SPREAD) {
             val fallback = binanceKlineService.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
@@ -90,14 +95,39 @@ class CryptoTailMonitorService(
                     reason = "LEGACY_ONLY",
                     coin = status.coin,
                     fallbackUsed = false,
+                    priceMode = status.priceMode,
+                    lastSnapshotAt = status.lastSnapshotAt,
+                    lastRealtimeUpdateAt = status.lastRealtimeUpdateAt,
+                    latestPriceAgeMs = status.latestPriceAgeMs,
+                    latestSampleTime = status.latestSampleTime,
                     legacyOpen = fallback.first,
                     legacyClose = fallback.second,
                     legacySource = "BINANCE"
                 )
             }
         }
-        return OfficialPriceSnapshot(null, null, status.source, status.ageMs, status.reason, status.coin, false)
+        return officialSnapshot(null, null, status, false)
     }
+
+    private fun officialSnapshot(
+        open: BigDecimal?,
+        close: BigDecimal?,
+        status: PeriodPriceProvider.PriceReadiness,
+        fallbackUsed: Boolean
+    ): OfficialPriceSnapshot = OfficialPriceSnapshot(
+        open = open,
+        close = close,
+        source = status.source,
+        ageMs = status.ageMs,
+        reason = status.reason,
+        coin = status.coin,
+        fallbackUsed = fallbackUsed,
+        priceMode = status.priceMode,
+        lastSnapshotAt = status.lastSnapshotAt,
+        lastRealtimeUpdateAt = status.lastRealtimeUpdateAt,
+        latestPriceAgeMs = status.latestPriceAgeMs,
+        latestSampleTime = status.latestSampleTime
+    )
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     /** 当前周期 token 映射 */
@@ -254,6 +284,11 @@ class CryptoTailMonitorService(
                 officialClose = officialPrice.close?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
                 officialPriceSource = officialPrice.source,
                 officialPriceAgeMs = officialPrice.ageMs,
+                priceMode = officialPrice.priceMode,
+                lastSnapshotAt = officialPrice.lastSnapshotAt,
+                lastRealtimeUpdateAt = officialPrice.lastRealtimeUpdateAt,
+                latestPriceAgeMs = officialPrice.latestPriceAgeMs,
+                latestSampleTime = officialPrice.latestSampleTime,
                 priceReadyReason = officialPrice.reason,
                 coin = officialPrice.coin,
                 fallbackUsed = officialPrice.fallbackUsed,
@@ -830,6 +865,11 @@ class CryptoTailMonitorService(
             officialClose = officialPrice.close?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
             officialPriceSource = officialPrice.source,
             officialPriceAgeMs = officialPrice.ageMs,
+            priceMode = officialPrice.priceMode,
+            lastSnapshotAt = officialPrice.lastSnapshotAt,
+            lastRealtimeUpdateAt = officialPrice.lastRealtimeUpdateAt,
+            latestPriceAgeMs = officialPrice.latestPriceAgeMs,
+            latestSampleTime = officialPrice.latestSampleTime,
             priceReadyReason = officialPrice.reason,
             coin = officialPrice.coin,
             fallbackUsed = officialPrice.fallbackUsed,

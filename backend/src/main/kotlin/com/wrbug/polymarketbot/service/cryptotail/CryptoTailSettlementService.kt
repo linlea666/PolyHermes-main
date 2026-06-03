@@ -218,7 +218,11 @@ class CryptoTailSettlementService(
                 payload["finalOpen"] = fOpen.toPlainString()
                 payload["finalClose"] = fClose.toPlainString()
                 payload["finalGap"] = fClose.subtract(fOpen).toPlainString()
-                payload["finalPriceSource"] = if (strategy.mode != TradingMode.LEGACY_SPREAD) "CHAINLINK" else "BINANCE"
+                payload["finalPriceSource"] = if (strategy.mode != TradingMode.LEGACY_SPREAD) {
+                    periodPriceProvider.getReadiness(strategy.marketSlugPrefix).source
+                } else {
+                    "BINANCE"
+                }
             }
             decisionRecorder.record(
                 CryptoTailDecisionEvent(
