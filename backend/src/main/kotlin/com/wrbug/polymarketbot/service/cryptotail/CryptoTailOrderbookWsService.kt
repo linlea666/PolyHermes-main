@@ -177,11 +177,13 @@ class CryptoTailOrderbookWsService(
                 var bestBid: BigDecimal? = null
                 var bestBidSize: BigDecimal? = null
                 var bidDepthUsd = BigDecimal.ZERO
+                val bidLevels = mutableListOf<OrderbookQualitySnapshot.BookLevel>()
                 for (i in 0 until bids.size()) {
                     val level = bids.get(i) as? com.google.gson.JsonObject ?: continue
                     val p = (level.get("price") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: continue
                     val size = (level.get("size") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: BigDecimal.ZERO
                     bidDepthUsd = bidDepthUsd.add(p.multiply(size))
+                    bidLevels.add(OrderbookQualitySnapshot.BookLevel(p, size))
                     if (bestBid == null || p.gt(bestBid)) {
                         bestBid = p
                         bestBidSize = size
@@ -217,7 +219,8 @@ class CryptoTailOrderbookWsService(
                         spread = bestAsk?.subtract(bestBid),
                         quoteUpdatedAtMs = nowMs,
                         depthUpdatedAtMs = nowMs,
-                        depthStale = false
+                        depthStale = false,
+                        bidLevels = bidLevels.sortedByDescending { it.price }
                     )
                     orderbookCache[assetId] = snapshot
                     onBestBid(assetId, snapshot)
@@ -247,7 +250,8 @@ class CryptoTailOrderbookWsService(
                             spread = (bestAsk ?: prev?.bestAsk)?.subtract(bestBid),
                             quoteUpdatedAtMs = nowMs,
                             depthUpdatedAtMs = prev?.depthUpdatedAtMs,
-                            depthStale = prev?.depthUpdatedAtMs == null
+                            depthStale = prev?.depthUpdatedAtMs == null,
+                            bidLevels = prev?.bidLevels ?: emptyList()
                         )
                         orderbookCache[assetId] = snapshot
                         onBestBid(assetId, snapshot)

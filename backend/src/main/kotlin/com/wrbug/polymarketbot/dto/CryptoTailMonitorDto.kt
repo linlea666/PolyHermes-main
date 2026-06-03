@@ -48,8 +48,15 @@ data class CryptoTailMonitorInitResponse(
     val autoMinSpreadUp: String? = null,
     /** 自动计算的最小价差 (Down方向) */
     val autoMinSpreadDown: String? = null,
-    /** BTC 开盘价 USDC（来自币安 K 线 open） */
+    /** 兼容旧字段：官方标的开盘价（概率模式）或 Binance 开盘价（legacy） */
     val openPriceBtc: String? = null,
+    val officialOpen: String? = null,
+    val officialClose: String? = null,
+    val officialPriceSource: String? = null,
+    val officialPriceAgeMs: Long? = null,
+    val priceReadyReason: String? = null,
+    val coin: String? = null,
+    val fallbackUsed: Boolean = false,
     /** Up tokenId */
     val tokenIdUp: String? = null,
     /** Down tokenId */
@@ -88,12 +95,21 @@ data class CryptoTailMonitorPushData(
     val minSpreadLineUp: String? = null,
     /** 最小价差线 (Down方向，USDC 价差) */
     val minSpreadLineDown: String? = null,
-    /** BTC 开盘价 USDC（币安 K 线 open） */
+    /** 兼容旧字段：官方标的开盘价（概率模式）或 Binance 开盘价（legacy） */
     val openPriceBtc: String? = null,
-    /** BTC 最新价 USDC（币安 K 线 close，当前周期实时） */
+    /** 兼容旧字段：官方标的最新价（概率模式）或 Binance 最新价（legacy） */
     val currentPriceBtc: String? = null,
     /** BTC 价差 USDC（currentPriceBtc - openPriceBtc） */
     val spreadBtc: String? = null,
+    val officialOpen: String? = null,
+    val officialClose: String? = null,
+    val officialPriceSource: String? = null,
+    val officialPriceAgeMs: Long? = null,
+    val priceReadyReason: String? = null,
+    val coin: String? = null,
+    val fallbackUsed: Boolean = false,
+    val outcomeBestBidUp: String? = null,
+    val outcomeBestBidDown: String? = null,
     /** 周期剩余秒数 */
     val remainingSeconds: Int = 0,
     /** 是否在时间窗口内 */

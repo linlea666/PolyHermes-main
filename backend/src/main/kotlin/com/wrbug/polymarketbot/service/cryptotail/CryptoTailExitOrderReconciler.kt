@@ -213,7 +213,7 @@ class CryptoTailExitOrderReconciler(
         exitRepository.save(updated)
         val resultType = when {
             status == "success" && (exit.exitKind == "TP1" || exit.exitKind == "TP2") -> "TAKE_PROFIT_RESULT"
-            status == "success" && exit.exitKind.contains("STOP") -> "STOP_LOSS_RESULT"
+            status == "success" && isStopLossKind(exit.exitKind) -> "STOP_LOSS_RESULT"
             status == "success" -> "EXIT_RESULT"
             else -> "EXIT_FAILED"
         }
@@ -243,6 +243,15 @@ class CryptoTailExitOrderReconciler(
         )
         logger.info("阶梯退出对账定夺: exitId=${exit.id} kind=${exit.exitKind} orderId=${exit.orderId} status=$status filled=${filledSize?.toPlainString()} reason=$reason")
     }
+
+    private fun isStopLossKind(kind: String): Boolean =
+        kind == "STOP" ||
+            kind == "HARD_STOP" ||
+            kind == "MODEL_INVALID" ||
+            kind == "MODEL_FLIP" ||
+            kind == "GAP_FLIP" ||
+            kind == "TRAILING_STOP" ||
+            kind == "WICK_REVERSAL"
 
     /**
      * 同步 trigger 的 remainingSize 与 exitStatus：

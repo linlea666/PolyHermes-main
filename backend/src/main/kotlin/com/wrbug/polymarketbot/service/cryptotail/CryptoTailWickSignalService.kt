@@ -64,7 +64,9 @@ class CryptoTailWickSignalService(
     }
 
     fun evaluate(strategy: CryptoTailStrategy, outcomeIndex: Int, nowSeconds: Long = System.currentTimeMillis() / 1000): Signal {
-        if (!strategy.enableWickFilter) return Signal(available = false, outcomeIndex = outcomeIndex)
+        if (!strategy.enableWickFilter || strategy.wickFilterMode.uppercase() == "OFF") {
+            return Signal(available = false, outcomeIndex = outcomeIndex)
+        }
         val lookback = strategy.wickLookbackMinutes.coerceIn(1, 10)
         val maWindow = strategy.wickMaWindow.coerceIn(1, 20)
         val candles = periodPriceProvider.getRecentOhlc1m(strategy.marketSlugPrefix, maxOf(lookback, maWindow), nowSeconds)

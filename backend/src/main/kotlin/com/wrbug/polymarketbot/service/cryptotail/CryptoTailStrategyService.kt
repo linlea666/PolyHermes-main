@@ -158,6 +158,7 @@ class CryptoTailStrategyService(
             val emergencyExitOnGapFlip = request.emergencyExitOnGapFlip ?: true
             val exitPollIntervalMs = request.exitPollIntervalMs ?: 3000
             val enableWickFilter = request.enableWickFilter ?: true
+            val wickFilterMode = normalizeWickFilterMode(request.wickFilterMode)
             val wickLookbackMinutes = request.wickLookbackMinutes ?: 2
             val wickMinBodyRatio = request.wickMinBodyRatio?.toSafeBigDecimal() ?: BigDecimal("0.20")
             val wickRejectionRatio = request.wickRejectionRatio?.toSafeBigDecimal() ?: BigDecimal("0.55")
@@ -176,6 +177,8 @@ class CryptoTailStrategyService(
             val maxEntrySpread = request.maxEntrySpread?.toSafeBigDecimal() ?: BigDecimal("0.03")
             val maxOrderbookAgeMs = request.maxOrderbookAgeMs ?: 3000
             val maxPriceAgeMs = request.maxPriceAgeMs ?: 3000
+            val minRemainingSeconds = request.minRemainingSeconds ?: 90
+            val maxRemainingSeconds = request.maxRemainingSeconds ?: 420
             val minExitBidDepthUsdc = request.minExitBidDepthUsdc?.toSafeBigDecimal() ?: BigDecimal("2.00")
             val maxExitSpread = request.maxExitSpread?.toSafeBigDecimal() ?: BigDecimal("0.05")
             val enableTrailingStop = request.enableTrailingStop ?: true
@@ -203,7 +206,8 @@ class CryptoTailStrategyService(
                     takeProfitSellPct2, exitPollIntervalMs, wickLookbackMinutes, wickMinBodyRatio, wickRejectionRatio, wickMaWindow,
                     wickEntryBlockScore, wickExitScore, wickHoldProfitScore, wickVolumeSpikeRatio, wickMinTicksPerCandle,
                     wickMinRangeSigmaRatio, wickClosePositionUpMax, wickClosePositionDownMin, maxHoldTp1DelaySeconds,
-                    holdTp1PeakDrawdown, maxEntrySpread, maxOrderbookAgeMs, maxPriceAgeMs, minExitBidDepthUsdc, maxExitSpread,
+                    holdTp1PeakDrawdown, maxEntrySpread, maxOrderbookAgeMs, maxPriceAgeMs, minRemainingSeconds, maxRemainingSeconds,
+                    wickFilterMode, minExitBidDepthUsdc, maxExitSpread,
                     trailingStartDelta, trailingDrawdown, trailingSellPct, maxOrdersPerDay, maxConsecutiveLosses, pauseAfterLossMinutes
                 )) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
@@ -285,6 +289,7 @@ class CryptoTailStrategyService(
                 emergencyExitOnGapFlip = emergencyExitOnGapFlip,
                 exitPollIntervalMs = exitPollIntervalMs,
                 enableWickFilter = enableWickFilter,
+                wickFilterMode = wickFilterMode,
                 wickLookbackMinutes = wickLookbackMinutes,
                 wickMinBodyRatio = wickMinBodyRatio,
                 wickRejectionRatio = wickRejectionRatio,
@@ -303,6 +308,8 @@ class CryptoTailStrategyService(
                 maxEntrySpread = maxEntrySpread,
                 maxOrderbookAgeMs = maxOrderbookAgeMs,
                 maxPriceAgeMs = maxPriceAgeMs,
+                minRemainingSeconds = minRemainingSeconds,
+                maxRemainingSeconds = maxRemainingSeconds,
                 minExitBidDepthUsdc = minExitBidDepthUsdc,
                 maxExitSpread = maxExitSpread,
                 enableTrailingStop = enableTrailingStop,
@@ -434,6 +441,7 @@ class CryptoTailStrategyService(
             val newEmergencyExitOnGapFlip = request.emergencyExitOnGapFlip ?: existing.emergencyExitOnGapFlip
             val newExitPollIntervalMs = request.exitPollIntervalMs ?: existing.exitPollIntervalMs
             val newEnableWickFilter = request.enableWickFilter ?: existing.enableWickFilter
+            val newWickFilterMode = request.wickFilterMode?.let { normalizeWickFilterMode(it) } ?: existing.wickFilterMode
             val newWickLookbackMinutes = request.wickLookbackMinutes ?: existing.wickLookbackMinutes
             val newWickMinBodyRatio = request.wickMinBodyRatio?.toSafeBigDecimal() ?: existing.wickMinBodyRatio
             val newWickRejectionRatio = request.wickRejectionRatio?.toSafeBigDecimal() ?: existing.wickRejectionRatio
@@ -452,6 +460,8 @@ class CryptoTailStrategyService(
             val newMaxEntrySpread = request.maxEntrySpread?.toSafeBigDecimal() ?: existing.maxEntrySpread
             val newMaxOrderbookAgeMs = request.maxOrderbookAgeMs ?: existing.maxOrderbookAgeMs
             val newMaxPriceAgeMs = request.maxPriceAgeMs ?: existing.maxPriceAgeMs
+            val newMinRemainingSeconds = request.minRemainingSeconds ?: existing.minRemainingSeconds
+            val newMaxRemainingSeconds = request.maxRemainingSeconds ?: existing.maxRemainingSeconds
             val newMinExitBidDepthUsdc = request.minExitBidDepthUsdc?.toSafeBigDecimal() ?: existing.minExitBidDepthUsdc
             val newMaxExitSpread = request.maxExitSpread?.toSafeBigDecimal() ?: existing.maxExitSpread
             val newEnableTrailingStop = request.enableTrailingStop ?: existing.enableTrailingStop
@@ -480,7 +490,8 @@ class CryptoTailStrategyService(
                     newWickRejectionRatio, newWickMaWindow, newWickEntryBlockScore, newWickExitScore, newWickHoldProfitScore,
                     newWickVolumeSpikeRatio, newWickMinTicksPerCandle, newWickMinRangeSigmaRatio, newWickClosePositionUpMax,
                     newWickClosePositionDownMin, newMaxHoldTp1DelaySeconds, newHoldTp1PeakDrawdown, newMaxEntrySpread,
-                    newMaxOrderbookAgeMs, newMaxPriceAgeMs, newMinExitBidDepthUsdc, newMaxExitSpread, newTrailingStartDelta,
+                    newMaxOrderbookAgeMs, newMaxPriceAgeMs, newMinRemainingSeconds, newMaxRemainingSeconds, newWickFilterMode,
+                    newMinExitBidDepthUsdc, newMaxExitSpread, newTrailingStartDelta,
                     newTrailingDrawdown, newTrailingSellPct, newMaxOrdersPerDay, newMaxConsecutiveLosses, newPauseAfterLossMinutes
                 )) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
@@ -558,6 +569,7 @@ class CryptoTailStrategyService(
                 emergencyExitOnGapFlip = newEmergencyExitOnGapFlip,
                 exitPollIntervalMs = newExitPollIntervalMs,
                 enableWickFilter = newEnableWickFilter,
+                wickFilterMode = newWickFilterMode,
                 wickLookbackMinutes = newWickLookbackMinutes,
                 wickMinBodyRatio = newWickMinBodyRatio,
                 wickRejectionRatio = newWickRejectionRatio,
@@ -576,6 +588,8 @@ class CryptoTailStrategyService(
                 maxEntrySpread = newMaxEntrySpread,
                 maxOrderbookAgeMs = newMaxOrderbookAgeMs,
                 maxPriceAgeMs = newMaxPriceAgeMs,
+                minRemainingSeconds = newMinRemainingSeconds,
+                maxRemainingSeconds = newMaxRemainingSeconds,
                 minExitBidDepthUsdc = newMinExitBidDepthUsdc,
                 maxExitSpread = newMaxExitSpread,
                 enableTrailingStop = newEnableTrailingStop,
@@ -1187,6 +1201,9 @@ class CryptoTailStrategyService(
         maxEntrySpread: BigDecimal,
         maxOrderbookAgeMs: Int,
         maxPriceAgeMs: Int,
+        minRemainingSeconds: Int,
+        maxRemainingSeconds: Int,
+        wickFilterMode: String,
         minExitBidDepthUsdc: BigDecimal,
         maxExitSpread: BigDecimal,
         trailingStartDelta: BigDecimal,
@@ -1229,6 +1246,8 @@ class CryptoTailStrategyService(
         if (maxEntrySpread < zero || maxEntrySpread > one) return false
         if (maxOrderbookAgeMs < 500) return false
         if (maxPriceAgeMs < 500) return false
+        if (minRemainingSeconds < 0 || maxRemainingSeconds < 0 || minRemainingSeconds > maxRemainingSeconds) return false
+        if (wickFilterMode != "OFF" && wickFilterMode != "SHADOW" && wickFilterMode != "ENFORCE") return false
         if (minExitBidDepthUsdc < zero) return false
         if (maxExitSpread < zero || maxExitSpread > one) return false
         if (trailingStartDelta < zero || trailingStartDelta > one) return false
@@ -1238,6 +1257,11 @@ class CryptoTailStrategyService(
         if (maxConsecutiveLosses != null && maxConsecutiveLosses < 0) return false
         if (pauseAfterLossMinutes < 0) return false
         return true
+    }
+
+    private fun normalizeWickFilterMode(mode: String?): String {
+        val normalized = (mode ?: "SHADOW").trim().uppercase()
+        return if (normalized == "OFF" || normalized == "SHADOW" || normalized == "ENFORCE") normalized else "SHADOW"
     }
 
     private fun generateStrategyName(marketSlugPrefix: String): String {
@@ -1331,6 +1355,7 @@ class CryptoTailStrategyService(
             emergencyExitOnGapFlip = e.emergencyExitOnGapFlip,
             exitPollIntervalMs = e.exitPollIntervalMs,
             enableWickFilter = e.enableWickFilter,
+            wickFilterMode = e.wickFilterMode,
             wickLookbackMinutes = e.wickLookbackMinutes,
             wickMinBodyRatio = e.wickMinBodyRatio.toPlainString(),
             wickRejectionRatio = e.wickRejectionRatio.toPlainString(),
@@ -1349,6 +1374,8 @@ class CryptoTailStrategyService(
             maxEntrySpread = e.maxEntrySpread.toPlainString(),
             maxOrderbookAgeMs = e.maxOrderbookAgeMs,
             maxPriceAgeMs = e.maxPriceAgeMs,
+            minRemainingSeconds = e.minRemainingSeconds,
+            maxRemainingSeconds = e.maxRemainingSeconds,
             minExitBidDepthUsdc = e.minExitBidDepthUsdc.toPlainString(),
             maxExitSpread = e.maxExitSpread.toPlainString(),
             enableTrailingStop = e.enableTrailingStop,

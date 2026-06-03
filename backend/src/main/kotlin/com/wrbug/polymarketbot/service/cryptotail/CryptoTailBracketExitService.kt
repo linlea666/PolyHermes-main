@@ -211,6 +211,20 @@ class CryptoTailBracketExitService(
                 logger.warn("阶梯退出跳过：targetSize=0 triggerId=$triggerId remaining=${freshRemaining.toPlainString()} ratio=${decision.ratio}")
                 return
             }
+            checkExitLiquidityForTarget(strategy, orderbook, bestBid, targetSize, decision.kind)?.let { waitReason ->
+                recordEvent(
+                    checked,
+                    eventType = "EXIT_CHECK",
+                    gateName = decision.kind.name,
+                    passed = false,
+                    reason = waitReason,
+                    pwinHolding = pwinHolding,
+                    bestBid = bestBid,
+                    remainingSeconds = remainingSeconds,
+                    extra = exitLiquidityPayload(orderbook, targetSize)
+                )
+                return
+            }
 
             placeExitOrder(
                 strategy = strategy,
@@ -329,7 +343,7 @@ class CryptoTailBracketExitService(
             }
         }
         val wick = wickSignalService.evaluate(strategy, trigger.outcomeIndex)
-        if (wick.available && wick.reversalScore >= strategy.wickExitScore) {
+        if (strategy.wickFilterMode.uppercase() == "ENFORCE" && wick.available && wick.reversalScore >= strategy.wickExitScore) {
             return Decision(ExitKind.WICK_REVERSAL, BigDecimal.ONE, "影线反转止损: score=${wick.reversalScore}>=${strategy.wickExitScore}", clearTp1HoldStartedAt = true)
         }
         if (holding != null &&
@@ -366,7 +380,7 @@ class CryptoTailBracketExitService(
         val tp1Line = entryFillPrice?.add(strategy.takeProfitDelta1)
         if (tp1Line != null && bestBid >= tp1Line && !hasExitOfKind(trigger.id!!, ExitKind.TP1) && !hasExitOfKind(trigger.id!!, ExitKind.TP2)) {
             checkTakeProfitLiquidity(strategy, orderbook, bestBid)?.let { return it }
-            if (wick.available && wick.continuationScore >= strategy.wickHoldProfitScore && remainingSeconds > strategy.forceExitBeforeSettleSeconds) {
+            if (strategy.wickFilterMode.uppercase() == "ENFORCE" && wick.available && wick.continuationScore >= strategy.wickHoldProfitScore && remainingSeconds > strategy.forceExitBeforeSettleSeconds) {
                 val holdStart = trigger.tp1HoldStartedAt ?: nowMs
                 val heldSeconds = ((nowMs - holdStart) / 1000L).coerceAtLeast(0L)
                 val peakBid = trigger.peakBid ?: bestBid
@@ -439,6 +453,38 @@ class CryptoTailBracketExitService(
         return null
     }
 
+    private fun checkExitLiquidityForTarget(
+        strategy: CryptoTailStrategy,
+        orderbook: OrderbookQualitySnapshot?,
+        bestBid: BigDecimal,
+        targetSize: BigDecimal,
+        kind: ExitKind
+    ): String? {
+        if (kind == ExitKind.HARD_STOP || kind == ExitKind.MODEL_FLIP || kind == ExitKind.GAP_FLIP || kind == ExitKind.FORCE) {
+            return null
+        }
+        val base = checkTakeProfitLiquidity(strategy, orderbook, bestBid)?.reason
+        if (base != null) return base
+        val expectedDepth = orderbook?.executableBidDepthUsd(targetSize) ?: BigDecimal.ZERO
+        if (expectedDepth < strategy.minExitBidDepthUsdc) {
+            return "退出流动性等待: executableExitDepthUsd=${expectedDepth.toPlainString()}<${strategy.minExitBidDepthUsdc.toPlainString()}"
+        }
+        return null
+    }
+
+    private fun exitLiquidityPayload(orderbook: OrderbookQualitySnapshot?, targetSize: BigDecimal): Map<String, Any> {
+        val expectedDepth = orderbook?.executableBidDepthUsd(targetSize)
+        val expectedPrice = orderbook?.expectedExitPrice(targetSize)
+        return mapOf(
+            "targetSize" to targetSize.toPlainString(),
+            "executableExitDepthUsd" to (expectedDepth?.toPlainString() ?: ""),
+            "expectedExitPrice" to (expectedPrice?.toPlainString() ?: ""),
+            "expectedExitSlippage" to (expectedPrice?.let { orderbook?.bestBid?.subtract(it)?.max(BigDecimal.ZERO)?.toPlainString() } ?: ""),
+            "bidDepthUsd" to (orderbook?.bidDepthUsd?.toPlainString() ?: ""),
+            "bidLevelCount" to (orderbook?.bidLevels?.size ?: 0)
+        )
+    }
+
     private fun gapSupportsHolding(trigger: CryptoTailStrategyTrigger, holding: HoldingState): Boolean {
         return when (trigger.outcomeIndex) {
             0 -> holding.gap > BigDecimal.ZERO
@@ -491,6 +537,8 @@ class CryptoTailBracketExitService(
         val drawdown = peakBid.subtract(bestBid).max(BigDecimal.ZERO)
         val remaining = trigger.remainingSize ?: BigDecimal.ZERO
         val realizedIfExit = bestBid.subtract(entryFillPrice).multiply(remaining).setScale(8, RoundingMode.HALF_UP)
+        val expectedExitPrice = orderbook?.expectedExitPrice(remaining)
+        val executableDepth = orderbook?.executableBidDepthUsd(remaining)
         val payload = mapOf(
             "positionId" to (trigger.id?.toString() ?: ""),
             "marketSlug" to strategy.marketSlugPrefix,
@@ -498,7 +546,7 @@ class CryptoTailBracketExitService(
             "outcomeIndex" to trigger.outcomeIndex,
             "entryFillPrice" to entryFillPrice.toPlainString(),
             "currentBestBid" to bestBid.toPlainString(),
-            "currentBestAsk" to "",
+            "currentBestAsk" to (orderbook?.bestAsk?.toPlainString() ?: ""),
             "entryPWin" to (trigger.entryPWin?.toPlainString() ?: ""),
             "currentPWin" to (holding?.pWinHolding?.toPlainString() ?: ""),
             "entrySafeRatio" to (trigger.entrySafeRatio?.toPlainString() ?: ""),
@@ -518,11 +566,13 @@ class CryptoTailBracketExitService(
             "reason" to decision.reason,
             "bidSize" to (orderbook?.bidSize?.toPlainString() ?: ""),
             "bidDepthUsd" to (orderbook?.bidDepthUsd?.toPlainString() ?: ""),
+            "executableExitDepthUsd" to (executableDepth?.toPlainString() ?: ""),
             "spread" to (orderbook?.spread?.toPlainString() ?: ""),
             "quoteAgeMs" to (orderbook?.quoteAgeMs() ?: ""),
             "depthAgeMs" to (orderbook?.depthAgeMs() ?: ""),
             "depthStale" to (orderbook?.depthStale ?: true),
-            "expectedExitPrice" to bestBid.toPlainString()
+            "expectedExitPrice" to (expectedExitPrice?.toPlainString() ?: bestBid.toPlainString()),
+            "expectedExitSlippage" to (expectedExitPrice?.let { bestBid.subtract(it).max(BigDecimal.ZERO).toPlainString() } ?: "")
         )
         decisionRecorder.record(
             CryptoTailDecisionEvent(
@@ -704,6 +754,9 @@ class CryptoTailBracketExitService(
                     "targetSize" to sizeStr,
                     "orderType" to recordOrderType,
                     "bidDepthUsd" to (orderbook?.bidDepthUsd?.toPlainString() ?: ""),
+                    "executableExitDepthUsd" to (orderbook?.executableBidDepthUsd(targetSize)?.toPlainString() ?: ""),
+                    "expectedExitPrice" to (orderbook?.expectedExitPrice(targetSize)?.toPlainString() ?: ""),
+                    "expectedExitSlippage" to (orderbook?.expectedExitPrice(targetSize)?.let { bestBid.subtract(it).max(BigDecimal.ZERO).toPlainString() } ?: ""),
                     "spread" to (orderbook?.spread?.toPlainString() ?: ""),
                     "quoteAgeMs" to (orderbook?.quoteAgeMs() ?: "")
                 )

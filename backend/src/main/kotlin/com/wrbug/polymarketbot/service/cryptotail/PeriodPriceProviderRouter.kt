@@ -45,6 +45,9 @@ class PeriodPriceProviderRouter(
     override fun isAvailable(marketSlugPrefix: String): Boolean =
         active().isAvailable(marketSlugPrefix)
 
+    override fun getReadiness(marketSlugPrefix: String): PeriodPriceProvider.PriceReadiness =
+        active().getReadiness(marketSlugPrefix)
+
     override fun getCurrentOpenClose(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? =
         active().getCurrentOpenClose(marketSlugPrefix, intervalSeconds, periodStartUnix)
 

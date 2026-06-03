@@ -228,6 +228,7 @@ const CryptoTailStrategyList: React.FC = () => {
       emergencyExitOnGapFlip: true,
       exitPollIntervalMs: 3000,
       enableWickFilter: true,
+      wickFilterMode: 'SHADOW',
       wickLookbackMinutes: 2,
       wickMinBodyRatio: '0.20',
       wickRejectionRatio: '0.55',
@@ -246,6 +247,8 @@ const CryptoTailStrategyList: React.FC = () => {
       maxEntrySpread: '0.03',
       maxOrderbookAgeMs: 3000,
       maxPriceAgeMs: 3000,
+      minRemainingSeconds: 90,
+      maxRemainingSeconds: 420,
       minExitBidDepthUsdc: '2.00',
       maxExitSpread: '0.05',
       enableTrailingStop: true,
@@ -338,6 +341,7 @@ const CryptoTailStrategyList: React.FC = () => {
       emergencyExitOnGapFlip: record.emergencyExitOnGapFlip ?? true,
       exitPollIntervalMs: record.exitPollIntervalMs ?? 3000,
       enableWickFilter: record.enableWickFilter ?? true,
+      wickFilterMode: record.wickFilterMode ?? 'SHADOW',
       wickLookbackMinutes: record.wickLookbackMinutes ?? 2,
       wickMinBodyRatio: record.wickMinBodyRatio ?? '0.20',
       wickRejectionRatio: record.wickRejectionRatio ?? '0.55',
@@ -356,6 +360,8 @@ const CryptoTailStrategyList: React.FC = () => {
       maxEntrySpread: record.maxEntrySpread ?? '0.03',
       maxOrderbookAgeMs: record.maxOrderbookAgeMs ?? 3000,
       maxPriceAgeMs: record.maxPriceAgeMs ?? 3000,
+      minRemainingSeconds: record.minRemainingSeconds ?? 90,
+      maxRemainingSeconds: record.maxRemainingSeconds ?? 420,
       minExitBidDepthUsdc: record.minExitBidDepthUsdc ?? '2.00',
       maxExitSpread: record.maxExitSpread ?? '0.05',
       enableTrailingStop: record.enableTrailingStop ?? true,
@@ -490,6 +496,7 @@ const CryptoTailStrategyList: React.FC = () => {
         emergencyExitOnGapFlip: v.emergencyExitOnGapFlip === true,
         exitPollIntervalMs: v.exitPollIntervalMs != null ? Number(v.exitPollIntervalMs) : undefined,
         enableWickFilter: v.enableWickFilter === true,
+        wickFilterMode: v.wickFilterMode != null ? String(v.wickFilterMode) : undefined,
         wickLookbackMinutes: v.wickLookbackMinutes != null ? Number(v.wickLookbackMinutes) : undefined,
         wickMinBodyRatio: v.wickMinBodyRatio != null ? String(v.wickMinBodyRatio) : undefined,
         wickRejectionRatio: v.wickRejectionRatio != null ? String(v.wickRejectionRatio) : undefined,
@@ -508,6 +515,8 @@ const CryptoTailStrategyList: React.FC = () => {
         maxEntrySpread: v.maxEntrySpread != null ? String(v.maxEntrySpread) : undefined,
         maxOrderbookAgeMs: v.maxOrderbookAgeMs != null ? Number(v.maxOrderbookAgeMs) : undefined,
         maxPriceAgeMs: v.maxPriceAgeMs != null ? Number(v.maxPriceAgeMs) : undefined,
+        minRemainingSeconds: v.minRemainingSeconds != null ? Number(v.minRemainingSeconds) : undefined,
+        maxRemainingSeconds: v.maxRemainingSeconds != null ? Number(v.maxRemainingSeconds) : undefined,
         minExitBidDepthUsdc: v.minExitBidDepthUsdc != null ? String(v.minExitBidDepthUsdc) : undefined,
         maxExitSpread: v.maxExitSpread != null ? String(v.maxExitSpread) : undefined,
         enableTrailingStop: v.enableTrailingStop === true,
@@ -1713,6 +1722,12 @@ const CryptoTailStrategyList: React.FC = () => {
               <Form.Item name="maxPriceAgeMs" label="价源最大年龄(ms)">
                 <InputNumber min={500} step={500} style={{ width: '100%' }} />
               </Form.Item>
+              <Form.Item name="minRemainingSeconds" label="最小入场剩余秒数">
+                <InputNumber min={0} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="maxRemainingSeconds" label="最大入场剩余秒数">
+                <InputNumber min={0} step={1} style={{ width: '100%' }} />
+              </Form.Item>
               <Form.Item name="minExitBidDepthUsdc" label="止盈最小bid深度(USDC)">
                 <InputNumber min={0} step={0.5} style={{ width: '100%' }} stringMode />
               </Form.Item>
@@ -1724,6 +1739,15 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="enableWickFilter" label="启用影线过滤" valuePropName="checked">
                 <Switch />
+              </Form.Item>
+              <Form.Item name="wickFilterMode" label="影线模式">
+                <Select
+                  options={[
+                    { label: 'SHADOW 只记录', value: 'SHADOW' },
+                    { label: 'ENFORCE 拦截/退出', value: 'ENFORCE' },
+                    { label: 'OFF 关闭', value: 'OFF' }
+                  ]}
+                />
               </Form.Item>
               <Form.Item name="wickLookbackMinutes" label="回看分钟数">
                 <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} />

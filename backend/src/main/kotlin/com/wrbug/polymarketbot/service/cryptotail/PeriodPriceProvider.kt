@@ -14,6 +14,14 @@ import java.util.concurrent.ConcurrentHashMap
  * 由 [PeriodPriceProviderRouter] 按系统配置选择其一。旧 spread 模式仍直接用 BinanceKlineService，不走此抽象。
  */
 interface PeriodPriceProvider {
+    data class PriceReadiness(
+        val source: String,
+        val coin: String?,
+        val ready: Boolean,
+        val reason: String,
+        val ageMs: Long? = null
+    )
+
     data class Ohlc1m(
         val minuteStartUnix: Long,
         val open: BigDecimal,
@@ -37,6 +45,10 @@ interface PeriodPriceProvider {
 
     /** 当前价缓存年龄（毫秒）；价源无法提供时返回 null，调用方不据此拦截。 */
     fun getCurrentPriceAgeMs(marketSlugPrefix: String): Long? = null
+
+    /** 结构化价源状态，用于 PRICE_SOURCE 日志与监控页诊断。 */
+    fun getReadiness(marketSlugPrefix: String): PriceReadiness =
+        PriceReadiness("UNKNOWN", null, isAvailable(marketSlugPrefix), if (isAvailable(marketSlugPrefix)) "OK" else "UNKNOWN")
 
     /**
      * 每 √秒 波动率 σ_per_√s。outcomeIndex 仅为兼容接口（终值波动率与方向无关，实现忽略之）。
@@ -73,6 +85,12 @@ class ChainlinkPeriodPriceProvider(
     private val sigmaCacheMax = 2000
 
     override fun isAvailable(marketSlugPrefix: String): Boolean = chainlink.isConfiguredFor(marketSlugPrefix)
+
+    override fun getReadiness(marketSlugPrefix: String): PeriodPriceProvider.PriceReadiness =
+        chainlink.readiness(marketSlugPrefix)
+
+    override fun getCurrentPriceAgeMs(marketSlugPrefix: String): Long? =
+        chainlink.currentPriceAgeMs(marketSlugPrefix)
 
     override fun getCurrentOpenClose(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? {
         val open = chainlink.getPriceAtTimestamp(marketSlugPrefix, periodStartUnix) ?: return null

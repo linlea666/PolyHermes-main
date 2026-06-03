@@ -192,6 +192,9 @@ data class CryptoTailStrategy(
     @Column(name = "enable_wick_filter", nullable = false)
     val enableWickFilter: Boolean = true,
 
+    @Column(name = "wick_filter_mode", nullable = false, length = 8)
+    val wickFilterMode: String = "SHADOW",
+
     @Column(name = "wick_lookback_minutes", nullable = false)
     val wickLookbackMinutes: Int = 2,
 
@@ -245,6 +248,12 @@ data class CryptoTailStrategy(
 
     @Column(name = "max_price_age_ms", nullable = false)
     val maxPriceAgeMs: Int = 3000,
+
+    @Column(name = "min_remaining_seconds", nullable = false)
+    val minRemainingSeconds: Int = 90,
+
+    @Column(name = "max_remaining_seconds", nullable = false)
+    val maxRemainingSeconds: Int = 420,
 
     @Column(name = "min_exit_bid_depth_usdc", nullable = false, precision = 20, scale = 8)
     val minExitBidDepthUsdc: BigDecimal = BigDecimal("2.00"),

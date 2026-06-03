@@ -937,10 +937,14 @@ const CryptoTailMonitor: React.FC = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  // 显示 BTC 价格（最新价、价差、开盘价均为 USDC）
-  const openPrice = pushData?.openPriceBtc ?? initData?.openPriceBtc
-  const currentPrice = pushData?.currentPriceBtc
+  // 官方标的价格：概率模式来自 RTDS/Chainlink，legacy 可显示 Binance fallback。
+  const openPrice = pushData?.officialOpen ?? pushData?.openPriceBtc ?? initData?.officialOpen ?? initData?.openPriceBtc
+  const currentPrice = pushData?.officialClose ?? pushData?.currentPriceBtc ?? initData?.officialClose
   const currentSpread = pushData?.spreadBtc
+  const officialSource = pushData?.officialPriceSource ?? initData?.officialPriceSource
+  const officialAge = pushData?.officialPriceAgeMs ?? initData?.officialPriceAgeMs
+  const priceReadyReason = pushData?.priceReadyReason ?? initData?.priceReadyReason
+  const fallbackUsed = pushData?.fallbackUsed ?? initData?.fallbackUsed
   const minSpreadUpStr = pushData?.minSpreadLineUp ?? initData?.autoMinSpreadUp
   const minSpreadDownStr = pushData?.minSpreadLineDown ?? initData?.autoMinSpreadDown
   const minSpreadUpVal = minSpreadUpStr != null && minSpreadUpStr !== '' ? parseFloat(minSpreadUpStr) : null
@@ -1269,6 +1273,21 @@ const CryptoTailMonitor: React.FC = () => {
               </Card>
             </Col>
           </Row>
+
+          <Card size="small" style={{ marginBottom: 16 }}>
+            <Space wrap>
+              <Text strong>官方价源</Text>
+              <Tag color={fallbackUsed ? 'orange' : (priceReadyReason === 'OK' ? 'green' : 'red')}>
+                {officialSource || '-'}
+              </Tag>
+              <Text type="secondary">状态: {priceReadyReason || '-'}</Text>
+              <Text type="secondary">年龄: {officialAge != null ? `${officialAge}ms` : '-'}</Text>
+              <Text type="secondary">Open: {openPrice ? formatNumber(openPrice, 2) : '-'}</Text>
+              <Text type="secondary">Close: {currentPrice ? formatNumber(currentPrice, 2) : '-'}</Text>
+              <Text type="secondary">Outcome bestBid Up: {pushData?.outcomeBestBidUp ?? pushData?.currentPriceUp ?? '-'}</Text>
+              <Text type="secondary">Down: {pushData?.outcomeBestBidDown ?? pushData?.currentPriceDown ?? '-'}</Text>
+            </Space>
+          </Card>
 
           {/* 手动模式下：周期结束提示 */}
           {periodSwitchMode === 'manual' && isViewingOldPeriod && (

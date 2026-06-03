@@ -60,13 +60,30 @@ class CryptoTailMonitorService(
 
     private val logger = LoggerFactory.getLogger(CryptoTailMonitorService::class.java)
 
-    /**
-     * 监控展示用开盘价/当前价：优先用与结算同源的 Chainlink/RTDS（与 Polymarket 目标价一致），
-     * 未就绪（冷启动）时回退币安，保证页面不空。返回 (开盘价, 当前价)。
-     */
-    private fun resolveOpenClose(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? =
-        periodPriceProvider.getCurrentOpenClose(marketSlugPrefix, intervalSeconds, periodStartUnix)
-            ?: binanceKlineService.getCurrentOpenClose(marketSlugPrefix, intervalSeconds, periodStartUnix)
+    private data class OfficialPriceSnapshot(
+        val open: BigDecimal?,
+        val close: BigDecimal?,
+        val source: String,
+        val ageMs: Long?,
+        val reason: String,
+        val coin: String?,
+        val fallbackUsed: Boolean
+    )
+
+    private fun resolveOpenClose(strategy: CryptoTailStrategy, periodStartUnix: Long): OfficialPriceSnapshot {
+        val status = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
+        val official = periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
+        if (official != null) {
+            return OfficialPriceSnapshot(official.first, official.second, status.source, status.ageMs, status.reason, status.coin, false)
+        }
+        if (strategy.mode == com.wrbug.polymarketbot.enums.TradingMode.LEGACY_SPREAD) {
+            val fallback = binanceKlineService.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
+            if (fallback != null) {
+                return OfficialPriceSnapshot(fallback.first, fallback.second, "BINANCE", null, "LEGACY_FALLBACK", status.coin, true)
+            }
+        }
+        return OfficialPriceSnapshot(null, null, status.source, status.ageMs, status.reason, status.coin, false)
+    }
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     /** 当前周期 token 映射 */
@@ -169,12 +186,8 @@ class CryptoTailMonitorService(
             val tokenIds = parseClobTokenIds(market?.clobTokenIds)
 
             // 获取开盘价（优先 Chainlink/RTDS，与结算同源；冷启动回退币安）
-            val openClose = resolveOpenClose(
-                strategy.marketSlugPrefix,
-                strategy.intervalSeconds,
-                periodStartUnix
-            )
-            val openPriceBtc = openClose?.first
+            val officialPrice = resolveOpenClose(strategy, periodStartUnix)
+            val openPriceBtc = officialPrice.open
 
             // 获取自动计算的最小价差
             var autoMinSpreadUp: BigDecimal? = null
@@ -217,6 +230,13 @@ class CryptoTailMonitorService(
                 autoMinSpreadUp = autoMinSpreadUp?.toPlainString(),
                 autoMinSpreadDown = autoMinSpreadDown?.toPlainString(),
                 openPriceBtc = openPriceBtc?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
+                officialOpen = officialPrice.open?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
+                officialClose = officialPrice.close?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
+                officialPriceSource = officialPrice.source,
+                officialPriceAgeMs = officialPrice.ageMs,
+                priceReadyReason = officialPrice.reason,
+                coin = officialPrice.coin,
+                fallbackUsed = officialPrice.fallbackUsed,
                 tokenIdUp = tokenIds.getOrNull(0),
                 tokenIdDown = tokenIds.getOrNull(1),
                 currentTimestamp = System.currentTimeMillis(),
@@ -488,12 +508,8 @@ class CryptoTailMonitorService(
         val strategies = strategyRepository.findAllById(strategyIds)
         for (strategy in strategies) {
             if (strategy.id == null) continue
-            val openClose = resolveOpenClose(
-                strategy.marketSlugPrefix,
-                strategy.intervalSeconds,
-                periodStartUnix
-            )
-            val openPriceBtc = openClose?.first
+            val officialPrice = resolveOpenClose(strategy, periodStartUnix)
+            val openPriceBtc = officialPrice.open
             var minSpreadLineUp: BigDecimal? = null
             var minSpreadLineDown: BigDecimal? = null
             when (strategy.spreadMode.name.uppercase()) {
@@ -724,13 +740,9 @@ class CryptoTailMonitorService(
         val inTimeWindow = nowSeconds >= windowStart && nowSeconds < windowEnd
 
         // open = 周期开盘价，close = 当前最新价（优先 Chainlink/RTDS，与结算同源；冷启动回退币安）
-        val openClose = resolveOpenClose(
-            strategy.marketSlugPrefix,
-            strategy.intervalSeconds,
-            periodStartUnix
-        )
-        val openPriceBtc = priceData.openPriceBtc ?: openClose?.first
-        val currentPriceBtc = openClose?.second
+        val officialPrice = resolveOpenClose(strategy, periodStartUnix)
+        val openPriceBtc = priceData.openPriceBtc ?: officialPrice.open
+        val currentPriceBtc = officialPrice.close
         // K 线数据回来后更新缓存，供后续使用
         if (openPriceBtc != null && priceData.openPriceBtc == null && strategy.id != null) {
             strategyPriceData[strategy.id] = priceData.copy(openPriceBtc = openPriceBtc)
@@ -780,6 +792,15 @@ class CryptoTailMonitorService(
             openPriceBtc = openPriceBtc?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
             currentPriceBtc = currentPriceBtc?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
             spreadBtc = spreadBtc?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
+            officialOpen = officialPrice.open?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
+            officialClose = officialPrice.close?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
+            officialPriceSource = officialPrice.source,
+            officialPriceAgeMs = officialPrice.ageMs,
+            priceReadyReason = officialPrice.reason,
+            coin = officialPrice.coin,
+            fallbackUsed = officialPrice.fallbackUsed,
+            outcomeBestBidUp = priceData.currentPriceUp?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            outcomeBestBidDown = priceData.currentPriceDown?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
             remainingSeconds = remainingSeconds,
             inTimeWindow = inTimeWindow,
             inPriceRangeUp = inPriceRangeUp,

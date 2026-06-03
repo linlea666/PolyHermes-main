@@ -1547,6 +1547,7 @@ export interface CryptoTailStrategyDto {
   emergencyExitOnGapFlip?: boolean
   exitPollIntervalMs?: number
   enableWickFilter?: boolean
+  wickFilterMode?: string
   wickLookbackMinutes?: number
   wickMinBodyRatio?: string
   wickRejectionRatio?: string
@@ -1565,6 +1566,8 @@ export interface CryptoTailStrategyDto {
   maxEntrySpread?: string
   maxOrderbookAgeMs?: number
   maxPriceAgeMs?: number
+  minRemainingSeconds?: number
+  maxRemainingSeconds?: number
   minExitBidDepthUsdc?: string
   maxExitSpread?: string
   enableTrailingStop?: boolean
@@ -1923,6 +1926,13 @@ export interface CryptoTailMonitorInitResponse {
   autoMinSpreadDown?: string
   /** BTC 开盘价 USDC（来自币安 K 线） */
   openPriceBtc?: string
+  officialOpen?: string
+  officialClose?: string
+  officialPriceSource?: string
+  officialPriceAgeMs?: number | null
+  priceReadyReason?: string
+  coin?: string
+  fallbackUsed?: boolean
   /** Up tokenId */
   tokenIdUp?: string
   /** Down tokenId */
@@ -1967,6 +1977,15 @@ export interface CryptoTailMonitorPushData {
   currentPriceBtc?: string
   /** BTC 价差 USDC（currentPriceBtc - openPriceBtc） */
   spreadBtc?: string
+  officialOpen?: string
+  officialClose?: string
+  officialPriceSource?: string
+  officialPriceAgeMs?: number | null
+  priceReadyReason?: string
+  coin?: string
+  fallbackUsed?: boolean
+  outcomeBestBidUp?: string
+  outcomeBestBidDown?: string
   /** 周期剩余秒数 */
   remainingSeconds: number
   /** 是否在时间窗口内 */

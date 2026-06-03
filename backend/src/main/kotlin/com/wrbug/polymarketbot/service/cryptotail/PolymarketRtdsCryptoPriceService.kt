@@ -61,7 +61,7 @@ class PolymarketRtdsCryptoPriceService {
 
     companion object {
         /** RTDS chainlink 支持的币种（btc/usd、eth/usd、sol/usd、xrp/usd） */
-        private val SUPPORTED_COINS = setOf("btc", "eth", "sol", "xrp")
+        private val SUPPORTED_COINS = CryptoTailCoinResolver.supportedCoins
         private val WEI = BigDecimal.TEN.pow(18)
     }
 
@@ -69,11 +69,7 @@ class PolymarketRtdsCryptoPriceService {
 
     /** 从市场 slug（btc-updown / btc-updown-5m / btc-updown-15m）解析币种代码（btc/eth/sol/xrp） */
     fun coinOfSlug(marketSlugPrefix: String): String? {
-        val base = marketSlugPrefix.lowercase()
-            .removeSuffix("-15m")
-            .removeSuffix("-5m")
-            .removeSuffix("-updown")
-        return base.takeIf { it in SUPPORTED_COINS }
+        return CryptoTailCoinResolver.coinOfSlug(marketSlugPrefix)
     }
 
     /** 该币种价源是否就绪：已连接且最新价新鲜 */
@@ -98,6 +94,22 @@ class PolymarketRtdsCryptoPriceService {
         ensureStarted()
         val cached = latestPrice[coin] ?: return null
         return (System.currentTimeMillis() - cached.second).coerceAtLeast(0L)
+    }
+
+    fun readiness(marketSlugPrefix: String): PeriodPriceProvider.PriceReadiness {
+        val coin = coinOfSlug(marketSlugPrefix)
+            ?: return PeriodPriceProvider.PriceReadiness("RTDS", null, false, "UNSUPPORTED_SLUG")
+        ensureStarted()
+        val connected = wsClient?.isConnected() == true
+        if (!connected) return PeriodPriceProvider.PriceReadiness("RTDS", coin, false, "WS_DISCONNECTED")
+        val cached = latestPrice[coin]
+            ?: return PeriodPriceProvider.PriceReadiness("RTDS", coin, false, "NO_LATEST_PRICE")
+        val age = (System.currentTimeMillis() - cached.second).coerceAtLeast(0L)
+        return if (age <= freshnessMs) {
+            PeriodPriceProvider.PriceReadiness("RTDS", coin, true, "OK", age)
+        } else {
+            PeriodPriceProvider.PriceReadiness("RTDS", coin, false, "STALE_PRICE", age)
+        }
     }
 
     /** 指定 Unix 秒时间戳处的价（floorEntry：取该时刻或之前最近一笔）；无覆盖返回 null */

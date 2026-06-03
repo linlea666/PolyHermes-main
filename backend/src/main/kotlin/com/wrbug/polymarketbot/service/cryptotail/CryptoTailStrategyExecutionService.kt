@@ -471,11 +471,34 @@ class CryptoTailStrategyExecutionService(
         )
     }
 
+    private fun statusPayload(status: PeriodPriceProvider.PriceReadiness): Map<String, Any> = mapOf(
+        "priceSource" to status.source,
+        "coin" to (status.coin ?: ""),
+        "priceReadyReason" to status.reason,
+        "priceAgeMs" to (status.ageMs ?: ""),
+        "fallbackUsed" to false
+    )
+
     private fun checkEntryMarketQuality(
         strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
         orderbook: OrderbookQualitySnapshot?
     ): BarrierEval? {
         val nowMs = System.currentTimeMillis()
+        val nowSeconds = nowMs / 1000
+        val remainingSeconds = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toInt()
+        if (remainingSeconds < strategy.minRemainingSeconds || remainingSeconds > strategy.maxRemainingSeconds) {
+            return BarrierEval(
+                false,
+                "REMAINING_TIME",
+                "入场剩余时间=${remainingSeconds}s 不在 ${strategy.minRemainingSeconds}~${strategy.maxRemainingSeconds}s",
+                mapOf(
+                    "remainingSeconds" to remainingSeconds,
+                    "minRemainingSeconds" to strategy.minRemainingSeconds,
+                    "maxRemainingSeconds" to strategy.maxRemainingSeconds
+                ).toJson()
+            )
+        }
         if (orderbook == null) {
             return BarrierEval(false, "ORDERBOOK_STALE", "订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
         }
@@ -489,7 +512,15 @@ class CryptoTailStrategyExecutionService(
             )
         }
         val spread = orderbook.spread
-        if (spread != null && spread > strategy.maxEntrySpread) {
+        if (orderbook.bestAsk == null || spread == null) {
+            return BarrierEval(
+                false,
+                "SPREAD_UNAVAILABLE",
+                "盘口缺少 bestAsk/spread，禁止概率模式入场",
+                orderbookPayload(orderbook, nowMs).toJson()
+            )
+        }
+        if (spread > strategy.maxEntrySpread) {
             return BarrierEval(
                 false,
                 "SPREAD_TOO_WIDE",
@@ -522,14 +553,19 @@ class CryptoTailStrategyExecutionService(
         bestAsk: BigDecimal?,
         orderbook: OrderbookQualitySnapshot?
     ): BarrierEval {
-        checkEntryMarketQuality(strategy, orderbook)?.let { return it }
+        checkEntryMarketQuality(strategy, periodStartUnix, orderbook)?.let { return it }
         // 障碍模式价源必须与 Polymarket 结算源(Chainlink)一致；缺凭证/feedID 时安全跳过，绝不回退币安
         if (!periodPriceProvider.isAvailable(strategy.marketSlugPrefix)) {
-            return BarrierEval(false, "PRICE_SOURCE", "价源未就绪(未连接或最新价过期，启动后请稍候自动恢复)", null)
+            val status = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
+            return BarrierEval(false, "PRICE_SOURCE", "价源未就绪: ${status.source}/${status.coin ?: ""}/${status.reason}", statusPayload(status).toJson())
         }
         val oc = periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
-            ?: return BarrierEval(false, "PRICE_SOURCE", "期初价未就绪(价源刚启动，期初价回看超出缓存；本周期跳过，下一周期将自动恢复)", null)
+            ?: run {
+                val status = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
+                return BarrierEval(false, "PRICE_SOURCE", "期初价未就绪: ${status.source}/${status.coin ?: ""}/${status.reason}", statusPayload(status).toJson())
+            }
         val (openP, closeP) = oc
+        val priceStatus = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
         val gap = closeP.subtract(openP)
         val nowSeconds = System.currentTimeMillis() / 1000
         val remaining = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toDouble()
@@ -538,6 +574,13 @@ class CryptoTailStrategyExecutionService(
         val preSigmaSnapshot = mapOf(
             "open" to openP.toPlainString(),
             "close" to closeP.toPlainString(),
+            "officialOpen" to openP.toPlainString(),
+            "officialClose" to closeP.toPlainString(),
+            "priceSource" to priceStatus.source,
+            "coin" to (priceStatus.coin ?: ""),
+            "priceReadyReason" to priceStatus.reason,
+            "priceAgeMs" to (priceStatus.ageMs ?: ""),
+            "fallbackUsed" to false,
             "gap" to gap.toPlainString(),
             "remainingSeconds" to remaining,
             "modelSideByGap" to sideByGap,
@@ -640,7 +683,8 @@ class CryptoTailStrategyExecutionService(
         }
         val wick = wickSignalService.evaluate(strategy, outcomeIndex)
         payload.putAll(wick.toPayload().mapValues { it.value ?: "" })
-        if (wick.available && wick.reversalScore >= strategy.wickEntryBlockScore) {
+        payload["wickFilterMode"] = strategy.wickFilterMode
+        if (strategy.wickFilterMode.uppercase() == "ENFORCE" && wick.available && wick.reversalScore >= strategy.wickEntryBlockScore) {
             return BarrierEval(false, "WICK_REVERSAL", "影线反转分数=${wick.reversalScore}>=${strategy.wickEntryBlockScore}", snapshot(), metrics)
         }
         return BarrierEval(true, "ALL", "通过全部障碍闸", snapshot(), metrics)
@@ -663,13 +707,18 @@ class CryptoTailStrategyExecutionService(
         bestAsk: BigDecimal?,
         orderbook: OrderbookQualitySnapshot?
     ): BarrierEval {
-        checkEntryMarketQuality(strategy, orderbook)?.let { return it }
+        checkEntryMarketQuality(strategy, periodStartUnix, orderbook)?.let { return it }
         if (!periodPriceProvider.isAvailable(strategy.marketSlugPrefix)) {
-            return BarrierEval(false, "PRICE_SOURCE", "价源未就绪(未连接或最新价过期，启动后请稍候自动恢复)", null)
+            val status = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
+            return BarrierEval(false, "PRICE_SOURCE", "价源未就绪: ${status.source}/${status.coin ?: ""}/${status.reason}", statusPayload(status).toJson())
         }
         val oc = periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
-            ?: return BarrierEval(false, "PRICE_SOURCE", "期初价未就绪(价源刚启动，期初价回看超出缓存；本周期跳过，下一周期将自动恢复)", null)
+            ?: run {
+                val status = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
+                return BarrierEval(false, "PRICE_SOURCE", "期初价未就绪: ${status.source}/${status.coin ?: ""}/${status.reason}", statusPayload(status).toJson())
+            }
         val (openP, closeP) = oc
+        val priceStatus = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
         val gap = closeP.subtract(openP)
         val nowSeconds = System.currentTimeMillis() / 1000
         val remaining = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toDouble()
@@ -677,6 +726,13 @@ class CryptoTailStrategyExecutionService(
         val preSigmaSnapshot = mapOf(
             "open" to openP.toPlainString(),
             "close" to closeP.toPlainString(),
+            "officialOpen" to openP.toPlainString(),
+            "officialClose" to closeP.toPlainString(),
+            "priceSource" to priceStatus.source,
+            "coin" to (priceStatus.coin ?: ""),
+            "priceReadyReason" to priceStatus.reason,
+            "priceAgeMs" to (priceStatus.ageMs ?: ""),
+            "fallbackUsed" to false,
             "gap" to gap.toPlainString(),
             "remainingSeconds" to remaining,
             "modelSideByGap" to sideByGap,
@@ -774,7 +830,8 @@ class CryptoTailStrategyExecutionService(
         }
         val wick = wickSignalService.evaluate(strategy, outcomeIndex)
         payload.putAll(wick.toPayload().mapValues { it.value ?: "" })
-        if (wick.available && wick.reversalScore >= strategy.wickEntryBlockScore) {
+        payload["wickFilterMode"] = strategy.wickFilterMode
+        if (strategy.wickFilterMode.uppercase() == "ENFORCE" && wick.available && wick.reversalScore >= strategy.wickEntryBlockScore) {
             return BarrierEval(false, "WICK_REVERSAL", "影线反转分数=${wick.reversalScore}>=${strategy.wickEntryBlockScore}", snapshot(), metrics)
         }
         return BarrierEval(true, "ALL", "通过全部阶梯入场闸", snapshot(), metrics)

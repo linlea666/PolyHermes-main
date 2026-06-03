@@ -28,6 +28,9 @@ class RtdsPeriodPriceProvider(
 
     override fun isAvailable(marketSlugPrefix: String): Boolean = rtds.isReady(marketSlugPrefix)
 
+    override fun getReadiness(marketSlugPrefix: String): PeriodPriceProvider.PriceReadiness =
+        rtds.readiness(marketSlugPrefix)
+
     override fun getCurrentOpenClose(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? {
         val open = rtds.priceAt(marketSlugPrefix, periodStartUnix) ?: return null
         val current = rtds.currentPrice(marketSlugPrefix) ?: return null

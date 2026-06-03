@@ -598,6 +598,7 @@ export const apiService = {
       emergencyExitOnGapFlip?: boolean
       exitPollIntervalMs?: number
       enableWickFilter?: boolean
+      wickFilterMode?: string
       wickLookbackMinutes?: number
       wickMinBodyRatio?: string
       wickRejectionRatio?: string
@@ -616,6 +617,8 @@ export const apiService = {
       maxEntrySpread?: string
       maxOrderbookAgeMs?: number
       maxPriceAgeMs?: number
+      minRemainingSeconds?: number
+      maxRemainingSeconds?: number
       minExitBidDepthUsdc?: string
       maxExitSpread?: string
       enableTrailingStop?: boolean
@@ -689,6 +692,7 @@ export const apiService = {
       emergencyExitOnGapFlip?: boolean
       exitPollIntervalMs?: number
       enableWickFilter?: boolean
+      wickFilterMode?: string
       wickLookbackMinutes?: number
       wickMinBodyRatio?: string
       wickRejectionRatio?: string
@@ -707,6 +711,8 @@ export const apiService = {
       maxEntrySpread?: string
       maxOrderbookAgeMs?: number
       maxPriceAgeMs?: number
+      minRemainingSeconds?: number
+      maxRemainingSeconds?: number
       minExitBidDepthUsdc?: string
       maxExitSpread?: string
       enableTrailingStop?: boolean

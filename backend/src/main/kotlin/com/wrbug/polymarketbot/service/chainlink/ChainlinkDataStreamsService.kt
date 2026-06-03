@@ -1,6 +1,8 @@
 package com.wrbug.polymarketbot.service.chainlink
 
 import com.wrbug.polymarketbot.service.system.SystemConfigService
+import com.wrbug.polymarketbot.service.cryptotail.CryptoTailCoinResolver
+import com.wrbug.polymarketbot.service.cryptotail.PeriodPriceProvider
 import com.wrbug.polymarketbot.util.createClient
 import okhttp3.Request
 import org.slf4j.LoggerFactory
@@ -60,8 +62,9 @@ class ChainlinkDataStreamsService(
 
     /** 从市场 slug（btc-updown / btc-updown-5m / btc-updown-15m）解析 base 并取 feedID */
     private fun feedIdForSlug(marketSlugPrefix: String): String? {
-        val base = marketSlugPrefix.lowercase().removeSuffix("-15m").removeSuffix("-5m")
-        return systemConfigService.getChainlinkFeedId(base)
+        val coin = CryptoTailCoinResolver.coinOfSlug(marketSlugPrefix) ?: return null
+        return systemConfigService.getChainlinkFeedId("$coin-updown")
+            ?: systemConfigService.getChainlinkFeedId(coin)
     }
 
     /** 是否已配置（api key/secret 同时存在） */
@@ -69,6 +72,26 @@ class ChainlinkDataStreamsService(
 
     /** 指定市场是否可用（凭证 + 该币种 feedID 均已配置） */
     fun isConfiguredFor(marketSlugPrefix: String): Boolean = isConfigured() && feedIdForSlug(marketSlugPrefix) != null
+
+    fun currentPriceAgeMs(marketSlugPrefix: String): Long? {
+        val feedId = feedIdForSlug(marketSlugPrefix) ?: return null
+        val cached = latestCache[feedId] ?: return null
+        return (System.currentTimeMillis() - cached.second).coerceAtLeast(0L)
+    }
+
+    fun readiness(marketSlugPrefix: String): PeriodPriceProvider.PriceReadiness {
+        val coin = CryptoTailCoinResolver.coinOfSlug(marketSlugPrefix)
+            ?: return PeriodPriceProvider.PriceReadiness("CHAINLINK", null, false, "UNSUPPORTED_SLUG")
+        if (!isConfigured()) return PeriodPriceProvider.PriceReadiness("CHAINLINK", coin, false, "FEED_NOT_CONFIGURED")
+        val feedId = feedIdForSlug(marketSlugPrefix)
+            ?: return PeriodPriceProvider.PriceReadiness("CHAINLINK", coin, false, "FEED_NOT_CONFIGURED")
+        val age = latestCache[feedId]?.let { (System.currentTimeMillis() - it.second).coerceAtLeast(0L) }
+        return if (age != null && age <= latestTtlMs) {
+            PeriodPriceProvider.PriceReadiness("CHAINLINK", coin, true, "OK", age)
+        } else {
+            PeriodPriceProvider.PriceReadiness("CHAINLINK", coin, true, "OK", age)
+        }
+    }
 
     // ---------------- 对外取价 ----------------
 
