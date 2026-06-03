@@ -67,7 +67,10 @@ class CryptoTailMonitorService(
         val ageMs: Long?,
         val reason: String,
         val coin: String?,
-        val fallbackUsed: Boolean
+        val fallbackUsed: Boolean,
+        val legacyOpen: BigDecimal? = null,
+        val legacyClose: BigDecimal? = null,
+        val legacySource: String? = null
     )
 
     private fun resolveOpenClose(strategy: CryptoTailStrategy, periodStartUnix: Long): OfficialPriceSnapshot {
@@ -79,7 +82,18 @@ class CryptoTailMonitorService(
         if (strategy.mode == com.wrbug.polymarketbot.enums.TradingMode.LEGACY_SPREAD) {
             val fallback = binanceKlineService.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
             if (fallback != null) {
-                return OfficialPriceSnapshot(fallback.first, fallback.second, "BINANCE", null, "LEGACY_FALLBACK", status.coin, true)
+                return OfficialPriceSnapshot(
+                    open = null,
+                    close = null,
+                    source = status.source,
+                    ageMs = status.ageMs,
+                    reason = "LEGACY_ONLY",
+                    coin = status.coin,
+                    fallbackUsed = false,
+                    legacyOpen = fallback.first,
+                    legacyClose = fallback.second,
+                    legacySource = "BINANCE"
+                )
             }
         }
         return OfficialPriceSnapshot(null, null, status.source, status.ageMs, status.reason, status.coin, false)
@@ -146,8 +160,13 @@ class CryptoTailMonitorService(
     data class StrategyPriceData(
         val currentPriceUp: BigDecimal? = null,
         val currentPriceDown: BigDecimal? = null,
+        val outcomeBestBidUp: BigDecimal? = null,
+        val outcomeBestBidDown: BigDecimal? = null,
+        val outcomeBestAskUp: BigDecimal? = null,
+        val outcomeBestAskDown: BigDecimal? = null,
         /** BTC 开盘价 USDC（币安 K 线 open） */
         val openPriceBtc: BigDecimal? = null,
+        val legacyOpen: BigDecimal? = null,
         val spreadUp: BigDecimal? = null,
         val spreadDown: BigDecimal? = null,
         val minSpreadLineUp: BigDecimal? = null,
@@ -187,7 +206,7 @@ class CryptoTailMonitorService(
 
             // 获取开盘价（优先 Chainlink/RTDS，与结算同源；冷启动回退币安）
             val officialPrice = resolveOpenClose(strategy, periodStartUnix)
-            val openPriceBtc = officialPrice.open
+            val openPriceBtc = officialPrice.legacyOpen ?: officialPrice.open
 
             // 获取自动计算的最小价差
             var autoMinSpreadUp: BigDecimal? = null
@@ -205,6 +224,7 @@ class CryptoTailMonitorService(
             // 保存价格数据到缓存
             val priceData = StrategyPriceData(
                 openPriceBtc = openPriceBtc,
+                legacyOpen = officialPrice.legacyOpen,
                 minSpreadLineUp = autoMinSpreadUp ?: strategy.spreadValue?.toSafeBigDecimal(),
                 minSpreadLineDown = autoMinSpreadDown ?: strategy.spreadValue?.toSafeBigDecimal(),
                 periodStartUnix = periodStartUnix
@@ -237,6 +257,9 @@ class CryptoTailMonitorService(
                 priceReadyReason = officialPrice.reason,
                 coin = officialPrice.coin,
                 fallbackUsed = officialPrice.fallbackUsed,
+                legacyOpen = officialPrice.legacyOpen?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
+                legacyClose = officialPrice.legacyClose?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
+                legacyPriceSource = officialPrice.legacySource,
                 tokenIdUp = tokenIds.getOrNull(0),
                 tokenIdDown = tokenIds.getOrNull(1),
                 currentTimestamp = System.currentTimeMillis(),
@@ -509,7 +532,7 @@ class CryptoTailMonitorService(
         for (strategy in strategies) {
             if (strategy.id == null) continue
             val officialPrice = resolveOpenClose(strategy, periodStartUnix)
-            val openPriceBtc = officialPrice.open
+            val openPriceBtc = officialPrice.legacyOpen ?: officialPrice.open
             var minSpreadLineUp: BigDecimal? = null
             var minSpreadLineDown: BigDecimal? = null
             when (strategy.spreadMode.name.uppercase()) {
@@ -533,9 +556,14 @@ class CryptoTailMonitorService(
             val newData = StrategyPriceData(
                 currentPriceUp = if (periodChanged && pushDefault) BigDecimal("0.5") else existingData.currentPriceUp,
                 currentPriceDown = if (periodChanged && pushDefault) BigDecimal("0.5") else existingData.currentPriceDown,
+                outcomeBestBidUp = if (periodChanged && pushDefault) null else existingData.outcomeBestBidUp,
+                outcomeBestBidDown = if (periodChanged && pushDefault) null else existingData.outcomeBestBidDown,
+                outcomeBestAskUp = if (periodChanged && pushDefault) null else existingData.outcomeBestAskUp,
+                outcomeBestAskDown = if (periodChanged && pushDefault) null else existingData.outcomeBestAskDown,
                 spreadUp = if (periodChanged && pushDefault) BigDecimal("0.5") else existingData.spreadUp,
                 spreadDown = if (periodChanged && pushDefault) BigDecimal("0.5") else existingData.spreadDown,
                 openPriceBtc = openPriceBtc,
+                legacyOpen = officialPrice.legacyOpen,
                 minSpreadLineUp = minSpreadLineUp,
                 minSpreadLineDown = minSpreadLineDown,
                 periodStartUnix = periodStartUnix
@@ -655,14 +683,16 @@ class CryptoTailMonitorService(
                     val pc = priceChanges.get(i) as? com.google.gson.JsonObject ?: continue
                     val assetId = (pc.get("asset_id") as? com.google.gson.JsonPrimitive)?.asString ?: continue
                     val bestBidStr = (pc.get("best_bid") as? com.google.gson.JsonPrimitive)?.asString
+                    val bestAskStr = (pc.get("best_ask") as? com.google.gson.JsonPrimitive)?.asString
                     val bestBid = bestBidStr?.toSafeBigDecimal()
-                    if (bestBid != null) onPriceUpdate(assetId, bestBid, map)
+                    val bestAsk = bestAskStr?.toSafeBigDecimal()
+                    if (bestBid != null) onPriceUpdate(assetId, bestBid, bestAsk, map)
                 }
             }
         }
     }
 
-    private fun onPriceUpdate(tokenId: String, bestBid: BigDecimal, map: Map<String, List<MonitorEntry>>) {
+    private fun onPriceUpdate(tokenId: String, bestBid: BigDecimal, bestAsk: BigDecimal?, map: Map<String, List<MonitorEntry>>) {
         if (closedForNoSubscribers.get()) return
         val entries = map[tokenId] ?: return
 
@@ -676,6 +706,8 @@ class CryptoTailMonitorService(
                 priceData.copy(
                     currentPriceUp = bestBid,
                     currentPriceDown = BigDecimal.ONE.subtract(bestBid),
+                    outcomeBestBidUp = bestBid,
+                    outcomeBestAskUp = bestAsk,
                     spreadUp = BigDecimal.ONE.subtract(bestBid),
                     spreadDown = bestBid,
                     lastUpdateTime = System.currentTimeMillis()
@@ -685,6 +717,8 @@ class CryptoTailMonitorService(
                 priceData.copy(
                     currentPriceDown = bestBid,
                     currentPriceUp = BigDecimal.ONE.subtract(bestBid),
+                    outcomeBestBidDown = bestBid,
+                    outcomeBestAskDown = bestAsk,
                     spreadUp = bestBid,
                     spreadDown = BigDecimal.ONE.subtract(bestBid),
                     lastUpdateTime = System.currentTimeMillis()
@@ -741,11 +775,11 @@ class CryptoTailMonitorService(
 
         // open = 周期开盘价，close = 当前最新价（优先 Chainlink/RTDS，与结算同源；冷启动回退币安）
         val officialPrice = resolveOpenClose(strategy, periodStartUnix)
-        val openPriceBtc = priceData.openPriceBtc ?: officialPrice.open
-        val currentPriceBtc = officialPrice.close
+        val openPriceBtc = priceData.openPriceBtc ?: officialPrice.legacyOpen ?: officialPrice.open
+        val currentPriceBtc = officialPrice.legacyClose ?: officialPrice.close
         // K 线数据回来后更新缓存，供后续使用
         if (openPriceBtc != null && priceData.openPriceBtc == null && strategy.id != null) {
-            strategyPriceData[strategy.id] = priceData.copy(openPriceBtc = openPriceBtc)
+            strategyPriceData[strategy.id] = priceData.copy(openPriceBtc = openPriceBtc, legacyOpen = officialPrice.legacyOpen)
         }
         val spreadBtc = if (openPriceBtc != null && currentPriceBtc != null) {
             currentPriceBtc.subtract(openPriceBtc)
@@ -765,8 +799,8 @@ class CryptoTailMonitorService(
         } else emptyList()
         val position = openPositions.firstOrNull()
         val positionBid = when (position?.outcomeIndex) {
-            0 -> currentUp
-            1 -> currentDown
+            0 -> priceData.outcomeBestBidUp ?: currentUp
+            1 -> priceData.outcomeBestBidDown ?: currentDown
             else -> null
         }
         val entryFill = position?.entryFillPrice
@@ -799,8 +833,20 @@ class CryptoTailMonitorService(
             priceReadyReason = officialPrice.reason,
             coin = officialPrice.coin,
             fallbackUsed = officialPrice.fallbackUsed,
-            outcomeBestBidUp = priceData.currentPriceUp?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
-            outcomeBestBidDown = priceData.currentPriceDown?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            outcomeBestBidUp = priceData.outcomeBestBidUp?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            outcomeBestBidDown = priceData.outcomeBestBidDown?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            outcomeBestAskUp = priceData.outcomeBestAskUp?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            outcomeBestAskDown = priceData.outcomeBestAskDown?.setScale(4, RoundingMode.HALF_UP)?.toPlainString(),
+            outcomeSpreadUp = outcomeSpread(priceData.outcomeBestBidUp, priceData.outcomeBestAskUp),
+            outcomeSpreadDown = outcomeSpread(priceData.outcomeBestBidDown, priceData.outcomeBestAskDown),
+            outcomeDirection = when (position?.outcomeIndex) {
+                0 -> "UP"
+                1 -> "DOWN"
+                else -> null
+            },
+            legacyOpen = officialPrice.legacyOpen?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
+            legacyClose = officialPrice.legacyClose?.setScale(2, RoundingMode.HALF_UP)?.toPlainString(),
+            legacyPriceSource = officialPrice.legacySource,
             remainingSeconds = remainingSeconds,
             inTimeWindow = inTimeWindow,
             inPriceRangeUp = inPriceRangeUp,
@@ -833,6 +879,13 @@ class CryptoTailMonitorService(
             wickContinuationScore = if (wick.available) wick.continuationScore else null,
             wickRejectionSide = if (wick.available) wick.rejectionSide else null
         )
+    }
+
+    private fun outcomeSpread(bestBid: BigDecimal?, bestAsk: BigDecimal?): String? {
+        if (bestBid == null || bestAsk == null) return null
+        return bestAsk.subtract(bestBid).max(BigDecimal.ZERO)
+            .setScale(4, RoundingMode.HALF_UP)
+            .toPlainString()
     }
 
     private fun maybeRefreshSubscriptionIfPeriodChanged() {

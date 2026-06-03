@@ -57,6 +57,9 @@ data class CryptoTailMonitorInitResponse(
     val priceReadyReason: String? = null,
     val coin: String? = null,
     val fallbackUsed: Boolean = false,
+    val legacyOpen: String? = null,
+    val legacyClose: String? = null,
+    val legacyPriceSource: String? = null,
     /** Up tokenId */
     val tokenIdUp: String? = null,
     /** Down tokenId */
@@ -110,6 +113,14 @@ data class CryptoTailMonitorPushData(
     val fallbackUsed: Boolean = false,
     val outcomeBestBidUp: String? = null,
     val outcomeBestBidDown: String? = null,
+    val outcomeBestAskUp: String? = null,
+    val outcomeBestAskDown: String? = null,
+    val outcomeSpreadUp: String? = null,
+    val outcomeSpreadDown: String? = null,
+    val outcomeDirection: String? = null,
+    val legacyOpen: String? = null,
+    val legacyClose: String? = null,
+    val legacyPriceSource: String? = null,
     /** 周期剩余秒数 */
     val remainingSeconds: Int = 0,
     /** 是否在时间窗口内 */

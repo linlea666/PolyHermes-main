@@ -231,13 +231,22 @@ class CryptoTailWickSignalService(
     }
 
     private fun isSignalQualityOk(strategy: CryptoTailStrategy, feature: CandleFeature, sigma1m: BigDecimal?): Boolean {
-        if (feature.tickCount < strategy.wickMinTicksPerCandle) return false
-        return rangeSigmaRatio(feature.range, sigma1m) >= strategy.wickMinRangeSigmaRatio
+        if (strategy.wickMinTicksPerCandle > 0 && feature.tickCount < strategy.wickMinTicksPerCandle) return false
+        if (strategy.wickMinRangeSigmaRatio > BigDecimal.ZERO &&
+            rangeSigmaRatio(feature.range, sigma1m) < strategy.wickMinRangeSigmaRatio
+        ) {
+            return false
+        }
+        return true
     }
 
     private fun qualityReason(strategy: CryptoTailStrategy, feature: CandleFeature, sigma1m: BigDecimal?): String {
-        if (feature.tickCount < strategy.wickMinTicksPerCandle) return "WICK_LOW_DENSITY"
-        if (rangeSigmaRatio(feature.range, sigma1m) < strategy.wickMinRangeSigmaRatio) return "WICK_RANGE_TOO_SMALL"
+        if (strategy.wickMinTicksPerCandle > 0 && feature.tickCount < strategy.wickMinTicksPerCandle) return "WICK_LOW_DENSITY"
+        if (strategy.wickMinRangeSigmaRatio > BigDecimal.ZERO &&
+            rangeSigmaRatio(feature.range, sigma1m) < strategy.wickMinRangeSigmaRatio
+        ) {
+            return "WICK_RANGE_TOO_SMALL"
+        }
         return "OK"
     }
 

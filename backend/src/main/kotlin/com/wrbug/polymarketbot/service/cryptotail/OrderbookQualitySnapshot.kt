@@ -14,7 +14,8 @@ data class OrderbookQualitySnapshot(
     val quoteUpdatedAtMs: Long,
     val depthUpdatedAtMs: Long?,
     val depthStale: Boolean = false,
-    val bidLevels: List<BookLevel> = emptyList()
+    val bidLevels: List<BookLevel> = emptyList(),
+    val askLevels: List<BookLevel> = emptyList()
 ) {
     data class BookLevel(
         val price: BigDecimal,
@@ -40,6 +41,32 @@ data class OrderbookQualitySnapshot(
         return total
     }
 
+    fun executableBidSizeAtBestOrBetter(limitPrice: BigDecimal, targetSize: BigDecimal): BigDecimal {
+        if (limitPrice <= BigDecimal.ZERO || targetSize <= BigDecimal.ZERO) return BigDecimal.ZERO
+        var remaining = targetSize
+        var total = BigDecimal.ZERO
+        for (level in bidLevels.sortedByDescending { it.price }) {
+            if (remaining <= BigDecimal.ZERO || level.price < limitPrice) break
+            val fillSize = remaining.min(level.size)
+            total = total.add(fillSize)
+            remaining = remaining.subtract(fillSize)
+        }
+        return total
+    }
+
+    fun executableAskSizeAtOrBelow(limitPrice: BigDecimal, targetSize: BigDecimal): BigDecimal {
+        if (limitPrice <= BigDecimal.ZERO || targetSize <= BigDecimal.ZERO) return BigDecimal.ZERO
+        var remaining = targetSize
+        var total = BigDecimal.ZERO
+        for (level in askLevels.sortedBy { it.price }) {
+            if (remaining <= BigDecimal.ZERO || level.price > limitPrice) break
+            val fillSize = remaining.min(level.size)
+            total = total.add(fillSize)
+            remaining = remaining.subtract(fillSize)
+        }
+        return total
+    }
+
     fun expectedExitPrice(targetSize: BigDecimal): BigDecimal? {
         if (targetSize <= BigDecimal.ZERO) return null
         val depthUsd = executableBidDepthUsd(targetSize)
@@ -59,6 +86,7 @@ data class OrderbookQualitySnapshot(
         "quoteAgeMs" to quoteAgeMs(nowMs),
         "depthAgeMs" to (depthAgeMs(nowMs) ?: ""),
         "depthStale" to depthStale,
-        "bidLevelCount" to bidLevels.size
+        "bidLevelCount" to bidLevels.size,
+        "askLevelCount" to askLevels.size
     )
 }

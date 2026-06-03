@@ -1713,25 +1713,25 @@ const CryptoTailStrategyList: React.FC = () => {
               <Form.Item style={{ marginBottom: 12 }}>
                 <Typography.Text strong>盘口质量 / 行情新鲜度</Typography.Text>
               </Form.Item>
-              <Form.Item name="maxEntrySpread" label="入场最大盘口价差">
+              <Form.Item name="maxEntrySpread" label="入场最大盘口价差" extra="0=关闭限制">
                 <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
               </Form.Item>
-              <Form.Item name="maxOrderbookAgeMs" label="订单簿最大年龄(ms)">
-                <InputNumber min={500} step={500} style={{ width: '100%' }} />
+              <Form.Item name="maxOrderbookAgeMs" label="订单簿最大年龄(ms)" extra="0=关闭限制">
+                <InputNumber min={0} step={500} style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item name="maxPriceAgeMs" label="价源最大年龄(ms)">
-                <InputNumber min={500} step={500} style={{ width: '100%' }} />
+              <Form.Item name="maxPriceAgeMs" label="价源最大年龄(ms)" extra="0=关闭限制">
+                <InputNumber min={0} step={500} style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item name="minRemainingSeconds" label="最小入场剩余秒数">
+              <Form.Item name="minRemainingSeconds" label="最小入场剩余秒数" extra="0=关闭限制">
                 <InputNumber min={0} step={1} style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item name="maxRemainingSeconds" label="最大入场剩余秒数">
+              <Form.Item name="maxRemainingSeconds" label="最大入场剩余秒数" extra="0=关闭限制">
                 <InputNumber min={0} step={1} style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item name="minExitBidDepthUsdc" label="止盈最小bid深度(USDC)">
+              <Form.Item name="minExitBidDepthUsdc" label="止盈最小bid深度(USDC)" extra="0=关闭限制">
                 <InputNumber min={0} step={0.5} style={{ width: '100%' }} stringMode />
               </Form.Item>
-              <Form.Item name="maxExitSpread" label="止盈最大盘口价差">
+              <Form.Item name="maxExitSpread" label="止盈最大盘口价差" extra="0=关闭限制">
                 <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
               </Form.Item>
               <Form.Item style={{ marginBottom: 12 }}>
@@ -1776,10 +1776,10 @@ const CryptoTailStrategyList: React.FC = () => {
               <Form.Item name="wickVolumeSpikeRatio" label="成交量尖峰倍数">
                 <InputNumber min={1} step={0.1} style={{ width: '100%' }} stringMode />
               </Form.Item>
-              <Form.Item name="wickMinTicksPerCandle" label="单根K最小样本数">
-                <InputNumber min={1} max={60} step={1} style={{ width: '100%' }} />
+              <Form.Item name="wickMinTicksPerCandle" label="单根K最小样本数" extra="0=关闭限制">
+                <InputNumber min={0} max={60} step={1} style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item name="wickMinRangeSigmaRatio" label="最小 range/sigma">
+              <Form.Item name="wickMinRangeSigmaRatio" label="最小 range/sigma" extra="0=关闭限制">
                 <InputNumber min={0} step={0.01} style={{ width: '100%' }} stringMode />
               </Form.Item>
               <Form.Item name="wickClosePositionUpMax" label="UP收盘位置上限">

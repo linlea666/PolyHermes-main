@@ -211,17 +211,18 @@ class CryptoTailBracketExitService(
                 logger.warn("阶梯退出跳过：targetSize=0 triggerId=$triggerId remaining=${freshRemaining.toPlainString()} ratio=${decision.ratio}")
                 return
             }
-            checkExitLiquidityForTarget(strategy, orderbook, bestBid, targetSize, decision.kind)?.let { waitReason ->
+            val sizing = sizeExitForLiquidity(strategy, orderbook, bestBid, targetSize, decision.kind)
+            if (sizing.waitReason != null) {
                 recordEvent(
                     checked,
                     eventType = "EXIT_CHECK",
                     gateName = decision.kind.name,
                     passed = false,
-                    reason = waitReason,
+                    reason = sizing.waitReason,
                     pwinHolding = pwinHolding,
                     bestBid = bestBid,
                     remainingSeconds = remainingSeconds,
-                    extra = exitLiquidityPayload(orderbook, targetSize)
+                    extra = exitLiquidityPayload(orderbook, targetSize, sizing)
                 )
                 return
             }
@@ -230,7 +231,7 @@ class CryptoTailBracketExitService(
                 strategy = strategy,
                 trigger = checked,
                 kind = decision.kind,
-                targetSize = targetSize,
+                targetSize = sizing.targetSize,
                 pwinHolding = pwinHolding,
                 bestBid = bestBid,
                 remainingSeconds = remainingSeconds,
@@ -313,6 +314,12 @@ class CryptoTailBracketExitService(
             if (bestBid <= stopLine) {
                 return Decision(ExitKind.HARD_STOP, BigDecimal.ONE, "硬止损: bestBid=${bestBid.toPlainString()}<=${stopLine.toPlainString()}")
             }
+        }
+        if (holding != null && strategy.stopProb > BigDecimal.ZERO && holding.pWinHolding <= strategy.stopProb) {
+            return Decision(ExitKind.STOP, BigDecimal.ONE, "止损: pWin=${holding.pWinHolding.toPlainString()}<=stopProb=${strategy.stopProb.toPlainString()}")
+        }
+        if (strategy.stopPrice > BigDecimal.ZERO && bestBid <= strategy.stopPrice) {
+            return Decision(ExitKind.STOP, BigDecimal.ONE, "止损: bestBid=${bestBid.toPlainString()}<=stopPrice=${strategy.stopPrice.toPlainString()}")
         }
         if (holding != null && strategy.emergencyExitOnModelFlip && trigger.entryModelSide != null && holding.modelSide != trigger.entryModelSide) {
             return Decision(ExitKind.MODEL_FLIP, BigDecimal.ONE, "模型方向反转: entry=${trigger.entryModelSide}, current=${holding.modelSide}")
@@ -432,19 +439,19 @@ class CryptoTailBracketExitService(
             return Decision(null, BigDecimal.ZERO, "TP流动性等待: 订单簿快照缺失")
         }
         val quoteAge = orderbook.quoteAgeMs(nowMs)
-        if (quoteAge > strategy.maxOrderbookAgeMs) {
+        if (strategy.maxOrderbookAgeMs > 0 && quoteAge > strategy.maxOrderbookAgeMs) {
             return Decision(null, BigDecimal.ZERO, "TP流动性等待: quoteAgeMs=$quoteAge>${strategy.maxOrderbookAgeMs}")
         }
         val depthAge = orderbook.depthAgeMs(nowMs)
-        if (orderbook.depthStale || depthAge == null || depthAge > strategy.maxOrderbookAgeMs) {
+        if (strategy.maxOrderbookAgeMs > 0 && (orderbook.depthStale || depthAge == null || depthAge > strategy.maxOrderbookAgeMs)) {
             return Decision(null, BigDecimal.ZERO, "TP流动性等待: depthAgeMs=${depthAge ?: ""}>${strategy.maxOrderbookAgeMs} 或深度缺失")
         }
         val spread = orderbook.spread
-        if (spread != null && spread > strategy.maxExitSpread) {
+        if (strategy.maxExitSpread > BigDecimal.ZERO && spread != null && spread > strategy.maxExitSpread) {
             return Decision(null, BigDecimal.ZERO, "TP流动性等待: exitSpread=${spread.toPlainString()}>${strategy.maxExitSpread.toPlainString()}")
         }
         val bidDepthUsd = orderbook.bidDepthUsd
-        if (bidDepthUsd != null && bidDepthUsd < strategy.minExitBidDepthUsdc) {
+        if (strategy.minExitBidDepthUsdc > BigDecimal.ZERO && bidDepthUsd != null && bidDepthUsd < strategy.minExitBidDepthUsdc) {
             return Decision(null, BigDecimal.ZERO, "TP流动性等待: bidDepthUsd=${bidDepthUsd.toPlainString()}<${strategy.minExitBidDepthUsdc.toPlainString()}")
         }
         if (orderbook.bestBid.compareTo(bestBid) != 0) {
@@ -453,30 +460,83 @@ class CryptoTailBracketExitService(
         return null
     }
 
-    private fun checkExitLiquidityForTarget(
+    private data class ExitSizing(
+        val targetSize: BigDecimal,
+        val plannedSize: BigDecimal,
+        val executableSize: BigDecimal?,
+        val splitByLiquidity: Boolean = false,
+        val waitReason: String? = null
+    )
+
+    private fun sizeExitForLiquidity(
         strategy: CryptoTailStrategy,
         orderbook: OrderbookQualitySnapshot?,
         bestBid: BigDecimal,
         targetSize: BigDecimal,
         kind: ExitKind
-    ): String? {
-        if (kind == ExitKind.HARD_STOP || kind == ExitKind.MODEL_FLIP || kind == ExitKind.GAP_FLIP || kind == ExitKind.FORCE) {
-            return null
+    ): ExitSizing {
+        if (isDepthSplitExit(kind)) {
+            val snapshot = orderbook ?: return ExitSizing(
+                targetSize = BigDecimal.ZERO,
+                plannedSize = targetSize,
+                executableSize = BigDecimal.ZERO,
+                waitReason = "退出流动性等待: 硬退出订单簿快照缺失"
+            )
+            val exitPrice = computeExitPrice("FAK", bestBid)
+            val executable = snapshot.executableBidSizeAtBestOrBetter(exitPrice, targetSize)
+                .setScale(sizeDecimalScale, RoundingMode.DOWN)
+                .min(targetSize)
+            if (executable <= BigDecimal.ZERO) {
+                return ExitSizing(
+                    targetSize = BigDecimal.ZERO,
+                    plannedSize = targetSize,
+                    executableSize = executable,
+                    waitReason = "退出流动性等待: 硬退出限价=${exitPrice.toPlainString()} 下无可执行 bid 深度"
+                )
+            }
+            return ExitSizing(
+                targetSize = executable,
+                plannedSize = targetSize,
+                executableSize = executable,
+                splitByLiquidity = executable < targetSize
+            )
         }
         val base = checkTakeProfitLiquidity(strategy, orderbook, bestBid)?.reason
-        if (base != null) return base
+        if (base != null) return ExitSizing(targetSize, targetSize, null, waitReason = base)
         val expectedDepth = orderbook?.executableBidDepthUsd(targetSize) ?: BigDecimal.ZERO
-        if (expectedDepth < strategy.minExitBidDepthUsdc) {
-            return "退出流动性等待: executableExitDepthUsd=${expectedDepth.toPlainString()}<${strategy.minExitBidDepthUsdc.toPlainString()}"
+        if (strategy.minExitBidDepthUsdc > BigDecimal.ZERO && expectedDepth < strategy.minExitBidDepthUsdc) {
+            return ExitSizing(
+                targetSize,
+                targetSize,
+                null,
+                waitReason = "退出流动性等待: executableExitDepthUsd=${expectedDepth.toPlainString()}<${strategy.minExitBidDepthUsdc.toPlainString()}"
+            )
         }
-        return null
+        return ExitSizing(targetSize, targetSize, null)
     }
 
-    private fun exitLiquidityPayload(orderbook: OrderbookQualitySnapshot?, targetSize: BigDecimal): Map<String, Any> {
+    private fun isDepthSplitExit(kind: ExitKind): Boolean =
+        kind == ExitKind.HARD_STOP ||
+                kind == ExitKind.MODEL_INVALID ||
+                kind == ExitKind.MODEL_FLIP ||
+                kind == ExitKind.GAP_FLIP ||
+                kind == ExitKind.FORCE ||
+                kind == ExitKind.STOP ||
+                kind == ExitKind.TRAILING_STOP ||
+                kind == ExitKind.WICK_REVERSAL
+
+    private fun exitLiquidityPayload(
+        orderbook: OrderbookQualitySnapshot?,
+        targetSize: BigDecimal,
+        sizing: ExitSizing? = null
+    ): Map<String, Any> {
         val expectedDepth = orderbook?.executableBidDepthUsd(targetSize)
         val expectedPrice = orderbook?.expectedExitPrice(targetSize)
         return mapOf(
             "targetSize" to targetSize.toPlainString(),
+            "finalTargetSize" to (sizing?.targetSize?.toPlainString() ?: targetSize.toPlainString()),
+            "executableExitSize" to (sizing?.executableSize?.toPlainString() ?: ""),
+            "liquiditySplit" to (sizing?.splitByLiquidity ?: false),
             "executableExitDepthUsd" to (expectedDepth?.toPlainString() ?: ""),
             "expectedExitPrice" to (expectedPrice?.toPlainString() ?: ""),
             "expectedExitSlippage" to (expectedPrice?.let { orderbook?.bestBid?.subtract(it)?.max(BigDecimal.ZERO)?.toPlainString() } ?: ""),
@@ -511,7 +571,7 @@ class CryptoTailBracketExitService(
         nowMs: Long
     ): Boolean {
         val kind = decision.kind ?: return false
-        val immediate = kind == ExitKind.MODEL_FLIP || kind == ExitKind.GAP_FLIP || kind == ExitKind.TP1 || kind == ExitKind.TP2 || kind == ExitKind.FORCE
+        val immediate = isDepthSplitExit(kind) || kind == ExitKind.TP1 || kind == ExitKind.TP2
         val nextCount = if (trigger.exitConfirmReason == kind.name) trigger.exitConfirmCount + 1 else 1
         triggerRepository.save(
             trigger.copy(

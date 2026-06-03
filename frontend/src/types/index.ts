@@ -1933,6 +1933,9 @@ export interface CryptoTailMonitorInitResponse {
   priceReadyReason?: string
   coin?: string
   fallbackUsed?: boolean
+  legacyOpen?: string
+  legacyClose?: string
+  legacyPriceSource?: string
   /** Up tokenId */
   tokenIdUp?: string
   /** Down tokenId */
@@ -1986,6 +1989,14 @@ export interface CryptoTailMonitorPushData {
   fallbackUsed?: boolean
   outcomeBestBidUp?: string
   outcomeBestBidDown?: string
+  outcomeBestAskUp?: string
+  outcomeBestAskDown?: string
+  outcomeSpreadUp?: string
+  outcomeSpreadDown?: string
+  outcomeDirection?: string
+  legacyOpen?: string
+  legacyClose?: string
+  legacyPriceSource?: string
   /** 周期剩余秒数 */
   remainingSeconds: number
   /** 是否在时间窗口内 */

@@ -86,10 +86,10 @@ class ChainlinkDataStreamsService(
         val feedId = feedIdForSlug(marketSlugPrefix)
             ?: return PeriodPriceProvider.PriceReadiness("CHAINLINK", coin, false, "FEED_NOT_CONFIGURED")
         val age = latestCache[feedId]?.let { (System.currentTimeMillis() - it.second).coerceAtLeast(0L) }
-        return if (age != null && age <= latestTtlMs) {
-            PeriodPriceProvider.PriceReadiness("CHAINLINK", coin, true, "OK", age)
-        } else {
-            PeriodPriceProvider.PriceReadiness("CHAINLINK", coin, true, "OK", age)
+        return when {
+            age == null -> PeriodPriceProvider.PriceReadiness("CHAINLINK", coin, false, "NO_LATEST_PRICE")
+            age <= latestTtlMs -> PeriodPriceProvider.PriceReadiness("CHAINLINK", coin, true, "OK", age)
+            else -> PeriodPriceProvider.PriceReadiness("CHAINLINK", coin, false, "STALE_PRICE", age)
         }
     }
 

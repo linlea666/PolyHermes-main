@@ -194,12 +194,14 @@ class CryptoTailOrderbookWsService(
                 var bestAsk: BigDecimal? = null
                 var bestAskSize: BigDecimal? = null
                 var askDepthUsd = BigDecimal.ZERO
+                val askLevels = mutableListOf<OrderbookQualitySnapshot.BookLevel>()
                 if (asks != null) {
                     for (i in 0 until asks.size()) {
                         val level = asks.get(i) as? com.google.gson.JsonObject ?: continue
                         val p = (level.get("price") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: continue
                         val size = (level.get("size") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: BigDecimal.ZERO
                         askDepthUsd = askDepthUsd.add(p.multiply(size))
+                        askLevels.add(OrderbookQualitySnapshot.BookLevel(p, size))
                         if (bestAsk == null || p < bestAsk) {
                             bestAsk = p
                             bestAskSize = size
@@ -220,7 +222,8 @@ class CryptoTailOrderbookWsService(
                         quoteUpdatedAtMs = nowMs,
                         depthUpdatedAtMs = nowMs,
                         depthStale = false,
-                        bidLevels = bidLevels.sortedByDescending { it.price }
+                        bidLevels = bidLevels.sortedByDescending { it.price },
+                        askLevels = askLevels.sortedBy { it.price }
                     )
                     orderbookCache[assetId] = snapshot
                     onBestBid(assetId, snapshot)

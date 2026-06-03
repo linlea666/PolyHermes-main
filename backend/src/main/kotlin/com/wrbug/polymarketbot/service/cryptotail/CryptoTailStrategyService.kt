@@ -1236,7 +1236,7 @@ class CryptoTailStrategyService(
         if (wickExitScore !in 0..100) return false
         if (wickHoldProfitScore !in 0..100) return false
         if (wickVolumeSpikeRatio < one) return false
-        if (wickMinTicksPerCandle !in 1..60) return false
+        if (wickMinTicksPerCandle !in 0..60) return false
         if (wickMinRangeSigmaRatio < zero) return false
         if (wickClosePositionUpMax < zero || wickClosePositionUpMax > one) return false
         if (wickClosePositionDownMin < zero || wickClosePositionDownMin > one) return false
@@ -1244,9 +1244,10 @@ class CryptoTailStrategyService(
         if (maxHoldTp1DelaySeconds < 0) return false
         if (holdTp1PeakDrawdown < zero || holdTp1PeakDrawdown > one) return false
         if (maxEntrySpread < zero || maxEntrySpread > one) return false
-        if (maxOrderbookAgeMs < 500) return false
-        if (maxPriceAgeMs < 500) return false
-        if (minRemainingSeconds < 0 || maxRemainingSeconds < 0 || minRemainingSeconds > maxRemainingSeconds) return false
+        if (maxOrderbookAgeMs < 0 || (maxOrderbookAgeMs in 1..499)) return false
+        if (maxPriceAgeMs < 0 || (maxPriceAgeMs in 1..499)) return false
+        if (minRemainingSeconds < 0 || maxRemainingSeconds < 0) return false
+        if (minRemainingSeconds > 0 && maxRemainingSeconds > 0 && minRemainingSeconds > maxRemainingSeconds) return false
         if (wickFilterMode != "OFF" && wickFilterMode != "SHADOW" && wickFilterMode != "ENFORCE") return false
         if (minExitBidDepthUsdc < zero) return false
         if (maxExitSpread < zero || maxExitSpread > one) return false

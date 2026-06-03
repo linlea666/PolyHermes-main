@@ -937,9 +937,12 @@ const CryptoTailMonitor: React.FC = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  // 官方标的价格：概率模式来自 RTDS/Chainlink，legacy 可显示 Binance fallback。
-  const openPrice = pushData?.officialOpen ?? pushData?.openPriceBtc ?? initData?.officialOpen ?? initData?.openPriceBtc
-  const currentPrice = pushData?.officialClose ?? pushData?.currentPriceBtc ?? initData?.officialClose
+  // 官方标的价格：只展示 RTDS/Chainlink 等结算同源价源；legacy/debug 单独显示。
+  const openPrice = pushData?.officialOpen ?? initData?.officialOpen
+  const currentPrice = pushData?.officialClose ?? initData?.officialClose
+  const legacyOpen = pushData?.legacyOpen ?? initData?.legacyOpen ?? initData?.openPriceBtc
+  const legacyClose = pushData?.legacyClose ?? initData?.legacyClose ?? pushData?.currentPriceBtc
+  const legacySource = pushData?.legacyPriceSource ?? initData?.legacyPriceSource
   const currentSpread = pushData?.spreadBtc
   const officialSource = pushData?.officialPriceSource ?? initData?.officialPriceSource
   const officialAge = pushData?.officialPriceAgeMs ?? initData?.officialPriceAgeMs
@@ -1284,8 +1287,30 @@ const CryptoTailMonitor: React.FC = () => {
               <Text type="secondary">年龄: {officialAge != null ? `${officialAge}ms` : '-'}</Text>
               <Text type="secondary">Open: {openPrice ? formatNumber(openPrice, 2) : '-'}</Text>
               <Text type="secondary">Close: {currentPrice ? formatNumber(currentPrice, 2) : '-'}</Text>
-              <Text type="secondary">Outcome bestBid Up: {pushData?.outcomeBestBidUp ?? pushData?.currentPriceUp ?? '-'}</Text>
-              <Text type="secondary">Down: {pushData?.outcomeBestBidDown ?? pushData?.currentPriceDown ?? '-'}</Text>
+            </Space>
+          </Card>
+
+          <Card size="small" style={{ marginBottom: 16 }}>
+            <Space wrap>
+              <Text strong>Legacy / Debug</Text>
+              <Tag color="default">{legacySource || '-'}</Tag>
+              <Text type="secondary">Open: {legacyOpen ? formatNumber(legacyOpen, 2) : '-'}</Text>
+              <Text type="secondary">Close: {legacyClose ? formatNumber(legacyClose, 2) : '-'}</Text>
+              <Text type="secondary">Spread: {currentSpread ? formatNumber(currentSpread, 2) : '-'}</Text>
+            </Space>
+          </Card>
+
+          <Card size="small" style={{ marginBottom: 16 }}>
+            <Space wrap>
+              <Text strong>Outcome 盘口</Text>
+              <Tag color={pushData?.outcomeDirection === 'UP' ? 'green' : 'default'}>UP</Tag>
+              <Text type="secondary">Bid: {pushData?.outcomeBestBidUp ?? '-'}</Text>
+              <Text type="secondary">Ask: {pushData?.outcomeBestAskUp ?? '-'}</Text>
+              <Text type="secondary">Spread: {pushData?.outcomeSpreadUp ?? '-'}</Text>
+              <Tag color={pushData?.outcomeDirection === 'DOWN' ? 'green' : 'default'}>DOWN</Tag>
+              <Text type="secondary">Bid: {pushData?.outcomeBestBidDown ?? '-'}</Text>
+              <Text type="secondary">Ask: {pushData?.outcomeBestAskDown ?? '-'}</Text>
+              <Text type="secondary">Spread: {pushData?.outcomeSpreadDown ?? '-'}</Text>
             </Space>
           </Card>
 
