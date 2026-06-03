@@ -36,7 +36,7 @@ echo ""
 echo "📋 检查关键配置..."
 
 # 检查 Dockerfile 是否包含 BUILD_IN_DOCKER
-if grep -q "ARG BUILD_IN_DOCKER=true" Dockerfile; then
+if grep -q "ARG BUILD_IN_DOCKER=" Dockerfile; then
     echo "  ✅ Dockerfile 包含 BUILD_IN_DOCKER 参数"
 else
     echo "  ❌ Dockerfile 缺少 BUILD_IN_DOCKER 参数"

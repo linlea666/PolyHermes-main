@@ -100,7 +100,7 @@ jobs:
         env:
           VERSION: ${{ steps.extract_version.outputs.VERSION }}
           GIT_TAG: ${{ steps.extract_version.outputs.TAG }}
-          GITHUB_REPO_URL: https://github.com/WrBug/PolyHermes
+          GITHUB_REPO_URL: https://github.com/linlea666/PolyHermes-main
         run: |
           cd frontend
           npm ci
@@ -274,6 +274,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          target: runtime-external
           # 多架构构建：支持 amd64 和 arm64
           platforms: linux/amd64,linux/arm64
           tags: |
@@ -283,7 +284,7 @@ jobs:
             BUILD_IN_DOCKER=false
             VERSION=${{ steps.extract_version.outputs.VERSION }}
             GIT_TAG=${{ steps.extract_version.outputs.TAG }}
-            GITHUB_REPO_URL=https://github.com/WrBug/PolyHermes
+            GITHUB_REPO_URL=https://github.com/linlea666/PolyHermes-main
           cache-from: type=registry,ref=wrbug/polyhermes:latest
           cache-to: type=inline
       
@@ -303,7 +304,7 @@ jobs:
           # 获取构建信息
           VERSION="${{ steps.extract_version.outputs.VERSION }}"
           TAG="${{ steps.extract_version.outputs.TAG }}"
-          DEPLOY_DOC_URL="https://github.com/WrBug/PolyHermes/blob/main/docs/zh/DEPLOYMENT.md"
+          DEPLOY_DOC_URL="https://github.com/linlea666/PolyHermes-main/blob/main/docs/zh/DEPLOYMENT.md"
           
           if [ "${{ github.event_name }}" = "release" ]; then
             RELEASE_URL="${{ github.event.release.html_url }}"

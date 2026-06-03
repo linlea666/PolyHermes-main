@@ -2,16 +2,13 @@ version: '3.8'
 
 services:
   app:
-    # 使用 Docker Hub 镜像（推荐生产环境）
-    # 取消注释下面一行，并注释掉 build 部分，即可使用 Docker Hub 的镜像
-    # image: wrbug/polyhermes:latest
     build:
       context: .
       dockerfile: Dockerfile
-      # 本地构建时可以传递版本号参数（自动使用当前分支名）
+      # 默认使用外部产物 target，避免 deploy.sh 预编译后 Dockerfile 再重复编译。
+      target: ${DOCKER_BUILD_TARGET:-runtime-external}
       args:
-        # BUILD_IN_DOCKER=false 时镜像阶段不编译，直接使用宿主机预编译的产物（推荐，避免 :compileKotlin 卡死/OOM）
-        BUILD_IN_DOCKER: ${BUILD_IN_DOCKER:-true}
+        BUILD_IN_DOCKER: ${BUILD_IN_DOCKER:-false}
         VERSION: ${VERSION:-dev}
         GIT_TAG: ${GIT_TAG:-${VERSION:-dev}}
         GITHUB_REPO_URL: ${GITHUB_REPO_URL:-https://github.com/linlea666/PolyHermes-main}

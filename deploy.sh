@@ -12,6 +12,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 COMPOSE_FILES=(-f docker-compose.yml)
 COMPOSE_COMMAND=()
+DEPLOY_MODE="full-build"
+DEFAULT_IMAGE="wrbug/polyhermes:latest"
+REPO_URL="https://github.com/linlea666/PolyHermes-main"
 
 # 打印信息
 info() {
@@ -48,16 +51,30 @@ configure_compose_files() {
     
     COMPOSE_FILES=(-f docker-compose.yml)
     
-    if [[ "$db_url" == *"host.docker.internal"* ]]; then
+    if [ "$DEPLOY_MODE" = "pull-image" ]; then
+        if [[ "$db_url" == *"host.docker.internal"* ]]; then
+            COMPOSE_FILES=(-f docker-compose.host-mysql.prod.yml)
+            info "检测到 DB_URL 指向宿主机 MySQL，将使用 docker-compose.host-mysql.prod.yml（远程镜像）"
+        else
+            COMPOSE_FILES=(-f docker-compose.prod.yml)
+            info "使用 docker-compose.prod.yml（远程镜像，包含内置 MySQL 服务）"
+        fi
+    elif [[ "$db_url" == *"host.docker.internal"* ]]; then
         COMPOSE_FILES=(-f docker-compose.host-mysql.yml)
-        info "检测到 DB_URL 指向宿主机 MySQL，将使用 docker-compose.host-mysql.yml"
+        info "检测到 DB_URL 指向宿主机 MySQL，将使用 docker-compose.host-mysql.yml（本地构建）"
     else
-        info "使用默认 docker-compose.yml（包含内置 MySQL 服务）"
+        info "使用默认 docker-compose.yml（本地构建，包含内置 MySQL 服务）"
     fi
 }
 
 compose() {
     "${COMPOSE_COMMAND[@]}" "${COMPOSE_FILES[@]}" "$@"
+}
+
+get_image_ref() {
+    local image
+    image=$(get_config_value "POLYHERMES_IMAGE")
+    echo "${image:-$DEFAULT_IMAGE}"
 }
 
 # 检查 Docker 环境
@@ -121,6 +138,11 @@ ADMIN_RESET_PASSWORD_KEY=${ADMIN_RESET_KEY}
 # 可选值：TRACE, DEBUG, INFO, WARN, ERROR, OFF
 # LOG_LEVEL_ROOT=WARN
 # LOG_LEVEL_APP=INFO
+
+# 部署构建配置（可选）
+# BUILD_IN_DOCKER=false
+# FRONTEND_BUILD_MEM_MB=1024
+# POLYHERMES_IMAGE=wrbug/polyhermes:latest
 EOF
         info ".env 文件已创建，已自动生成随机密码和密钥"
         warn "生产环境建议修改以下参数："
@@ -187,21 +209,21 @@ check_security_config() {
 # 在宿主机预编译前后端产物（不在镜像内编译）
 # 使用 gradle / node 官方镜像 + 持久化缓存做增量编译，避免镜像阶段 gradle --no-daemon 全量冷编译导致 :compileKotlin 卡死/OOM
 build_artifacts_on_host() {
-    local repo_url="https://github.com/linlea666/PolyHermes-main"
-
     info "在宿主机预编译产物（BUILD_IN_DOCKER=false，镜像阶段不再编译）..."
 
     # 后端：用 gradle 容器编译 JAR，挂载缓存卷复用依赖与增量编译结果
     info "编译后端 JAR（增量编译，缓存复用）..."
     docker run --rm \
         --user root \
+        --memory 1536m \
+        --memory-swap 1536m \
         -e GRADLE_USER_HOME=/gradle-cache \
-        -e GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8" \
+        -e GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx1024m -Dfile.encoding=UTF-8 -Dorg.gradle.workers.max=1" \
         -v "$(pwd)/backend":/app/backend \
         -v polyhermes-gradle-cache:/gradle-cache \
         -w /app/backend \
         gradle:8.5-jdk17 \
-        gradle bootJar --no-daemon -x test
+        gradle bootJar --no-daemon -x test -Dorg.gradle.workers.max=1
 
     if [ -z "$(ls -A backend/build/libs/*.jar 2>/dev/null)" ]; then
         error "后端编译失败：未在 backend/build/libs/ 生成 JAR"
@@ -211,8 +233,10 @@ build_artifacts_on_host() {
 
     # 前端：用 node 容器编译，挂载 npm 缓存卷
     # 显式限内存：vite/rollup 在低配机上 rendering chunks 容易吃满内存被 OOM kill 后表现为"卡住"。
-    # NODE_OPTIONS 控制 V8 堆，--memory 限容器；FRONTEND_BUILD_MEM_MB 可通过环境变量覆盖（默认 2048）。
-    local fe_mem_mb="${FRONTEND_BUILD_MEM_MB:-2048}"
+    # NODE_OPTIONS 控制 V8 堆，--memory 限容器；FRONTEND_BUILD_MEM_MB 可通过 .env 或环境变量覆盖（默认 1024）。
+    local fe_mem_mb
+    fe_mem_mb=$(get_config_value "FRONTEND_BUILD_MEM_MB")
+    fe_mem_mb="${fe_mem_mb:-1024}"
     info "编译前端产物（NODE_OPTIONS 堆上限=${fe_mem_mb}MB）..."
     docker run --rm \
         --user root \
@@ -220,14 +244,35 @@ build_artifacts_on_host() {
         --memory-swap "${fe_mem_mb}m" \
         -e VERSION="${DOCKER_VERSION}" \
         -e GIT_TAG="${DOCKER_VERSION}" \
-        -e GITHUB_REPO_URL="${repo_url}" \
+        -e GITHUB_REPO_URL="${REPO_URL}" \
         -e NODE_OPTIONS="--max-old-space-size=${fe_mem_mb}" \
         -e npm_config_cache=/npm-cache \
         -v "$(pwd)/frontend":/app/frontend \
         -v polyhermes-npm-cache:/npm-cache \
         -w /app/frontend \
         node:18-alpine \
-        sh -c "npm ci && npm run build"
+        sh -c '
+            set -e
+            if [ -f package-lock.json ]; then
+                lock_hash="$(sha256sum package-lock.json | awk "{print \$1}")"
+                saved_hash=""
+                if [ -f node_modules/.package-lock.sha256 ]; then
+                    saved_hash="$(cat node_modules/.package-lock.sha256)"
+                fi
+                if [ "$lock_hash" = "$saved_hash" ] && [ -d node_modules ]; then
+                    echo "package-lock.json 未变化，使用 npm install --prefer-offline"
+                    npm install --prefer-offline --no-audit --no-fund
+                else
+                    echo "package-lock.json 已变化或 node_modules 不存在，执行 npm ci"
+                    npm ci --prefer-offline --no-audit --no-fund
+                    mkdir -p node_modules
+                    echo "$lock_hash" > node_modules/.package-lock.sha256
+                fi
+            else
+                npm install --prefer-offline --no-audit --no-fund
+            fi
+            npm run build
+        '
 
     if [ ! -d "frontend/dist" ] || [ -z "$(ls -A frontend/dist 2>/dev/null)" ]; then
         error "前端编译失败：未在 frontend/dist 生成产物"
@@ -241,56 +286,68 @@ deploy() {
     # 检查安全配置
     check_security_config
     configure_compose_files
-    
-    # 检查是否使用 Docker Hub 镜像
-    USE_DOCKER_HUB="${USE_DOCKER_HUB:-false}"
-    
-    if [ "$USE_DOCKER_HUB" = "true" ]; then
-        info "使用 Docker Hub 镜像（推荐生产环境）..."
-        info "拉取最新镜像..."
-        docker pull wrbug/polyhermes:latest || warn "拉取镜像失败，将使用本地构建"
-        
-        # 修改 docker-compose.yml 使用镜像而不是构建
-        # 注意：这里需要手动修改 docker-compose.yml，或者使用环境变量
-        warn "请确保 docker-compose.yml 中已配置使用 image: wrbug/polyhermes:latest"
-    else
-        # 版本号：优先环境变量 DOCKER_VERSION，其次 .env 中的 DOCKER_VERSION，否则用当前分支名
-        if [ -z "${DOCKER_VERSION}" ] && [ -f ".env" ]; then
-            DOCKER_VERSION=$(grep "^DOCKER_VERSION=" .env 2>/dev/null | cut -d'=' -f2- | sed 's/^["'\'']//;s/["'\'']$//' | tr -d '\r')
-        fi
-        if [ -z "${DOCKER_VERSION}" ]; then
-            CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "dev")
-            DOCKER_VERSION=$(echo "$CURRENT_BRANCH" | tr '/' '-')
-        fi
-        export DOCKER_VERSION
-        
-        # 编译方式：默认在宿主机预编译产物（BUILD_IN_DOCKER=false），避免镜像阶段 :compileKotlin 卡死/OOM
-        # 如需回退到旧的「镜像内全量编译」行为，可显式 BUILD_IN_DOCKER=true ./deploy.sh
-        BUILD_IN_DOCKER="${BUILD_IN_DOCKER:-false}"
-        export BUILD_IN_DOCKER
-        
-        info "构建 Docker 镜像（本地构建，版本号: ${DOCKER_VERSION}，BUILD_IN_DOCKER=${BUILD_IN_DOCKER}）..."
-        
-        # 创建占位符目录（如果不存在），避免 Dockerfile COPY 失败
-        # 当 BUILD_IN_DOCKER=true 时，backend/build 可能不存在
-        mkdir -p backend/build/libs
-        
-        # 设置构建参数（通过环境变量传递给 docker-compose.yml）
-        export VERSION=${DOCKER_VERSION}
-        export GIT_TAG=${DOCKER_VERSION}
-        export GITHUB_REPO_URL=https://github.com/linlea666/PolyHermes-main
-        
-        # 预编译产物（仅在不使用镜像内编译时）
-        if [ "$BUILD_IN_DOCKER" = "false" ]; then
-            build_artifacts_on_host
-        fi
-        
-        compose build
+
+    if [ "$DEPLOY_MODE" = "restart" ]; then
+        info "部署模式：restart（只重启现有容器，不编译、不构建镜像）"
+        info "启动服务..."
+        compose up -d --no-build
+        show_status
+        return
     fi
+
+    if [ "$DEPLOY_MODE" = "pull-image" ]; then
+        local image_ref
+        image_ref=$(get_image_ref)
+        export POLYHERMES_IMAGE="$image_ref"
+
+        info "部署模式：pull-image（拉取远程镜像，不本地编译）"
+        info "拉取镜像: ${image_ref}"
+        docker pull "$image_ref"
+
+        info "启动服务..."
+        compose up -d
+        show_status
+        return
+    fi
+
+    # 版本号：优先环境变量 DOCKER_VERSION，其次 .env 中的 DOCKER_VERSION，否则用当前分支名
+    if [ -z "${DOCKER_VERSION}" ] && [ -f ".env" ]; then
+        DOCKER_VERSION=$(grep "^DOCKER_VERSION=" .env 2>/dev/null | cut -d'=' -f2- | sed 's/^["'\'']//;s/["'\'']$//' | tr -d '\r')
+    fi
+    if [ -z "${DOCKER_VERSION}" ]; then
+        CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "dev")
+        DOCKER_VERSION=$(echo "$CURRENT_BRANCH" | tr '/' '-')
+    fi
+    export DOCKER_VERSION
     
+    # 编译方式：默认在宿主机预编译产物（BUILD_IN_DOCKER=false），避免镜像阶段 :compileKotlin 卡死/OOM。
+    # 如需 Dockerfile 内完整编译，可显式 BUILD_IN_DOCKER=true ./deploy.sh --full-build。
+    BUILD_IN_DOCKER=$(get_config_value "BUILD_IN_DOCKER")
+    BUILD_IN_DOCKER="${BUILD_IN_DOCKER:-false}"
+    export BUILD_IN_DOCKER
+    
+    export VERSION=${DOCKER_VERSION}
+    export GIT_TAG=${DOCKER_VERSION}
+    export GITHUB_REPO_URL=${REPO_URL}
+
+    if [ "$BUILD_IN_DOCKER" = "true" ]; then
+        export DOCKER_BUILD_TARGET=runtime-docker
+        info "部署模式：full-build（Dockerfile 内编译，版本号: ${DOCKER_VERSION}）"
+    else
+        export DOCKER_BUILD_TARGET=runtime-external
+        info "部署模式：full-build（deploy.sh 预编译，Dockerfile 只 COPY 产物，版本号: ${DOCKER_VERSION}）"
+        build_artifacts_on_host
+    fi
+
+    compose build
+
     info "启动服务..."
     compose up -d
-    
+
+    show_status
+}
+
+show_status() {
     info "等待服务启动..."
     sleep 5
     
@@ -301,6 +358,26 @@ deploy() {
     info "停止服务: ${COMPOSE_COMMAND[*]} ${COMPOSE_FILES[*]} down"
 }
 
+usage() {
+    cat <<EOF
+用法: $0 [--restart|--full-build|--pull-image]
+
+部署模式：
+  --restart      只执行 docker compose up -d --no-build，不编译、不构建镜像
+  --full-build   完整构建并启动（默认）。BUILD_IN_DOCKER=false 时脚本预编译；BUILD_IN_DOCKER=true 时 Dockerfile 内编译
+  --pull-image   拉取远程镜像并启动，不本地编译。镜像默认 ${DEFAULT_IMAGE}，可用 POLYHERMES_IMAGE 覆盖
+
+兼容参数：
+  --use-docker-hub, -d  等同于 --pull-image
+
+示例：
+  $0 --restart
+  $0 --full-build
+  BUILD_IN_DOCKER=true $0 --full-build
+  POLYHERMES_IMAGE=wrbug/polyhermes:latest $0 --pull-image
+EOF
+}
+
 # 主函数
 main() {
     echo "=========================================="
@@ -309,11 +386,32 @@ main() {
     echo ""
     
     # 解析参数
-    if [ "$1" = "--use-docker-hub" ] || [ "$1" = "-d" ]; then
-        export USE_DOCKER_HUB=true
-        info "将使用 Docker Hub 镜像（生产环境推荐）"
-        echo ""
-    fi
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --restart)
+                DEPLOY_MODE="restart"
+                ;;
+            --full-build)
+                DEPLOY_MODE="full-build"
+                ;;
+            --pull-image|--use-docker-hub|-d)
+                DEPLOY_MODE="pull-image"
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            *)
+                error "未知参数: $1"
+                usage
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    info "当前部署模式: ${DEPLOY_MODE}"
+    echo ""
     
     check_docker
     create_env_file
@@ -323,7 +421,7 @@ main() {
     info "部署完成！"
     info "访问地址: http://localhost:${SERVER_PORT:-80}"
     echo ""
-    if [ "$USE_DOCKER_HUB" != "true" ]; then
+    if [ "$DEPLOY_MODE" = "full-build" ]; then
         if [ -z "${DOCKER_VERSION}" ] && [ -f ".env" ]; then
             DOCKER_VERSION=$(grep "^DOCKER_VERSION=" .env 2>/dev/null | cut -d'=' -f2- | sed 's/^["'\'']//;s/["'\'']$//' | tr -d '\r')
         fi
@@ -332,9 +430,8 @@ main() {
             DOCKER_VERSION=$(echo "$CURRENT_BRANCH" | tr '/' '-')
         fi
         info "提示：本地构建的版本号: ${DOCKER_VERSION}（可在 .env 或环境变量中设置 DOCKER_VERSION）"
-        info "生产环境推荐使用 Docker Hub 镜像："
-        info "  ./deploy.sh --use-docker-hub"
-        info "  或修改 docker-compose.yml 使用 image: wrbug/polyhermes:latest"
+        info "仅重启现有容器: ./deploy.sh --restart"
+        info "拉远程镜像部署: ./deploy.sh --pull-image"
     fi
 }
 

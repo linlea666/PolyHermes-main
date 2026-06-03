@@ -14,7 +14,7 @@ version: '3.8'
 services:
   app:
     # 使用 Docker Hub 官方镜像
-    image: wrbug/polyhermes:latest
+    image: ${POLYHERMES_IMAGE:-wrbug/polyhermes:latest}
     container_name: polyhermes
     ports:
       - "${SERVER_PORT:-80}:80"
@@ -75,4 +75,3 @@ volumes:
 networks:
   polyhermes-network:
     driver: bridge
-
