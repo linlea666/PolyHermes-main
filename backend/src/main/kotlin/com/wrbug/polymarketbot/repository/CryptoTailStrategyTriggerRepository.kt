@@ -34,6 +34,19 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
     /** 轮询结算：仅处理下单成功的订单（status=success 且 orderId 非空）、且未结算的触发记录 */
     fun findByStatusAndResolvedAndOrderIdIsNotNullOrderByCreatedAtAsc(status: String, resolved: Boolean): List<CryptoTailStrategyTrigger>
 
+    /**
+     * 参数建议：取某策略已结算、且带 TAIL_DIFF 入场快照（score 非空）的触发记录。
+     * mode 用冻结值过滤，避免策略后续改 mode 污染语义。
+     */
+    @Query(
+        "SELECT t FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true " +
+            "AND t.mode = :mode AND t.score IS NOT NULL ORDER BY COALESCE(t.settledAt, t.createdAt) ASC"
+    )
+    fun findResolvedTailDiffByStrategyId(
+        @Param("strategyId") strategyId: Long,
+        @Param("mode") mode: com.wrbug.polymarketbot.enums.TradingMode
+    ): List<CryptoTailStrategyTrigger>
+
     /** 根据订单 ID 查询加密价差策略触发记录 */
     fun findByOrderId(orderId: String): CryptoTailStrategyTrigger?
 

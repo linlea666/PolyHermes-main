@@ -643,7 +643,7 @@ export const apiService = {
       maxOrdersPerDay?: number | null
       maxConsecutiveLosses?: number | null
       pauseAfterLossMinutes?: number
-    }) =>
+    } & import('../types').CryptoTailTailDiffParams) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/create', data),
     update: (data: {
       strategyId: number
@@ -752,8 +752,20 @@ export const apiService = {
       maxOrdersPerDay?: number | null
       maxConsecutiveLosses?: number | null
       pauseAfterLossMinutes?: number
-    }) =>
+    } & import('../types').CryptoTailTailDiffParams) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/update', data),
+    tailDiffPreview: (data: import('../types').CryptoTailTailDiffPreviewRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailTailDiffPreviewResponse>>('/crypto-tail-strategy/tail-diff/preview', data),
+    tailDiffAdvisor: (data: import('../types').TailDiffAdvisorRequest) =>
+      apiClient.post<ApiResponse<import('../types').TailDiffAdvisorResponse>>('/crypto-tail-strategy/tail-diff/advisor', data),
+    reversalBackfill: (data: import('../types').ReversalBackfillRequest) =>
+      apiClient.post<ApiResponse<import('../types').ReversalBackfillResponse>>('/crypto-tail-strategy/reversal/backfill', data),
+    reversalBackfillPolymarket: (data: import('../types').PolymarketReversalBackfillRequest) =>
+      apiClient.post<ApiResponse<import('../types').PolymarketReversalBackfillResponse>>('/crypto-tail-strategy/reversal/backfill-polymarket', data),
+    reversalList: (data: import('../types').ReversalResearchListRequest) =>
+      apiClient.post<ApiResponse<import('../types').ReversalResearchListResponse>>('/crypto-tail-strategy/reversal/list', data),
+    reversalExport: (data: import('../types').ReversalResearchListRequest) =>
+      apiClient.post<ApiResponse<import('../types').ReversalResearchCsvResponse>>('/crypto-tail-strategy/reversal/export', data),
     delete: (data: { strategyId: number }) =>
       apiClient.post<ApiResponse<void>>('/crypto-tail-strategy/delete', data),
     triggers: (data: {

@@ -169,7 +169,35 @@ interface PolymarketClobApi {
      */
     @GET("/time")
     suspend fun getServerTime(): Response<ResponseBody>
+
+    /**
+     * 历史价格序列（公开，无需认证）
+     * 端点: GET /prices-history?market={clobTokenId}&startTs=&endTs=&fidelity=
+     * 返回 { "history": [ { "t": <unix秒>, "p": <价格0~1> } ] }
+     * @param market CLOB token id（注意此处 market 实为 tokenId）
+     * @param startTs 起始 unix 秒
+     * @param endTs 结束 unix 秒
+     * @param fidelity 采样粒度（分钟），最小 1
+     */
+    @GET("/prices-history")
+    suspend fun getPricesHistory(
+        @Query("market") market: String,
+        @Query("startTs") startTs: Long? = null,
+        @Query("endTs") endTs: Long? = null,
+        @Query("fidelity") fidelity: Int? = null
+    ): Response<PricesHistoryResponse>
 }
+
+/** 历史价格序列响应 */
+data class PricesHistoryResponse(
+    val history: List<PriceHistoryPoint>? = null
+)
+
+/** 历史价格单点：t=unix 秒，p=价格 0~1 */
+data class PriceHistoryPoint(
+    val t: Long = 0L,
+    val p: Double = 0.0
+)
 
 // 请求和响应数据类
 

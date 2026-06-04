@@ -1611,8 +1611,265 @@ export interface CryptoTailStrategyDto {
   winCount?: number
   /** 胜率 0~1 */
   winRate?: string
+  // ===== 尾盘价差模式（TAIL_DIFF, V62）=====
+  tailDiffShadowMode?: boolean
+  tailDiffDirection?: number
+  tailDiffWindowStartSeconds?: number
+  tailDiffWindowEndSeconds?: number
+  tailDiffMinRemainingSeconds?: number
+  tailDiffConfirmTicks?: number
+  tailDiffMinPrice?: string
+  tailDiffMaxPrice?: string
+  tailDiffHardMaxPrice?: string
+  tailDiffMinModelProb?: string
+  tailDiffMinEdge?: string
+  tailDiffCostBuffer?: string
+  tailDiffMinDiffSigma?: string
+  tailDiffModelProbSource?: string
+  tailDiffStatsMinSamples?: number
+  tailDiffStatsLookbackDays?: number
+  tailDiffMaxSpread?: string
+  tailDiffDepthMultiplier?: string
+  tailDiffMaxOrderbookAgeMs?: number
+  tailDiffMaxPriceAgeMs?: number
+  tailDiffReverseVelocityWindowSeconds?: number
+  tailDiffMaxReverseVelocitySigma?: string
+  tailDiffWeightDiff?: number
+  tailDiffWeightTime?: number
+  tailDiffWeightOddsUnderprice?: number
+  tailDiffWeightOddsLag?: number
+  tailDiffWeightHistory?: number
+  tailDiffWeightBook?: number
+  tailDiffWeightData?: number
+  tailDiffMinEntryScore?: number
+  tailDiffPremiumScore?: number
+  tailDiffTopScore?: number
+  tailDiffBaseAmount?: string
+  tailDiffTierNormalMult?: string
+  tailDiffTierPremiumMult?: string
+  tailDiffTierTopMult?: string
+  tailDiffMaxAmountPerOrder?: string
+  tailDiffExitPresetNormalJson?: string
+  tailDiffExitPresetPremiumJson?: string
+  tailDiffExitPresetTopJson?: string
+  tailDiffDailyLossLimitUsdc?: string
+  tailDiffConsecLossPauseCount?: number
+  tailDiffConsecLossStopCount?: number
   createdAt: number
   updatedAt: number
+}
+
+/** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */
+export interface CryptoTailTailDiffParams {
+  tailDiffShadowMode?: boolean
+  tailDiffDirection?: number
+  tailDiffWindowStartSeconds?: number
+  tailDiffWindowEndSeconds?: number
+  tailDiffMinRemainingSeconds?: number
+  tailDiffConfirmTicks?: number
+  tailDiffMinPrice?: string
+  tailDiffMaxPrice?: string
+  tailDiffHardMaxPrice?: string
+  tailDiffMinModelProb?: string
+  tailDiffMinEdge?: string
+  tailDiffCostBuffer?: string
+  tailDiffMinDiffSigma?: string
+  tailDiffModelProbSource?: string
+  tailDiffStatsMinSamples?: number
+  tailDiffStatsLookbackDays?: number
+  tailDiffMaxSpread?: string
+  tailDiffDepthMultiplier?: string
+  tailDiffMaxOrderbookAgeMs?: number
+  tailDiffMaxPriceAgeMs?: number
+  tailDiffReverseVelocityWindowSeconds?: number
+  tailDiffMaxReverseVelocitySigma?: string
+  tailDiffWeightDiff?: number
+  tailDiffWeightTime?: number
+  tailDiffWeightOddsUnderprice?: number
+  tailDiffWeightOddsLag?: number
+  tailDiffWeightHistory?: number
+  tailDiffWeightBook?: number
+  tailDiffWeightData?: number
+  tailDiffMinEntryScore?: number
+  tailDiffPremiumScore?: number
+  tailDiffTopScore?: number
+  tailDiffBaseAmount?: string
+  tailDiffTierNormalMult?: string
+  tailDiffTierPremiumMult?: string
+  tailDiffTierTopMult?: string
+  tailDiffMaxAmountPerOrder?: string
+  tailDiffExitPresetNormalJson?: string
+  tailDiffExitPresetPremiumJson?: string
+  tailDiffExitPresetTopJson?: string
+  tailDiffDailyLossLimitUsdc?: string
+  tailDiffConsecLossPauseCount?: number
+  tailDiffConsecLossStopCount?: number
+}
+
+/** 历史反转回填请求 */
+export interface ReversalBackfillRequest {
+  coin: string
+  intervalSeconds: number
+  lookbackDays: number
+}
+
+/** 历史反转回填响应 */
+export interface ReversalBackfillResponse {
+  coin: string
+  intervalSeconds: number
+  lookbackDays: number
+  periodsProcessed: number
+  observations: number
+  bucketsWritten: number
+}
+
+/** TAIL_DIFF 参数建议请求 */
+export interface TailDiffAdvisorRequest {
+  strategyId: number
+  minSamples?: number
+}
+
+/** 参数建议分桶统计行 */
+export interface TailDiffAdvisorBucket {
+  bucket: string
+  sampleCount: number
+  winCount: number
+  winRate: string
+  totalPnl: string
+  avgPnl: string
+}
+
+/** 单条参数建议 */
+export interface TailDiffAdvisorRecommendation {
+  param: string
+  labelKey: string
+  currentValue: string
+  suggestedValue: string
+  changed: boolean
+  sampleCount: number
+  confidence: string
+  rationale: string
+}
+
+/** 参数建议响应（仅推荐，不自动写入） */
+export interface TailDiffAdvisorResponse {
+  strategyId: number
+  totalSettled: number
+  winCount: number
+  winRate: string
+  totalPnl: string
+  avgPnl: string
+  sufficientSamples: boolean
+  minSamples: number
+  scoreBuckets: TailDiffAdvisorBucket[]
+  priceBuckets: TailDiffAdvisorBucket[]
+  diffSigmaBuckets: TailDiffAdvisorBucket[]
+  remainingBuckets: TailDiffAdvisorBucket[]
+  tierBuckets: TailDiffAdvisorBucket[]
+  recommendations: TailDiffAdvisorRecommendation[]
+}
+
+/** Polymarket 历史反转回填请求（PoC） */
+export interface PolymarketReversalBackfillRequest {
+  coin: string
+  intervalSeconds: number
+  lookbackDays: number
+  maxPeriods?: number
+}
+
+/** Polymarket 历史反转回填响应（PoC） */
+export interface PolymarketReversalBackfillResponse {
+  coin: string
+  intervalSeconds: number
+  lookbackDays: number
+  periodsRequested: number
+  periodsResolved: number
+  observations: number
+  bucketsWritten: number
+  dataSource: string
+}
+
+/** 历史反转研究列表请求 */
+export interface ReversalResearchListRequest {
+  coin: string
+  intervalSeconds: number
+  lookbackDays: number
+  dataSource?: string
+}
+
+/** 单个分桶反转统计 */
+export interface ReversalStatDto {
+  coin: string
+  intervalSeconds: number
+  outcomeIndex: number
+  diffSigmaBucket: string
+  oddsBucket: string
+  remainingBucket: string
+  lookbackDays: number
+  dataSource: string
+  sampleCount: number
+  reversedCount: number
+  modelProb: string
+  reversalRate: string
+  computedAt: number
+}
+
+/** 历史反转研究列表响应 */
+export interface ReversalResearchListResponse {
+  list: ReversalStatDto[]
+  total: number
+}
+
+/** 历史反转 CSV 导出响应 */
+export interface ReversalResearchCsvResponse {
+  filename: string
+  csv: string
+  total: number
+}
+
+/** 尾盘价差评分预览请求 */
+export interface CryptoTailTailDiffPreviewRequest {
+  strategyId: number
+  periodStartUnix?: number
+  outcomeIndex?: number
+  openPrice: string
+  closePrice: string
+  sigmaPerSqrtS: string
+  remainingSeconds: number
+  bestBid: string
+  bestAsk?: string
+  bidDepthUsd?: string
+  askDepthUsd?: string
+  orderbookAgeMs?: number
+  priceAgeMs?: number
+  reverseVelocitySigmaPerSec?: string
+  statsSampleCount?: number
+  statsModelProb?: string
+  candidateAmountUsdc?: string
+}
+
+/** 尾盘价差评分预览响应 */
+export interface CryptoTailTailDiffPreviewResponse {
+  score: number
+  tier?: string | null
+  passed: boolean
+  vetoes: string[]
+  componentWeighted: Record<string, string>
+  componentRaw: Record<string, string>
+  diffSigma: string
+  rawDiff: string
+  diffPct: string
+  modelSide: number
+  effectiveCost: string
+  edge: string
+  midImpliedProb: string
+  modelProb: string
+  modelProbSource: string
+  recommendedAmountUsdc: string
+  limitPriceCap: string
+  exitPresetNormal?: Record<string, unknown> | null
+  exitPresetPremium?: Record<string, unknown> | null
+  exitPresetTop?: Record<string, unknown> | null
 }
 
 /** 全链路决策日志事件 */

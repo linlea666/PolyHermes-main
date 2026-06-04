@@ -177,6 +177,12 @@ enum class ErrorCode(
     CRYPTO_TAIL_STRATEGY_INTERVAL_INVALID(4713, "周期仅支持 300 或 900 秒", "error.crypto_tail_strategy_interval_invalid"),
     CRYPTO_TAIL_STRATEGY_AMOUNT_MODE_INVALID(4714, "投入方式仅支持 RATIO 或 FIXED", "error.crypto_tail_strategy_amount_mode_invalid"),
     CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID(4715, "障碍模式参数不合法", "error.crypto_tail_strategy_barrier_param_invalid"),
+    CRYPTO_TAIL_STRATEGY_TAIL_DIFF_PARAM_INVALID(4716, "尾盘价差模式参数不合法", "error.crypto_tail_strategy_tail_diff_param_invalid"),
+
+    // 反转率研究 (4730-4739)
+    REVERSAL_RESEARCH_PARAM_INVALID(4730, "反转率研究参数不合法", "error.reversal_research_param_invalid"),
+    REVERSAL_RESEARCH_BACKFILL_FAILED(4731, "历史反转数据回填失败", "error.reversal_research_backfill_failed"),
+    REVERSAL_RESEARCH_NO_DATA(4732, "反转率研究无可用数据", "error.reversal_research_no_data"),
 
     // 统计相关 (4801-4899)
     STATISTICS_FETCH_FAILED(4801, "获取统计信息失败", "error.statistics_fetch_failed"),
@@ -283,7 +289,13 @@ enum class ErrorCode(
     SERVER_CRYPTO_TAIL_STRATEGY_UPDATE_FAILED(5621, "更新加密价差策略失败", "error.server.crypto_tail_strategy_update_failed"),
     SERVER_CRYPTO_TAIL_STRATEGY_DELETE_FAILED(5622, "删除加密价差策略失败", "error.server.crypto_tail_strategy_delete_failed"),
     SERVER_CRYPTO_TAIL_STRATEGY_LIST_FETCH_FAILED(5623, "查询加密价差策略列表失败", "error.server.crypto_tail_strategy_list_fetch_failed"),
-    SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED(5624, "查询触发记录失败", "error.server.crypto_tail_strategy_triggers_fetch_failed");
+    SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED(5624, "查询触发记录失败", "error.server.crypto_tail_strategy_triggers_fetch_failed"),
+
+    // 反转率研究服务 (5630-5639)
+    SERVER_REVERSAL_RESEARCH_AGG_FAILED(5630, "反转率聚合失败", "error.server.reversal_research_agg_failed"),
+    SERVER_REVERSAL_RESEARCH_BACKFILL_FAILED(5631, "反转率回填任务执行失败", "error.server.reversal_research_backfill_failed"),
+    SERVER_REVERSAL_RESEARCH_LIST_FETCH_FAILED(5632, "查询反转率结果失败", "error.server.reversal_research_list_fetch_failed"),
+    SERVER_REVERSAL_RESEARCH_CSV_EXPORT_FAILED(5633, "导出反转率 CSV 失败", "error.server.reversal_research_csv_export_failed");
     
     companion object {
         /**

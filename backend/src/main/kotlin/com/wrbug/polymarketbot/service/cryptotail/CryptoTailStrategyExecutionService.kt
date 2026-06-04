@@ -22,6 +22,8 @@ import com.wrbug.polymarketbot.service.binance.BinanceKlineAutoSpreadService
 import com.wrbug.polymarketbot.service.binance.BinanceKlineService
 import com.wrbug.polymarketbot.service.common.PolymarketClobService
 import com.wrbug.polymarketbot.service.copytrading.orders.OrderSigningService
+import com.wrbug.polymarketbot.service.cryptotail.taildiff.CryptoTailTailDiffDecisionService
+import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffTier
 import com.wrbug.polymarketbot.util.CryptoUtils
 import com.wrbug.polymarketbot.util.RetrofitFactory
 import com.wrbug.polymarketbot.util.div
@@ -92,7 +94,8 @@ class CryptoTailStrategyExecutionService(
     private val calibrationService: CryptoTailCalibrationService,
     private val wickSignalService: CryptoTailWickSignalService,
     private val orderbookSnapshotFetcher: CryptoTailOrderbookSnapshotFetcher,
-    private val boostService: CryptoTailBoostService
+    private val boostService: CryptoTailBoostService,
+    private val tailDiffDecisionService: CryptoTailTailDiffDecisionService
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailStrategyExecutionService::class.java)
@@ -138,6 +141,27 @@ class CryptoTailStrategyExecutionService(
     private val decisionLoggedCache: Cache<String, Boolean> = Caffeine.newBuilder()
         .maximumSize(500)
         .build()
+
+    /**
+     * TAIL_DIFF 决策快照：评分通过后落库时由 saveTriggerRecord 读取该 map 把 score/tier/exit_preset_json
+     * 等字段写入 crypto_tail_strategy_trigger（这些字段是 V62 新增，其他模式恒为 NULL）。
+     *
+     * key = strategyId-periodStartUnix-outcomeIndex；每周期最多一次入场，使用即清。
+     */
+    private val tailDiffEntrySnapshotCache: Cache<String, TailDiffEntrySnapshot> = Caffeine.newBuilder()
+        .maximumSize(500)
+        .expireAfterWrite(java.time.Duration.ofHours(1))
+        .build()
+
+    private data class TailDiffEntrySnapshot(
+        val score: Int,
+        val tier: TailDiffTier,
+        val exitPresetJson: String,
+        val rawDiff: BigDecimal?,
+        val diffPct: BigDecimal?,
+        val diffSigma: BigDecimal?,
+        val modelProbSource: String?
+    )
 
     /**
      * 在周期内首次需要时构建并缓存预置上下文；失败返回 null，触发流程将走完整路径。
@@ -206,6 +230,8 @@ class CryptoTailStrategyExecutionService(
         return when (strategy.mode) {
             TradingMode.BARRIER_HOLD -> strategy.entryEdge
             TradingMode.BRACKET_DYNAMIC -> probabilityEntryEdge(strategy)
+            // TAIL_DIFF 用自己的 minEdge；FAK 定价仍走 EV 安全限价复用 BARRIER 算式
+            TradingMode.TAIL_DIFF -> strategy.tailDiffMinEdge
             TradingMode.LEGACY_SPREAD -> BigDecimal.ZERO
         }
     }
@@ -214,6 +240,8 @@ class CryptoTailStrategyExecutionService(
         return when (strategy.mode) {
             TradingMode.BARRIER_HOLD -> strategy.maxEntryPrice
             TradingMode.BRACKET_DYNAMIC -> probabilityMaxEntryPrice(strategy)
+            // TAIL_DIFF 用 hardMaxPrice（更严的兜底；规则书"绝对禁止"上限）
+            TradingMode.TAIL_DIFF -> strategy.tailDiffHardMaxPrice
             TradingMode.LEGACY_SPREAD -> BigDecimal(TRIGGER_FIXED_PRICE)
         }
     }
@@ -387,6 +415,7 @@ class CryptoTailStrategyExecutionService(
                 val modeStr = when (strategy.mode) {
                     TradingMode.BARRIER_HOLD -> "障碍模式"
                     TradingMode.BRACKET_DYNAMIC -> "概率阶梯止盈"
+                    TradingMode.TAIL_DIFF -> "尾盘价差"
                     TradingMode.LEGACY_SPREAD -> if (strategy.spreadDirection == SpreadDirection.MAX) "最大价差" else "最小价差"
                 }
                 logger.info(
@@ -450,6 +479,73 @@ class CryptoTailStrategyExecutionService(
                         ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
                         placeOrderForTrigger(strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk, null, eval.metrics, preRefreshOrderbook = orderbook)
                     }
+                    TradingMode.TAIL_DIFF -> {
+                        if (orderbook == null) {
+                            recordBarrierDecision(
+                                strategy, periodStartUnix, outcomeIndex,
+                                BarrierEval(false, "ORDERBOOK_STALE", "TAIL_DIFF 需要订单簿快照", orderbookPayload(null).toJson()),
+                                tokenIdForOutcome
+                            )
+                            return@accountLock
+                        }
+                        val balanceSnapshot = entryGuardService.loadEntryBalanceSnapshot(strategy.accountId)
+                        val decision = tailDiffDecisionService.evaluate(strategy, periodStartUnix, outcomeIndex, orderbook, balanceSnapshot.spendable)
+                        when (decision.outcome) {
+                            CryptoTailTailDiffDecisionService.TailDiffDecision.Outcome.SKIP,
+                            CryptoTailTailDiffDecisionService.TailDiffDecision.Outcome.WATCH -> return@accountLock
+                            CryptoTailTailDiffDecisionService.TailDiffDecision.Outcome.BUY -> Unit
+                        }
+                        val risk = cryptoTailRiskService.checkRiskGate(strategy)
+                        if (!risk.passed) {
+                            recordDecisionOncePerPeriod(
+                                strategy, periodStartUnix, "GATE_FAILED-${risk.gateName}", outcomeIndex,
+                                eventType = "GATE_FAILED", gateName = risk.gateName, passed = false, reason = risk.reason,
+                                payloadJson = mapOf(
+                                    "mode" to "TAIL_DIFF",
+                                    "score" to decision.score,
+                                    "tier" to (decision.tier?.label ?: "")
+                                ).toJson(),
+                                triggerId = null, tokenId = tokenIdForOutcome
+                            )
+                            return@accountLock
+                        }
+                        // SHADOW 模式：评估完成、记决策日志（已由 decisionService 记），不下单
+                        if (decision.shadowMode) {
+                            recordDecisionOncePerPeriod(
+                                strategy, periodStartUnix, "TAIL_DIFF_SHADOW", outcomeIndex,
+                                eventType = "TAIL_DIFF_SHADOW", gateName = decision.tier?.label, passed = true,
+                                reason = "SHADOW 通过评分但不下单: score=${decision.score}, tier=${decision.tier?.label}",
+                                payloadJson = mapOf(
+                                    "score" to decision.score,
+                                    "tier" to (decision.tier?.label ?: ""),
+                                    "amountUsdc" to (decision.amountUsdc?.toPlainString() ?: ""),
+                                    "diffSigma" to (decision.diffSigma?.toPlainString() ?: "")
+                                ).toJson(),
+                                triggerId = null, tokenId = tokenIdForOutcome
+                            )
+                            return@accountLock
+                        }
+                        // 冻结快照供 saveTriggerRecord 写入 trigger 新列
+                        val tier = decision.tier!!
+                        tailDiffEntrySnapshotCache.put(
+                            tailDiffSnapshotKey(strategy.id!!, periodStartUnix, outcomeIndex),
+                            TailDiffEntrySnapshot(
+                                score = decision.score,
+                                tier = tier,
+                                exitPresetJson = decision.exitPresetJson ?: "",
+                                rawDiff = decision.rawDiff,
+                                diffPct = decision.diffPct,
+                                diffSigma = decision.diffSigma,
+                                modelProbSource = decision.modelProbSource
+                            )
+                        )
+                        ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
+                        // 复用 BARRIER/BRACKET 的下单链路：FAK 定价、retry、决策日志、订单结果
+                        placeOrderForTrigger(
+                            strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk,
+                            amountOverrideUsdc = decision.amountUsdc, metrics = null, scaling = null, preRefreshOrderbook = orderbook
+                        )
+                    }
                     TradingMode.LEGACY_SPREAD -> {
                         if (!passSpreadCheck(strategy, periodStartUnix, outcomeIndex)) return@accountLock
                         ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
@@ -459,6 +555,9 @@ class CryptoTailStrategyExecutionService(
             }
         }
     }
+
+    private fun tailDiffSnapshotKey(strategyId: Long, periodStartUnix: Long, outcomeIndex: Int): String =
+        "$strategyId-$periodStartUnix-$outcomeIndex"
 
     /** 障碍模式闸评估结果 */
     private data class BarrierEval(
@@ -571,17 +670,22 @@ class CryptoTailStrategyExecutionService(
         val nowMs = System.currentTimeMillis()
         val nowSeconds = nowMs / 1000
         val remainingSeconds = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toInt()
-        val belowMinRemaining = strategy.minRemainingSeconds > 0 && remainingSeconds < strategy.minRemainingSeconds
-        val aboveMaxRemaining = strategy.maxRemainingSeconds > 0 && remainingSeconds > strategy.maxRemainingSeconds
+        // TAIL_DIFF 用独立窗口：tailDiffMinRemainingSeconds（默认 50）到 tailDiffWindowStartSeconds（默认 150）；
+        // 其他模式沿用 BARRIER/BRACKET 的 minRemainingSeconds/maxRemainingSeconds 全周期窗口。
+        val effMinRemaining = if (strategy.mode == TradingMode.TAIL_DIFF) strategy.tailDiffMinRemainingSeconds else strategy.minRemainingSeconds
+        val effMaxRemaining = if (strategy.mode == TradingMode.TAIL_DIFF) strategy.tailDiffWindowStartSeconds else strategy.maxRemainingSeconds
+        val belowMinRemaining = effMinRemaining > 0 && remainingSeconds < effMinRemaining
+        val aboveMaxRemaining = effMaxRemaining > 0 && remainingSeconds > effMaxRemaining
         if (belowMinRemaining || aboveMaxRemaining) {
             return BarrierEval(
                 false,
                 "REMAINING_TIME",
-                "入场剩余时间=${remainingSeconds}s 不在 ${strategy.minRemainingSeconds}~${strategy.maxRemainingSeconds}s",
+                "入场剩余时间=${remainingSeconds}s 不在 ${effMinRemaining}~${effMaxRemaining}s",
                 mapOf(
                     "remainingSeconds" to remainingSeconds,
-                    "minRemainingSeconds" to strategy.minRemainingSeconds,
-                    "maxRemainingSeconds" to strategy.maxRemainingSeconds
+                    "minRemainingSeconds" to effMinRemaining,
+                    "maxRemainingSeconds" to effMaxRemaining,
+                    "mode" to strategy.mode.name
                 ).toJson()
             )
         }
@@ -1021,6 +1125,16 @@ class CryptoTailStrategyExecutionService(
                 orderbook.bestAsk,
                 orderbook
             )
+            // TAIL_DIFF 复用 BARRIER 入场闸做 EV 安全限价复算（重新签 FAK 救单时），TailDiffDecisionService 已在分发时通过；
+            // 这里仅做盘口/价源闸的最低保底校验，避免 retryFak 时盘口已 stale 仍下单。
+            TradingMode.TAIL_DIFF -> evaluateBarrierGates(
+                strategy,
+                periodStartUnix,
+                outcomeIndex,
+                orderbook.bestBid,
+                orderbook.bestAsk,
+                orderbook
+            )
             TradingMode.LEGACY_SPREAD -> BarrierEval(true, "ALL", "旧价差模式不走概率入场闸", null)
         }
     }
@@ -1430,6 +1544,13 @@ class CryptoTailStrategyExecutionService(
                 effectiveCost.add(strategy.entryFakSlippage)
                     .setScale(4, RoundingMode.UP)
                     .min(strategy.bracketMaxEntryPrice)
+            }
+            TradingMode.TAIL_DIFF -> {
+                // TAIL_DIFF FAK 进场：cost = bestAsk(缺则 bestBid+costBuffer) + entryFakSlippage，封顶 hardMaxPrice
+                val effectiveCost = bestAsk ?: triggerPrice.add(strategy.tailDiffCostBuffer)
+                effectiveCost.add(strategy.entryFakSlippage)
+                    .setScale(4, RoundingMode.UP)
+                    .min(strategy.tailDiffHardMaxPrice)
             }
             TradingMode.LEGACY_SPREAD -> {
                 if (strategy.spreadDirection == SpreadDirection.MAX) {
@@ -2260,6 +2381,10 @@ class CryptoTailStrategyExecutionService(
         peakBid: BigDecimal? = null,
         orderResultContext: OrderResultContext = OrderResultContext()
     ): CryptoTailStrategyTrigger {
+        // TAIL_DIFF：从决策快照取出 score/tier/exit_preset_json/diff_sigma 等字段；其他模式留 NULL
+        val tailDiffSnap = if (strategy.mode == TradingMode.TAIL_DIFF) {
+            tailDiffEntrySnapshotCache.getIfPresent(tailDiffSnapshotKey(strategy.id!!, periodStartUnix, outcomeIndex))
+        } else null
         val record = CryptoTailStrategyTrigger(
             strategyId = strategy.id!!,
             periodStartUnix = periodStartUnix,
@@ -2285,9 +2410,20 @@ class CryptoTailStrategyExecutionService(
             entrySafeRatio = entrySafeRatio,
             entryGap = entryGap,
             entryRemainingSeconds = entryRemainingSeconds,
-            peakBid = peakBid
+            peakBid = peakBid,
+            score = tailDiffSnap?.score,
+            tier = tailDiffSnap?.tier?.label,
+            exitPresetJson = tailDiffSnap?.exitPresetJson?.takeIf { it.isNotBlank() },
+            rawDiff = tailDiffSnap?.rawDiff,
+            diffPct = tailDiffSnap?.diffPct,
+            diffSigma = tailDiffSnap?.diffSigma,
+            modelProbSource = tailDiffSnap?.modelProbSource
         )
         val saved = triggerRepository.save(record)
+        // 落库成功后清理 TAIL_DIFF 决策快照（每周期入场一次即用即清）
+        if (tailDiffSnap != null) {
+            tailDiffEntrySnapshotCache.invalidate(tailDiffSnapshotKey(strategy.id!!, periodStartUnix, outcomeIndex))
+        }
         // 非旧价差模式（BARRIER/BRACKET）记录下单结果到决策日志（链路终点锚点）
         if (strategy.mode != TradingMode.LEGACY_SPREAD) {
             recordDecisionOncePerPeriod(

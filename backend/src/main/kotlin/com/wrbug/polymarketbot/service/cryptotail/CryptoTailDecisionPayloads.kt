@@ -61,3 +61,63 @@ data class SettledPayload(
     val finalGap: String? = null,
     val settleSource: String? = null
 )
+
+/**
+ * TAIL_DIFF_SCORE_COMPUTED：尾盘价差模式评分快照（V62）。
+ * 决策日志 payload；所有数值用 toPlainString 编码避免精度漂移。
+ *
+ * 字段分组：
+ *  - 价差与方向：rawDiff / diffPct / diffSigma / open / close / modelSide / outcomeIndex
+ *  - 时间与窗口：remainingSeconds / windowStartSeconds / windowEndSeconds
+ *  - 概率与EV：modelProb / modelProbSource / effectiveCost / edge / midImpliedProb
+ *  - 盘口快照：bestBid / bestAsk / spread / bidDepthUsd / askDepthUsd
+ *  - 评分明细：componentScores（7 项原始分） / weights（7 项权重） / score / tier / passed / vetoReasons
+ *  - 候选金额：baseAmount / amountUsdc / tierMultiplier
+ *  - 反抽指标：reverseVelocitySigmaPerSec / maxReverseVelocitySigma
+ *  - 阈值快照：minModelProb / minEdge / minDiffSigma / minScore
+ */
+data class TailDiffScorePayload(
+    val rawDiff: String? = null,
+    val diffPct: String? = null,
+    val diffSigma: String? = null,
+    val open: String? = null,
+    val close: String? = null,
+    val modelSide: String? = null,
+    val outcomeIndex: String? = null,
+    val remainingSeconds: String? = null,
+    val windowStartSeconds: String? = null,
+    val windowEndSeconds: String? = null,
+    val modelProb: String? = null,
+    val modelProbSource: String? = null,
+    val effectiveCost: String? = null,
+    val edge: String? = null,
+    val midImpliedProb: String? = null,
+    val bestBid: String? = null,
+    val bestAsk: String? = null,
+    val spread: String? = null,
+    val bidDepthUsd: String? = null,
+    val askDepthUsd: String? = null,
+    val scoreDiff: String? = null,
+    val scoreTime: String? = null,
+    val scoreOddsUnderprice: String? = null,
+    val scoreOddsLag: String? = null,
+    val scoreHistory: String? = null,
+    val scoreBook: String? = null,
+    val scoreData: String? = null,
+    val score: String? = null,
+    val tier: String? = null,
+    val passed: String? = null,
+    val vetoReasons: String? = null,
+    val baseAmount: String? = null,
+    val amountUsdc: String? = null,
+    val tierMultiplier: String? = null,
+    val reverseVelocitySigmaPerSec: String? = null,
+    val maxReverseVelocitySigma: String? = null,
+    val minModelProb: String? = null,
+    val minEdge: String? = null,
+    val minDiffSigma: String? = null,
+    val minScore: String? = null,
+    val statsSampleCount: String? = null,
+    val statsReversalProb: String? = null,
+    val shadowMode: String? = null
+)

@@ -127,6 +127,36 @@ data class CryptoTailStrategyTrigger(
     @Column(name = "tp1_hold_started_at")
     val tp1HoldStartedAt: Long? = null,
 
+    // ===== TAIL_DIFF 入场快照（V62）；其他模式恒为 NULL =====
+
+    /** 入场时机会评分 0-100 */
+    @Column(name = "score")
+    val score: Int? = null,
+
+    /** 入场分层：NORMAL/PREMIUM/TOP */
+    @Column(name = "tier", length = 8)
+    val tier: String? = null,
+
+    /** 入场时冻结的退出预设 JSON（CryptoTailBracketExitService 用此覆盖策略默认阈值） */
+    @Column(name = "exit_preset_json", columnDefinition = "TEXT")
+    val exitPresetJson: String? = null,
+
+    /** raw_diff = close - open（带符号） */
+    @Column(name = "raw_diff", precision = 20, scale = 8)
+    val rawDiff: BigDecimal? = null,
+
+    /** diff_pct = raw_diff / open（带符号） */
+    @Column(name = "diff_pct", precision = 20, scale = 8)
+    val diffPct: BigDecimal? = null,
+
+    /** diff_sigma = |raw_diff| / (σ × √remaining)，即 safeRatio */
+    @Column(name = "diff_sigma", precision = 20, scale = 8)
+    val diffSigma: BigDecimal? = null,
+
+    /** modelProb 来源：STATS / FALLBACK / HYBRID_STATS / HYBRID_FALLBACK */
+    @Column(name = "model_prob_source", length = 16)
+    val modelProbSource: String? = null,
+
     @Column(name = "created_at", nullable = false)
     val createdAt: Long = System.currentTimeMillis(),
 

@@ -204,6 +204,12 @@ class CryptoTailStrategyService(
             val maxConsecutiveLosses = request.maxConsecutiveLosses
             val pauseAfterLossMinutes = request.pauseAfterLossMinutes ?: 0
 
+            // ===== 尾盘价差模式（TAIL_DIFF, V62）：缺省走 V62 SQL 默认值，行为不影响其他模式 =====
+            val td = resolveTailDiffCreate(request)
+            if (resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.TAIL_DIFF && !isTailDiffParamsValid(td)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_TAIL_DIFF_PARAM_INVALID.messageKey))
+            }
+
             if (resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD &&
                 !isBarrierParamsValid(entryProb, entryEdge, maxEntryPrice, costBuffer, barrierMinMarketProb, sigmaScale, dailyLossLimitUsdc, maxConcurrentPositions, takerFeeBps, makerRebateBps, gasCostUsdc, entryOrderType, entryFakSlippage, makerPriceOffset, makerCancelBeforeSettleSeconds, interval, probeAmountUsdc, calibrationMinSamples, calibrationMaxError, sigmaMethod, ewmaLambda, kellyFraction)) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
@@ -347,7 +353,50 @@ class CryptoTailStrategyService(
                 trailingSellPct = trailingSellPct,
                 maxOrdersPerDay = maxOrdersPerDay,
                 maxConsecutiveLosses = maxConsecutiveLosses,
-                pauseAfterLossMinutes = pauseAfterLossMinutes
+                pauseAfterLossMinutes = pauseAfterLossMinutes,
+                tailDiffShadowMode = td.shadowMode,
+                tailDiffDirection = td.direction,
+                tailDiffWindowStartSeconds = td.windowStartSeconds,
+                tailDiffWindowEndSeconds = td.windowEndSeconds,
+                tailDiffMinRemainingSeconds = td.minRemainingSeconds,
+                tailDiffConfirmTicks = td.confirmTicks,
+                tailDiffMinPrice = td.minPrice,
+                tailDiffMaxPrice = td.maxPrice,
+                tailDiffHardMaxPrice = td.hardMaxPrice,
+                tailDiffMinModelProb = td.minModelProb,
+                tailDiffMinEdge = td.minEdge,
+                tailDiffCostBuffer = td.costBuffer,
+                tailDiffMinDiffSigma = td.minDiffSigma,
+                tailDiffModelProbSource = td.modelProbSource,
+                tailDiffStatsMinSamples = td.statsMinSamples,
+                tailDiffStatsLookbackDays = td.statsLookbackDays,
+                tailDiffMaxSpread = td.maxSpread,
+                tailDiffDepthMultiplier = td.depthMultiplier,
+                tailDiffMaxOrderbookAgeMs = td.maxOrderbookAgeMs,
+                tailDiffMaxPriceAgeMs = td.maxPriceAgeMs,
+                tailDiffReverseVelocityWindowSeconds = td.reverseVelocityWindowSeconds,
+                tailDiffMaxReverseVelocitySigma = td.maxReverseVelocitySigma,
+                tailDiffWeightDiff = td.weightDiff,
+                tailDiffWeightTime = td.weightTime,
+                tailDiffWeightOddsUnderprice = td.weightOddsUnderprice,
+                tailDiffWeightOddsLag = td.weightOddsLag,
+                tailDiffWeightHistory = td.weightHistory,
+                tailDiffWeightBook = td.weightBook,
+                tailDiffWeightData = td.weightData,
+                tailDiffMinEntryScore = td.minEntryScore,
+                tailDiffPremiumScore = td.premiumScore,
+                tailDiffTopScore = td.topScore,
+                tailDiffBaseAmount = td.baseAmount,
+                tailDiffTierNormalMult = td.tierNormalMult,
+                tailDiffTierPremiumMult = td.tierPremiumMult,
+                tailDiffTierTopMult = td.tierTopMult,
+                tailDiffMaxAmountPerOrder = td.maxAmountPerOrder,
+                tailDiffExitPresetNormalJson = td.exitPresetNormalJson,
+                tailDiffExitPresetPremiumJson = td.exitPresetPremiumJson,
+                tailDiffExitPresetTopJson = td.exitPresetTopJson,
+                tailDiffDailyLossLimitUsdc = td.dailyLossLimitUsdc,
+                tailDiffConsecLossPauseCount = td.consecLossPauseCount,
+                tailDiffConsecLossStopCount = td.consecLossStopCount
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -516,6 +565,12 @@ class CryptoTailStrategyService(
             val newMaxConsecutiveLosses = request.maxConsecutiveLosses ?: existing.maxConsecutiveLosses
             val newPauseAfterLossMinutes = request.pauseAfterLossMinutes ?: existing.pauseAfterLossMinutes
 
+            // ===== 尾盘价差模式（TAIL_DIFF, V62）：null 字段保留 existing，行为不影响其他模式 =====
+            val td = resolveTailDiffUpdate(request, existing)
+            if (newMode == com.wrbug.polymarketbot.enums.TradingMode.TAIL_DIFF && !isTailDiffParamsValid(td)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_TAIL_DIFF_PARAM_INVALID.messageKey))
+            }
+
             if (newMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD &&
                 !isBarrierParamsValid(newEntryProb, newEntryEdge, newMaxEntryPrice, newCostBuffer, newBarrierMinMarketProb, newSigmaScale, newDailyLossLimitUsdc, newMaxConcurrentPositions, newTakerFeeBps, newMakerRebateBps, newGasCostUsdc, newEntryOrderType, newEntryFakSlippage, newMakerPriceOffset, newMakerCancelBeforeSettleSeconds, existing.intervalSeconds, newProbeAmountUsdc, newCalibrationMinSamples, newCalibrationMaxError, newSigmaMethod, newEwmaLambda, newKellyFraction)) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
@@ -657,6 +712,49 @@ class CryptoTailStrategyService(
                 maxOrdersPerDay = newMaxOrdersPerDay,
                 maxConsecutiveLosses = newMaxConsecutiveLosses,
                 pauseAfterLossMinutes = newPauseAfterLossMinutes,
+                tailDiffShadowMode = td.shadowMode,
+                tailDiffDirection = td.direction,
+                tailDiffWindowStartSeconds = td.windowStartSeconds,
+                tailDiffWindowEndSeconds = td.windowEndSeconds,
+                tailDiffMinRemainingSeconds = td.minRemainingSeconds,
+                tailDiffConfirmTicks = td.confirmTicks,
+                tailDiffMinPrice = td.minPrice,
+                tailDiffMaxPrice = td.maxPrice,
+                tailDiffHardMaxPrice = td.hardMaxPrice,
+                tailDiffMinModelProb = td.minModelProb,
+                tailDiffMinEdge = td.minEdge,
+                tailDiffCostBuffer = td.costBuffer,
+                tailDiffMinDiffSigma = td.minDiffSigma,
+                tailDiffModelProbSource = td.modelProbSource,
+                tailDiffStatsMinSamples = td.statsMinSamples,
+                tailDiffStatsLookbackDays = td.statsLookbackDays,
+                tailDiffMaxSpread = td.maxSpread,
+                tailDiffDepthMultiplier = td.depthMultiplier,
+                tailDiffMaxOrderbookAgeMs = td.maxOrderbookAgeMs,
+                tailDiffMaxPriceAgeMs = td.maxPriceAgeMs,
+                tailDiffReverseVelocityWindowSeconds = td.reverseVelocityWindowSeconds,
+                tailDiffMaxReverseVelocitySigma = td.maxReverseVelocitySigma,
+                tailDiffWeightDiff = td.weightDiff,
+                tailDiffWeightTime = td.weightTime,
+                tailDiffWeightOddsUnderprice = td.weightOddsUnderprice,
+                tailDiffWeightOddsLag = td.weightOddsLag,
+                tailDiffWeightHistory = td.weightHistory,
+                tailDiffWeightBook = td.weightBook,
+                tailDiffWeightData = td.weightData,
+                tailDiffMinEntryScore = td.minEntryScore,
+                tailDiffPremiumScore = td.premiumScore,
+                tailDiffTopScore = td.topScore,
+                tailDiffBaseAmount = td.baseAmount,
+                tailDiffTierNormalMult = td.tierNormalMult,
+                tailDiffTierPremiumMult = td.tierPremiumMult,
+                tailDiffTierTopMult = td.tierTopMult,
+                tailDiffMaxAmountPerOrder = td.maxAmountPerOrder,
+                tailDiffExitPresetNormalJson = td.exitPresetNormalJson,
+                tailDiffExitPresetPremiumJson = td.exitPresetPremiumJson,
+                tailDiffExitPresetTopJson = td.exitPresetTopJson,
+                tailDiffDailyLossLimitUsdc = td.dailyLossLimitUsdc,
+                tailDiffConsecLossPauseCount = td.consecLossPauseCount,
+                tailDiffConsecLossStopCount = td.consecLossStopCount,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -1329,6 +1427,188 @@ class CryptoTailStrategyService(
         return "加密价差策略-${marketSlugPrefix}-$suffix"
     }
 
+    /** 尾盘价差模式（TAIL_DIFF）解析后的字段集合，类型与实体一致 */
+    private data class TailDiffResolved(
+        val shadowMode: Boolean,
+        val direction: Int,
+        val windowStartSeconds: Int,
+        val windowEndSeconds: Int,
+        val minRemainingSeconds: Int,
+        val confirmTicks: Int,
+        val minPrice: BigDecimal,
+        val maxPrice: BigDecimal,
+        val hardMaxPrice: BigDecimal,
+        val minModelProb: BigDecimal,
+        val minEdge: BigDecimal,
+        val costBuffer: BigDecimal,
+        val minDiffSigma: BigDecimal,
+        val modelProbSource: String,
+        val statsMinSamples: Int,
+        val statsLookbackDays: Int,
+        val maxSpread: BigDecimal,
+        val depthMultiplier: BigDecimal,
+        val maxOrderbookAgeMs: Int,
+        val maxPriceAgeMs: Int,
+        val reverseVelocityWindowSeconds: Int,
+        val maxReverseVelocitySigma: BigDecimal,
+        val weightDiff: Int,
+        val weightTime: Int,
+        val weightOddsUnderprice: Int,
+        val weightOddsLag: Int,
+        val weightHistory: Int,
+        val weightBook: Int,
+        val weightData: Int,
+        val minEntryScore: Int,
+        val premiumScore: Int,
+        val topScore: Int,
+        val baseAmount: BigDecimal,
+        val tierNormalMult: BigDecimal,
+        val tierPremiumMult: BigDecimal,
+        val tierTopMult: BigDecimal,
+        val maxAmountPerOrder: BigDecimal,
+        val exitPresetNormalJson: String?,
+        val exitPresetPremiumJson: String?,
+        val exitPresetTopJson: String?,
+        val dailyLossLimitUsdc: BigDecimal?,
+        val consecLossPauseCount: Int,
+        val consecLossStopCount: Int
+    )
+
+    private fun normalizeTailDiffSource(raw: String?): String {
+        val v = (raw ?: "HYBRID").trim().uppercase()
+        return if (v == "HYBRID" || v == "STATS" || v == "FALLBACK") v else "HYBRID"
+    }
+
+    /** 创建场景：缺省走默认值（与 V62 SQL 默认一致） */
+    private fun resolveTailDiffCreate(r: CryptoTailStrategyCreateRequest): TailDiffResolved = TailDiffResolved(
+        shadowMode = r.tailDiffShadowMode ?: false,
+        direction = r.tailDiffDirection ?: 0,
+        windowStartSeconds = r.tailDiffWindowStartSeconds ?: 150,
+        windowEndSeconds = r.tailDiffWindowEndSeconds ?: 60,
+        minRemainingSeconds = r.tailDiffMinRemainingSeconds ?: 50,
+        confirmTicks = r.tailDiffConfirmTicks ?: 2,
+        minPrice = r.tailDiffMinPrice?.toSafeBigDecimal() ?: BigDecimal("0.88"),
+        maxPrice = r.tailDiffMaxPrice?.toSafeBigDecimal() ?: BigDecimal("0.93"),
+        hardMaxPrice = r.tailDiffHardMaxPrice?.toSafeBigDecimal() ?: BigDecimal("0.94"),
+        minModelProb = r.tailDiffMinModelProb?.toSafeBigDecimal() ?: BigDecimal("0.95"),
+        minEdge = r.tailDiffMinEdge?.toSafeBigDecimal() ?: BigDecimal("0.025"),
+        costBuffer = r.tailDiffCostBuffer?.toSafeBigDecimal() ?: BigDecimal("0.01"),
+        minDiffSigma = r.tailDiffMinDiffSigma?.toSafeBigDecimal() ?: BigDecimal("1.8"),
+        modelProbSource = normalizeTailDiffSource(r.tailDiffModelProbSource),
+        statsMinSamples = r.tailDiffStatsMinSamples ?: 50,
+        statsLookbackDays = r.tailDiffStatsLookbackDays ?: 180,
+        maxSpread = r.tailDiffMaxSpread?.toSafeBigDecimal() ?: BigDecimal("0.02"),
+        depthMultiplier = r.tailDiffDepthMultiplier?.toSafeBigDecimal() ?: BigDecimal("3.0"),
+        maxOrderbookAgeMs = r.tailDiffMaxOrderbookAgeMs ?: 2000,
+        maxPriceAgeMs = r.tailDiffMaxPriceAgeMs ?: 2000,
+        reverseVelocityWindowSeconds = r.tailDiffReverseVelocityWindowSeconds ?: 10,
+        maxReverseVelocitySigma = r.tailDiffMaxReverseVelocitySigma?.toSafeBigDecimal() ?: BigDecimal("0.30"),
+        weightDiff = r.tailDiffWeightDiff ?: 25,
+        weightTime = r.tailDiffWeightTime ?: 15,
+        weightOddsUnderprice = r.tailDiffWeightOddsUnderprice ?: 20,
+        weightOddsLag = r.tailDiffWeightOddsLag ?: 10,
+        weightHistory = r.tailDiffWeightHistory ?: 15,
+        weightBook = r.tailDiffWeightBook ?: 10,
+        weightData = r.tailDiffWeightData ?: 5,
+        minEntryScore = r.tailDiffMinEntryScore ?: 70,
+        premiumScore = r.tailDiffPremiumScore ?: 80,
+        topScore = r.tailDiffTopScore ?: 90,
+        baseAmount = r.tailDiffBaseAmount?.toSafeBigDecimal() ?: BigDecimal.ONE,
+        tierNormalMult = r.tailDiffTierNormalMult?.toSafeBigDecimal() ?: BigDecimal("1.0"),
+        tierPremiumMult = r.tailDiffTierPremiumMult?.toSafeBigDecimal() ?: BigDecimal("1.5"),
+        tierTopMult = r.tailDiffTierTopMult?.toSafeBigDecimal() ?: BigDecimal("2.0"),
+        maxAmountPerOrder = r.tailDiffMaxAmountPerOrder?.toSafeBigDecimal() ?: BigDecimal("5"),
+        exitPresetNormalJson = r.tailDiffExitPresetNormalJson?.takeIf { it.isNotBlank() },
+        exitPresetPremiumJson = r.tailDiffExitPresetPremiumJson?.takeIf { it.isNotBlank() },
+        exitPresetTopJson = r.tailDiffExitPresetTopJson?.takeIf { it.isNotBlank() },
+        dailyLossLimitUsdc = r.tailDiffDailyLossLimitUsdc?.takeIf { it.isNotBlank() }?.toSafeBigDecimal(),
+        consecLossPauseCount = r.tailDiffConsecLossPauseCount ?: 2,
+        consecLossStopCount = r.tailDiffConsecLossStopCount ?: 3
+    )
+
+    /** 更新场景：null 字段保留 existing */
+    private fun resolveTailDiffUpdate(r: CryptoTailStrategyUpdateRequest, e: CryptoTailStrategy): TailDiffResolved = TailDiffResolved(
+        shadowMode = r.tailDiffShadowMode ?: e.tailDiffShadowMode,
+        direction = r.tailDiffDirection ?: e.tailDiffDirection,
+        windowStartSeconds = r.tailDiffWindowStartSeconds ?: e.tailDiffWindowStartSeconds,
+        windowEndSeconds = r.tailDiffWindowEndSeconds ?: e.tailDiffWindowEndSeconds,
+        minRemainingSeconds = r.tailDiffMinRemainingSeconds ?: e.tailDiffMinRemainingSeconds,
+        confirmTicks = r.tailDiffConfirmTicks ?: e.tailDiffConfirmTicks,
+        minPrice = r.tailDiffMinPrice?.toSafeBigDecimal() ?: e.tailDiffMinPrice,
+        maxPrice = r.tailDiffMaxPrice?.toSafeBigDecimal() ?: e.tailDiffMaxPrice,
+        hardMaxPrice = r.tailDiffHardMaxPrice?.toSafeBigDecimal() ?: e.tailDiffHardMaxPrice,
+        minModelProb = r.tailDiffMinModelProb?.toSafeBigDecimal() ?: e.tailDiffMinModelProb,
+        minEdge = r.tailDiffMinEdge?.toSafeBigDecimal() ?: e.tailDiffMinEdge,
+        costBuffer = r.tailDiffCostBuffer?.toSafeBigDecimal() ?: e.tailDiffCostBuffer,
+        minDiffSigma = r.tailDiffMinDiffSigma?.toSafeBigDecimal() ?: e.tailDiffMinDiffSigma,
+        modelProbSource = r.tailDiffModelProbSource?.let { normalizeTailDiffSource(it) } ?: e.tailDiffModelProbSource,
+        statsMinSamples = r.tailDiffStatsMinSamples ?: e.tailDiffStatsMinSamples,
+        statsLookbackDays = r.tailDiffStatsLookbackDays ?: e.tailDiffStatsLookbackDays,
+        maxSpread = r.tailDiffMaxSpread?.toSafeBigDecimal() ?: e.tailDiffMaxSpread,
+        depthMultiplier = r.tailDiffDepthMultiplier?.toSafeBigDecimal() ?: e.tailDiffDepthMultiplier,
+        maxOrderbookAgeMs = r.tailDiffMaxOrderbookAgeMs ?: e.tailDiffMaxOrderbookAgeMs,
+        maxPriceAgeMs = r.tailDiffMaxPriceAgeMs ?: e.tailDiffMaxPriceAgeMs,
+        reverseVelocityWindowSeconds = r.tailDiffReverseVelocityWindowSeconds ?: e.tailDiffReverseVelocityWindowSeconds,
+        maxReverseVelocitySigma = r.tailDiffMaxReverseVelocitySigma?.toSafeBigDecimal() ?: e.tailDiffMaxReverseVelocitySigma,
+        weightDiff = r.tailDiffWeightDiff ?: e.tailDiffWeightDiff,
+        weightTime = r.tailDiffWeightTime ?: e.tailDiffWeightTime,
+        weightOddsUnderprice = r.tailDiffWeightOddsUnderprice ?: e.tailDiffWeightOddsUnderprice,
+        weightOddsLag = r.tailDiffWeightOddsLag ?: e.tailDiffWeightOddsLag,
+        weightHistory = r.tailDiffWeightHistory ?: e.tailDiffWeightHistory,
+        weightBook = r.tailDiffWeightBook ?: e.tailDiffWeightBook,
+        weightData = r.tailDiffWeightData ?: e.tailDiffWeightData,
+        minEntryScore = r.tailDiffMinEntryScore ?: e.tailDiffMinEntryScore,
+        premiumScore = r.tailDiffPremiumScore ?: e.tailDiffPremiumScore,
+        topScore = r.tailDiffTopScore ?: e.tailDiffTopScore,
+        baseAmount = r.tailDiffBaseAmount?.toSafeBigDecimal() ?: e.tailDiffBaseAmount,
+        tierNormalMult = r.tailDiffTierNormalMult?.toSafeBigDecimal() ?: e.tailDiffTierNormalMult,
+        tierPremiumMult = r.tailDiffTierPremiumMult?.toSafeBigDecimal() ?: e.tailDiffTierPremiumMult,
+        tierTopMult = r.tailDiffTierTopMult?.toSafeBigDecimal() ?: e.tailDiffTierTopMult,
+        maxAmountPerOrder = r.tailDiffMaxAmountPerOrder?.toSafeBigDecimal() ?: e.tailDiffMaxAmountPerOrder,
+        exitPresetNormalJson = r.tailDiffExitPresetNormalJson?.let { it.takeIf { s -> s.isNotBlank() } } ?: e.tailDiffExitPresetNormalJson,
+        exitPresetPremiumJson = r.tailDiffExitPresetPremiumJson?.let { it.takeIf { s -> s.isNotBlank() } } ?: e.tailDiffExitPresetPremiumJson,
+        exitPresetTopJson = r.tailDiffExitPresetTopJson?.let { it.takeIf { s -> s.isNotBlank() } } ?: e.tailDiffExitPresetTopJson,
+        dailyLossLimitUsdc = r.tailDiffDailyLossLimitUsdc?.let { if (it.isBlank()) null else it.toSafeBigDecimal() } ?: e.tailDiffDailyLossLimitUsdc,
+        consecLossPauseCount = r.tailDiffConsecLossPauseCount ?: e.tailDiffConsecLossPauseCount,
+        consecLossStopCount = r.tailDiffConsecLossStopCount ?: e.tailDiffConsecLossStopCount
+    )
+
+    /** TAIL_DIFF 参数校验：价格区间、概率/边际、权重总和、分层阈值递增、方向枚举等 */
+    private fun isTailDiffParamsValid(td: TailDiffResolved): Boolean {
+        val zero = BigDecimal.ZERO
+        val one = BigDecimal.ONE
+        if (td.direction !in 0..2) return false
+        if (td.windowStartSeconds <= td.windowEndSeconds) return false
+        if (td.windowEndSeconds < 0 || td.minRemainingSeconds < 0) return false
+        if (td.confirmTicks < 0) return false
+        // 价格区间：0 < minPrice <= maxPrice <= hardMaxPrice <= 1
+        if (td.minPrice <= zero || td.minPrice > one) return false
+        if (td.maxPrice < td.minPrice || td.maxPrice > one) return false
+        if (td.hardMaxPrice < td.maxPrice || td.hardMaxPrice > one) return false
+        if (td.minModelProb <= zero || td.minModelProb > one) return false
+        if (td.minEdge < zero || td.minEdge >= one) return false
+        if (td.costBuffer < zero || td.costBuffer >= one) return false
+        if (td.minDiffSigma < zero) return false
+        if (td.statsMinSamples < 0 || td.statsLookbackDays <= 0) return false
+        if (td.maxSpread <= zero || td.maxSpread >= one) return false
+        if (td.depthMultiplier <= zero) return false
+        if (td.maxOrderbookAgeMs <= 0 || td.maxPriceAgeMs <= 0) return false
+        if (td.reverseVelocityWindowSeconds <= 0 || td.maxReverseVelocitySigma < zero) return false
+        // 权重非负且总和必须为 100
+        val weights = listOf(td.weightDiff, td.weightTime, td.weightOddsUnderprice, td.weightOddsLag, td.weightHistory, td.weightBook, td.weightData)
+        if (weights.any { it < 0 }) return false
+        if (weights.sum() != 100) return false
+        // 分层阈值：0 < minEntryScore <= premiumScore <= topScore <= 100
+        if (td.minEntryScore <= 0 || td.minEntryScore > 100) return false
+        if (td.premiumScore < td.minEntryScore || td.premiumScore > 100) return false
+        if (td.topScore < td.premiumScore || td.topScore > 100) return false
+        if (td.baseAmount <= zero || td.maxAmountPerOrder <= zero) return false
+        if (td.tierNormalMult <= zero || td.tierPremiumMult <= zero || td.tierTopMult <= zero) return false
+        td.dailyLossLimitUsdc?.let { if (it < zero) return false }
+        if (td.consecLossPauseCount < 0 || td.consecLossStopCount < 0) return false
+        return true
+    }
+
     private fun entityToDto(e: CryptoTailStrategy, lastTriggerAt: Long?): CryptoTailStrategyDto {
         val strategyId = e.id ?: 0L
         val totalPnl = triggerRepository.sumRealizedPnlByStrategyId(strategyId)
@@ -1463,6 +1743,49 @@ class CryptoTailStrategyService(
             settledCount = settledCount,
             winCount = winCount,
             winRate = winRateStr,
+            tailDiffShadowMode = e.tailDiffShadowMode,
+            tailDiffDirection = e.tailDiffDirection,
+            tailDiffWindowStartSeconds = e.tailDiffWindowStartSeconds,
+            tailDiffWindowEndSeconds = e.tailDiffWindowEndSeconds,
+            tailDiffMinRemainingSeconds = e.tailDiffMinRemainingSeconds,
+            tailDiffConfirmTicks = e.tailDiffConfirmTicks,
+            tailDiffMinPrice = e.tailDiffMinPrice.toPlainString(),
+            tailDiffMaxPrice = e.tailDiffMaxPrice.toPlainString(),
+            tailDiffHardMaxPrice = e.tailDiffHardMaxPrice.toPlainString(),
+            tailDiffMinModelProb = e.tailDiffMinModelProb.toPlainString(),
+            tailDiffMinEdge = e.tailDiffMinEdge.toPlainString(),
+            tailDiffCostBuffer = e.tailDiffCostBuffer.toPlainString(),
+            tailDiffMinDiffSigma = e.tailDiffMinDiffSigma.toPlainString(),
+            tailDiffModelProbSource = e.tailDiffModelProbSource,
+            tailDiffStatsMinSamples = e.tailDiffStatsMinSamples,
+            tailDiffStatsLookbackDays = e.tailDiffStatsLookbackDays,
+            tailDiffMaxSpread = e.tailDiffMaxSpread.toPlainString(),
+            tailDiffDepthMultiplier = e.tailDiffDepthMultiplier.toPlainString(),
+            tailDiffMaxOrderbookAgeMs = e.tailDiffMaxOrderbookAgeMs,
+            tailDiffMaxPriceAgeMs = e.tailDiffMaxPriceAgeMs,
+            tailDiffReverseVelocityWindowSeconds = e.tailDiffReverseVelocityWindowSeconds,
+            tailDiffMaxReverseVelocitySigma = e.tailDiffMaxReverseVelocitySigma.toPlainString(),
+            tailDiffWeightDiff = e.tailDiffWeightDiff,
+            tailDiffWeightTime = e.tailDiffWeightTime,
+            tailDiffWeightOddsUnderprice = e.tailDiffWeightOddsUnderprice,
+            tailDiffWeightOddsLag = e.tailDiffWeightOddsLag,
+            tailDiffWeightHistory = e.tailDiffWeightHistory,
+            tailDiffWeightBook = e.tailDiffWeightBook,
+            tailDiffWeightData = e.tailDiffWeightData,
+            tailDiffMinEntryScore = e.tailDiffMinEntryScore,
+            tailDiffPremiumScore = e.tailDiffPremiumScore,
+            tailDiffTopScore = e.tailDiffTopScore,
+            tailDiffBaseAmount = e.tailDiffBaseAmount.toPlainString(),
+            tailDiffTierNormalMult = e.tailDiffTierNormalMult.toPlainString(),
+            tailDiffTierPremiumMult = e.tailDiffTierPremiumMult.toPlainString(),
+            tailDiffTierTopMult = e.tailDiffTierTopMult.toPlainString(),
+            tailDiffMaxAmountPerOrder = e.tailDiffMaxAmountPerOrder.toPlainString(),
+            tailDiffExitPresetNormalJson = e.tailDiffExitPresetNormalJson,
+            tailDiffExitPresetPremiumJson = e.tailDiffExitPresetPremiumJson,
+            tailDiffExitPresetTopJson = e.tailDiffExitPresetTopJson,
+            tailDiffDailyLossLimitUsdc = e.tailDiffDailyLossLimitUsdc?.toPlainString(),
+            tailDiffConsecLossPauseCount = e.tailDiffConsecLossPauseCount,
+            tailDiffConsecLossStopCount = e.tailDiffConsecLossStopCount,
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )

@@ -452,6 +452,182 @@ data class CryptoTailStrategy(
     @Column(name = "allow_boost_with_kelly", nullable = false)
     val allowBoostWithKelly: Boolean = false,
 
+    // ===== 尾盘价差模式（TAIL_DIFF, V62）=====
+    // 仅在 mode==TAIL_DIFF 时生效，其他模式完全忽略，行为不变。
+    // 默认值与计划书 §六 一致，BTC 5m 起步参数。
+
+    /** SHADOW 模式：true 只记决策日志不真正下单（上线初期空跑） */
+    @Column(name = "tail_diff_shadow_mode", nullable = false)
+    val tailDiffShadowMode: Boolean = false,
+
+    /** 方向选择：0=自动（UP/DOWN 都做），1=只 Up，2=只 Down */
+    @Column(name = "tail_diff_direction", nullable = false, columnDefinition = "TINYINT")
+    val tailDiffDirection: Int = 0,
+
+    /** 入场窗口起点（距离 periodStart 多少秒后允许入场） */
+    @Column(name = "tail_diff_window_start_seconds", nullable = false)
+    val tailDiffWindowStartSeconds: Int = 150,
+
+    /** 入场窗口终点（距离 periodStart 多少秒后停止入场） */
+    @Column(name = "tail_diff_window_end_seconds", nullable = false)
+    val tailDiffWindowEndSeconds: Int = 60,
+
+    /** 距结算最少剩余秒数；< 该值禁止新开 */
+    @Column(name = "tail_diff_min_remaining_seconds", nullable = false)
+    val tailDiffMinRemainingSeconds: Int = 50,
+
+    /** 连续 N 次 tick 命中候选才真正下单（防瞬时抖动） */
+    @Column(name = "tail_diff_confirm_ticks", nullable = false)
+    val tailDiffConfirmTicks: Int = 2,
+
+    /** 候选价格区间下限 */
+    @Column(name = "tail_diff_min_price", nullable = false, precision = 20, scale = 8)
+    val tailDiffMinPrice: BigDecimal = BigDecimal("0.88"),
+
+    /** 候选价格区间上限 */
+    @Column(name = "tail_diff_max_price", nullable = false, precision = 20, scale = 8)
+    val tailDiffMaxPrice: BigDecimal = BigDecimal("0.93"),
+
+    /** 极限最高价：触发 ASK_TOO_HIGH 硬否决 */
+    @Column(name = "tail_diff_hard_max_price", nullable = false, precision = 20, scale = 8)
+    val tailDiffHardMaxPrice: BigDecimal = BigDecimal("0.94"),
+
+    /** 入场最小 modelProb（pWin/统计反转概率） */
+    @Column(name = "tail_diff_min_model_prob", nullable = false, precision = 20, scale = 8)
+    val tailDiffMinModelProb: BigDecimal = BigDecimal("0.95"),
+
+    /** 入场最小 edge = modelProb - 有效成本 */
+    @Column(name = "tail_diff_min_edge", nullable = false, precision = 20, scale = 8)
+    val tailDiffMinEdge: BigDecimal = BigDecimal("0.025"),
+
+    /** 有效成本缓冲（bestAsk 缺失时） */
+    @Column(name = "tail_diff_cost_buffer", nullable = false, precision = 20, scale = 8)
+    val tailDiffCostBuffer: BigDecimal = BigDecimal("0.01"),
+
+    /** 入场最小 diff_sigma（即 safeRatio） */
+    @Column(name = "tail_diff_min_diff_sigma", nullable = false, precision = 20, scale = 8)
+    val tailDiffMinDiffSigma: BigDecimal = BigDecimal("1.8"),
+
+    /** modelProb 来源策略：STATS / FALLBACK / HYBRID */
+    @Column(name = "tail_diff_model_prob_source", nullable = false, length = 16)
+    val tailDiffModelProbSource: String = "HYBRID",
+
+    /** 统计样本阈值：低于此值视为不可信，HYBRID 模式回退 BarrierProbability */
+    @Column(name = "tail_diff_stats_min_samples", nullable = false)
+    val tailDiffStatsMinSamples: Int = 50,
+
+    /** 历史反转统计回看天数（180/365） */
+    @Column(name = "tail_diff_stats_lookback_days", nullable = false)
+    val tailDiffStatsLookbackDays: Int = 180,
+
+    /** 入场最大盘口价差（bestAsk-bestBid） */
+    @Column(name = "tail_diff_max_spread", nullable = false, precision = 20, scale = 8)
+    val tailDiffMaxSpread: BigDecimal = BigDecimal("0.02"),
+
+    /** 盘口深度需 >= 下单金额 × 此倍数 */
+    @Column(name = "tail_diff_depth_multiplier", nullable = false, precision = 20, scale = 8)
+    val tailDiffDepthMultiplier: BigDecimal = BigDecimal("3.0"),
+
+    /** 盘口快照最大年龄 ms */
+    @Column(name = "tail_diff_max_orderbook_age_ms", nullable = false)
+    val tailDiffMaxOrderbookAgeMs: Int = 2000,
+
+    /** 价源最大年龄 ms */
+    @Column(name = "tail_diff_max_price_age_ms", nullable = false)
+    val tailDiffMaxPriceAgeMs: Int = 2000,
+
+    /** 反抽速度估算窗口秒数 */
+    @Column(name = "tail_diff_reverse_velocity_window_seconds", nullable = false)
+    val tailDiffReverseVelocityWindowSeconds: Int = 10,
+
+    /** 反抽速度上限（每秒 σ 数），超过触发 PRICE_RETRACING_FAST 硬否决 */
+    @Column(name = "tail_diff_max_reverse_velocity_sigma", nullable = false, precision = 20, scale = 8)
+    val tailDiffMaxReverseVelocitySigma: BigDecimal = BigDecimal("0.30"),
+
+    /** 评分权重：价差优势分 */
+    @Column(name = "tail_diff_weight_diff", nullable = false)
+    val tailDiffWeightDiff: Int = 25,
+
+    /** 评分权重：时间优势分 */
+    @Column(name = "tail_diff_weight_time", nullable = false)
+    val tailDiffWeightTime: Int = 15,
+
+    /** 评分权重：赔率低估分 */
+    @Column(name = "tail_diff_weight_odds_underprice", nullable = false)
+    val tailDiffWeightOddsUnderprice: Int = 20,
+
+    /** 评分权重：赔率滞后分 */
+    @Column(name = "tail_diff_weight_odds_lag", nullable = false)
+    val tailDiffWeightOddsLag: Int = 10,
+
+    /** 评分权重：历史胜率分 */
+    @Column(name = "tail_diff_weight_history", nullable = false)
+    val tailDiffWeightHistory: Int = 15,
+
+    /** 评分权重：盘口质量分 */
+    @Column(name = "tail_diff_weight_book", nullable = false)
+    val tailDiffWeightBook: Int = 10,
+
+    /** 评分权重：数据可靠性分 */
+    @Column(name = "tail_diff_weight_data", nullable = false)
+    val tailDiffWeightData: Int = 5,
+
+    /** 最低入场评分（普通档下限） */
+    @Column(name = "tail_diff_min_entry_score", nullable = false)
+    val tailDiffMinEntryScore: Int = 70,
+
+    /** 优质档评分下限 */
+    @Column(name = "tail_diff_premium_score", nullable = false)
+    val tailDiffPremiumScore: Int = 80,
+
+    /** 顶级档评分下限 */
+    @Column(name = "tail_diff_top_score", nullable = false)
+    val tailDiffTopScore: Int = 90,
+
+    /** 基础下注金额 USDC */
+    @Column(name = "tail_diff_base_amount", nullable = false, precision = 20, scale = 8)
+    val tailDiffBaseAmount: BigDecimal = BigDecimal.ONE,
+
+    /** 普通档金额倍率 */
+    @Column(name = "tail_diff_tier_normal_mult", nullable = false, precision = 20, scale = 8)
+    val tailDiffTierNormalMult: BigDecimal = BigDecimal("1.0"),
+
+    /** 优质档金额倍率 */
+    @Column(name = "tail_diff_tier_premium_mult", nullable = false, precision = 20, scale = 8)
+    val tailDiffTierPremiumMult: BigDecimal = BigDecimal("1.5"),
+
+    /** 顶级档金额倍率 */
+    @Column(name = "tail_diff_tier_top_mult", nullable = false, precision = 20, scale = 8)
+    val tailDiffTierTopMult: BigDecimal = BigDecimal("2.0"),
+
+    /** 单笔最大下注 USDC（硬上限） */
+    @Column(name = "tail_diff_max_amount_per_order", nullable = false, precision = 20, scale = 8)
+    val tailDiffMaxAmountPerOrder: BigDecimal = BigDecimal("5"),
+
+    /** 普通档退出预设 JSON（结构见 V62 注释） */
+    @Column(name = "tail_diff_exit_preset_normal_json", columnDefinition = "TEXT")
+    val tailDiffExitPresetNormalJson: String? = null,
+
+    /** 优质档退出预设 JSON */
+    @Column(name = "tail_diff_exit_preset_premium_json", columnDefinition = "TEXT")
+    val tailDiffExitPresetPremiumJson: String? = null,
+
+    /** 顶级档退出预设 JSON */
+    @Column(name = "tail_diff_exit_preset_top_json", columnDefinition = "TEXT")
+    val tailDiffExitPresetTopJson: String? = null,
+
+    /** TAIL_DIFF 专属日亏熔断阈值，null=复用 dailyLossLimitUsdc */
+    @Column(name = "tail_diff_daily_loss_limit_usdc", precision = 20, scale = 8)
+    val tailDiffDailyLossLimitUsdc: BigDecimal? = null,
+
+    /** 连续 N 笔亏损后暂停 1h */
+    @Column(name = "tail_diff_consec_loss_pause_count", nullable = false)
+    val tailDiffConsecLossPauseCount: Int = 2,
+
+    /** 连续 N 笔亏损后熔断到日终 */
+    @Column(name = "tail_diff_consec_loss_stop_count", nullable = false)
+    val tailDiffConsecLossStopCount: Int = 3,
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

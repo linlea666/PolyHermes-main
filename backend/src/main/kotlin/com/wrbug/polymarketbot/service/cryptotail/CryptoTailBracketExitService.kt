@@ -11,7 +11,12 @@ import com.wrbug.polymarketbot.enums.TradingMode
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyExitRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
 import com.wrbug.polymarketbot.service.copytrading.orders.OrderSigningService
+import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffExitPreset
+import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffExitPresetResolver
+import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffTier
+import com.wrbug.polymarketbot.util.fromJson
 import com.wrbug.polymarketbot.util.toJson
+import com.wrbug.polymarketbot.util.toSafeBigDecimal
 import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
 import kotlinx.coroutines.sync.Mutex
@@ -55,7 +60,8 @@ class CryptoTailBracketExitService(
     private val accountContextFactory: CryptoTailAccountContextFactory,
     private val periodPriceProvider: PeriodPriceProvider,
     private val decisionRecorder: CryptoTailDecisionRecorder,
-    private val wickSignalService: CryptoTailWickSignalService
+    private val wickSignalService: CryptoTailWickSignalService,
+    private val tailDiffExitPresetResolver: TailDiffExitPresetResolver
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailBracketExitService::class.java)
@@ -323,6 +329,11 @@ class CryptoTailBracketExitService(
         if (remainingSeconds <= 0) {
             return Decision(null, BigDecimal.ZERO, "周期已结束，等待结算")
         }
+        // TAIL_DIFF：使用入场时冻结的退出预设（按 tier 三档）做独立决策；不复用 BRACKET 的 TP/SL/动态退出。
+        // 入场快照存于 trigger.exitPresetJson；策略表中途修改预设不影响在途持仓。
+        if (strategy.mode == TradingMode.TAIL_DIFF) {
+            return decideTailDiffExit(strategy, trigger, holding, bestBid, remainingSeconds)
+        }
         val entryFillPrice = trigger.entryFillPrice ?: run {
             val fs = trigger.filledSize
             val fa = trigger.filledAmount
@@ -478,6 +489,160 @@ class CryptoTailBracketExitService(
         }
 
         return Decision(null, BigDecimal.ZERO, "继续持有", clearTp1HoldStartedAt = true)
+    }
+
+    /**
+     * TAIL_DIFF 退出决策：仅依据入场时冻结的 exitPresetJson + 入场分层（TOP=持有到结算）决策。
+     *
+     * 决策优先级：
+     *  1. holdToExpiry=true → 持有到结算（kind=null）
+     *  2. stopLoss：bestBid <= entryFillPrice * (1 - offset) 或 bestBid <= minPrice → STOP（全清/按 ratio）
+     *  3. dynamicExit：modelProb 跌破 / diffSigma 跌破 / 反向 / bestBid 跌破 → STOP
+     *  4. tpLimit：bestBid >= price → TP1（按 ratio）
+     *  5. 其他 → 继续持有
+     *
+     * 不依赖 BARRIER 的 maxLossPct/stopProb/stopPrice/holdToSettlePwin 等；预设是独立的退出契约。
+     */
+    private fun decideTailDiffExit(
+        strategy: CryptoTailStrategy,
+        trigger: CryptoTailStrategyTrigger,
+        holding: HoldingState?,
+        bestBid: BigDecimal,
+        remainingSeconds: Int
+    ): Decision {
+        val tier = TailDiffTier.fromLabel(trigger.tier)
+        val preset = resolveTailDiffPresetForTrigger(strategy, trigger, tier)
+        if (preset.holdToExpiry) {
+            return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[TOP] holdToExpiry=true，持有到结算 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
+        }
+        val entryFillPrice = trigger.entryFillPrice ?: run {
+            val fs = trigger.filledSize
+            val fa = trigger.filledAmount
+            if (fs != null && fa != null && fs > BigDecimal.ZERO) fa.divide(fs, 8, RoundingMode.HALF_UP) else null
+        }
+        // 2) StopLoss
+        if (preset.stopLoss.enabled && entryFillPrice != null) {
+            val stopLine = entryFillPrice.multiply(BigDecimal.ONE.subtract(preset.stopLoss.offset))
+            val effectiveStop = stopLine.max(preset.stopLoss.minPrice)
+            if (bestBid <= effectiveStop) {
+                val ratio = preset.stopLoss.ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+                return Decision(
+                    ExitKind.HARD_STOP,
+                    ratio,
+                    "TAIL_DIFF[${tier?.label ?: "?"}] StopLoss: bestBid=${bestBid.toPlainString()}<=${effectiveStop.toPlainString()} (entry=${entryFillPrice.toPlainString()}, offset=${preset.stopLoss.offset.toPlainString()}, minPrice=${preset.stopLoss.minPrice.toPlainString()})",
+                    clearTp1HoldStartedAt = true
+                )
+            }
+        }
+        // 3) DynamicExit：modelProb / diffSigma / bestBid 任一跌破即退出
+        if (preset.dynamicExit.enabled && holding != null) {
+            if (holding.pWinHolding < preset.dynamicExit.minModelProbAfterEntry) {
+                return Decision(
+                    ExitKind.MODEL_INVALID,
+                    BigDecimal.ONE,
+                    "TAIL_DIFF[${tier?.label ?: "?"}] DynamicExit: pWin=${holding.pWinHolding.toPlainString()}<${preset.dynamicExit.minModelProbAfterEntry.toPlainString()}",
+                    clearTp1HoldStartedAt = true
+                )
+            }
+            if (holding.safeRatio < preset.dynamicExit.minDiffSigmaAfterEntry) {
+                return Decision(
+                    ExitKind.MODEL_INVALID,
+                    BigDecimal.ONE,
+                    "TAIL_DIFF[${tier?.label ?: "?"}] DynamicExit: diffSigma=${holding.safeRatio.toPlainString()}<${preset.dynamicExit.minDiffSigmaAfterEntry.toPlainString()}",
+                    clearTp1HoldStartedAt = true
+                )
+            }
+            if (bestBid < preset.dynamicExit.minOddsAfterEntry) {
+                return Decision(
+                    ExitKind.STOP,
+                    BigDecimal.ONE,
+                    "TAIL_DIFF[${tier?.label ?: "?"}] DynamicExit: bestBid=${bestBid.toPlainString()}<${preset.dynamicExit.minOddsAfterEntry.toPlainString()}",
+                    clearTp1HoldStartedAt = true
+                )
+            }
+            // 方向反转视为反抽
+            if (trigger.entryModelSide != null && holding.modelSide != trigger.entryModelSide) {
+                return Decision(
+                    ExitKind.MODEL_FLIP,
+                    BigDecimal.ONE,
+                    "TAIL_DIFF[${tier?.label ?: "?"}] DynamicExit: modelSide flip from ${trigger.entryModelSide} to ${holding.modelSide}",
+                    clearTp1HoldStartedAt = true
+                )
+            }
+        }
+        // 4) TpLimit
+        if (preset.tpLimit.enabled && bestBid >= preset.tpLimit.price) {
+            val ratio = preset.tpLimit.ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+            return Decision(
+                ExitKind.TP1,
+                ratio,
+                "TAIL_DIFF[${tier?.label ?: "?"}] TP: bestBid=${bestBid.toPlainString()}>=${preset.tpLimit.price.toPlainString()}",
+                clearTp1HoldStartedAt = true
+            )
+        }
+        return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "?"}] 继续持有 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
+    }
+
+    /**
+     * 优先用 trigger 入场时冻结的 exit_preset_json；不可用时回退到当前策略表配置（按 tier 解析）。
+     * 这避免了"策略表中途改了预设导致在途持仓退出条件变化"。
+     */
+    private fun resolveTailDiffPresetForTrigger(
+        strategy: CryptoTailStrategy,
+        trigger: CryptoTailStrategyTrigger,
+        tier: TailDiffTier?
+    ): TailDiffExitPreset {
+        val snapshotJson = trigger.exitPresetJson
+        if (!snapshotJson.isNullOrBlank()) {
+            try {
+                val raw = snapshotJson.fromJson<Map<String, Any?>>() ?: emptyMap()
+                return parseTailDiffPresetFromMap(raw, tier?.let { tailDiffExitPresetResolver.defaultForTier(it) } ?: TailDiffExitPreset())
+            } catch (e: Exception) {
+                logger.warn("TAIL_DIFF trigger.exitPresetJson 解析失败，回退到策略表: triggerId=${trigger.id}, ${e.message}")
+            }
+        }
+        return tier?.let { tailDiffExitPresetResolver.resolveForTier(strategy, it) } ?: TailDiffExitPreset()
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun parseTailDiffPresetFromMap(raw: Map<String, Any?>, default: TailDiffExitPreset): TailDiffExitPreset {
+        fun anyBool(v: Any?, d: Boolean): Boolean = when (v) {
+            is Boolean -> v
+            is String -> v.equals("true", true)
+            is Number -> v.toInt() != 0
+            else -> d
+        }
+        fun anyBd(v: Any?, d: BigDecimal): BigDecimal = when (v) {
+            is BigDecimal -> v
+            is Number -> BigDecimal(v.toString())
+            is String -> if (v.isBlank()) d else v.toSafeBigDecimal()
+            else -> d
+        }
+        val tpRaw = raw["tp_limit"] as? Map<String, Any?> ?: emptyMap()
+        val slRaw = raw["stop_loss"] as? Map<String, Any?> ?: emptyMap()
+        val dynRaw = raw["dynamic_exit"] as? Map<String, Any?> ?: emptyMap()
+        return TailDiffExitPreset(
+            holdToExpiry = anyBool(raw["hold_to_expiry"], default.holdToExpiry),
+            tpLimit = TailDiffExitPreset.TpLimit(
+                enabled = anyBool(tpRaw["enabled"], default.tpLimit.enabled),
+                price = anyBd(tpRaw["price"], default.tpLimit.price),
+                ratio = anyBd(tpRaw["ratio"], default.tpLimit.ratio)
+            ),
+            stopLoss = TailDiffExitPreset.StopLoss(
+                enabled = anyBool(slRaw["enabled"], default.stopLoss.enabled),
+                offset = anyBd(slRaw["offset"], default.stopLoss.offset),
+                minPrice = anyBd(slRaw["min_price"], default.stopLoss.minPrice),
+                ratio = anyBd(slRaw["ratio"], default.stopLoss.ratio)
+            ),
+            dynamicExit = TailDiffExitPreset.DynamicExit(
+                enabled = anyBool(dynRaw["enabled"], default.dynamicExit.enabled),
+                minDiffSigmaAfterEntry = anyBd(dynRaw["min_diff_sigma_after_entry"], default.dynamicExit.minDiffSigmaAfterEntry),
+                maxDiffRetracePct = anyBd(dynRaw["max_diff_retrace_pct"], default.dynamicExit.maxDiffRetracePct),
+                minModelProbAfterEntry = anyBd(dynRaw["min_model_prob_after_entry"], default.dynamicExit.minModelProbAfterEntry),
+                minOddsAfterEntry = anyBd(dynRaw["min_odds_after_entry"], default.dynamicExit.minOddsAfterEntry),
+                maxReverseVelocitySigma = anyBd(dynRaw["max_reverse_velocity_sigma"], default.dynamicExit.maxReverseVelocitySigma)
+            )
+        )
     }
 
     private fun checkTakeProfitLiquidity(
