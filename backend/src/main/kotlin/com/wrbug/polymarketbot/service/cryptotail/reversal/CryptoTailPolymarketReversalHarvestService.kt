@@ -44,7 +44,16 @@ class CryptoTailPolymarketReversalHarvestService(
         val periodsResolved: Int,
         val observations: Int,
         val bucketsWritten: Int,
-        val dataSource: String = DATA_SOURCE
+        val dataSource: String = DATA_SOURCE,
+        // 诊断分类计数：定位"为什么没数据"
+        val slugNotFound: Int = 0,
+        val historyEmpty: Int = 0,
+        val tooFewPoints: Int = 0,
+        val fetchError: Int = 0,
+        // 覆盖范围：受 maxPeriods 上限截断时为 true（实际仅覆盖最近 periodsRequested 个周期）
+        val coverageCapped: Boolean = false,
+        // 实际覆盖天数（periodsRequested * interval / 86400，向下保留两位由前端展示）
+        val coverageDays: Double = 0.0
     )
 
     private class Bucket {
@@ -79,6 +88,8 @@ class CryptoTailPolymarketReversalHarvestService(
         // 最近一个已完全结算周期的起点
         val latestClosedStart = ((nowUnix - intervalSeconds) / intervalSeconds) * intervalSeconds
         val lookbackStart = nowUnix - lookbackDays.toLong() * 24L * 3600L
+        // 回溯窗口内的理论周期总数（不计 cap）；用于判断 maxPeriods 是否截断覆盖范围
+        val theoreticalPeriods = ((latestClosedStart - lookbackStart) / intervalSeconds + 1).coerceAtLeast(0L)
         // 候选周期起点（从最近向更早，最多 cap 个）
         val periodStarts = ArrayList<Long>()
         var ps = latestClosedStart
@@ -86,19 +97,41 @@ class CryptoTailPolymarketReversalHarvestService(
             periodStarts.add(ps)
             ps -= intervalSeconds
         }
+        val coverageCapped = theoreticalPeriods > periodStarts.size
+        val coverageDays = periodStarts.size.toLong() * intervalSeconds / 86400.0
 
         val buckets = HashMap<BucketKey, Bucket>()
         var periodsResolved = 0
         var observations = 0
+        // 诊断分类计数
+        var slugNotFound = 0
+        var historyEmpty = 0
+        var tooFewPoints = 0
+        var fetchError = 0
 
         for (periodStart in periodStarts) {
-            val path = try {
-                historicalPriceSource.fetchPeriodPath(fullSlugPrefix, intervalSeconds, periodStart)
+            val result = try {
+                historicalPriceSource.fetchPeriod(fullSlugPrefix, intervalSeconds, periodStart)
             } catch (e: Exception) {
                 logger.debug("Polymarket 周期采集异常 start=$periodStart: ${e.message}")
-                null
-            } ?: continue
-            if (path.points.size < 2) continue
+                fetchError++
+                continue
+            }
+            when (result.outcome) {
+                PolymarketHistoricalPriceSource.FetchOutcome.SLUG_NOT_FOUND -> { slugNotFound++; continue }
+                PolymarketHistoricalPriceSource.FetchOutcome.HISTORY_EMPTY -> { historyEmpty++; continue }
+                PolymarketHistoricalPriceSource.FetchOutcome.FETCH_ERROR -> { fetchError++; continue }
+                PolymarketHistoricalPriceSource.FetchOutcome.OK -> { /* 继续处理 */ }
+            }
+            val path = result.path
+            if (path == null) {
+                fetchError++
+                continue
+            }
+            if (path.points.size < 2) {
+                tooFewPoints++
+                continue
+            }
 
             periodsResolved++
             val periodEnd = periodStart + intervalSeconds
@@ -186,7 +219,14 @@ class CryptoTailPolymarketReversalHarvestService(
             )
         }
         reversalStatRepository.saveAll(rows)
-        logger.info("Polymarket 反转回填完成: coin=$coinUpper interval=$intervalSeconds lookback=$lookbackDays requested=${periodStarts.size} resolved=$periodsResolved obs=$observations buckets=${rows.size}")
+        val diag = "slugNotFound=$slugNotFound historyEmpty=$historyEmpty tooFewPoints=$tooFewPoints fetchError=$fetchError"
+        val coverageMsg = if (coverageCapped) " [覆盖被 maxPeriods 截断: 仅最近 ${"%.2f".format(coverageDays)} 天/${periodStarts.size} 周期, 回溯窗口理论 $theoreticalPeriods 周期]" else ""
+        if (periodsResolved == 0) {
+            // 0 命中是最常见的"看似失败"：升级为 warn 并打印分类原因，便于定位
+            logger.warn("Polymarket 反转回填 0 命中: coin=$coinUpper interval=$intervalSeconds lookback=$lookbackDays requested=${periodStarts.size} $diag$coverageMsg")
+        } else {
+            logger.info("Polymarket 反转回填完成: coin=$coinUpper interval=$intervalSeconds lookback=$lookbackDays requested=${periodStarts.size} resolved=$periodsResolved obs=$observations buckets=${rows.size} $diag$coverageMsg")
+        }
         return BackfillSummary(
             coin = coinUpper,
             intervalSeconds = intervalSeconds,
@@ -194,7 +234,13 @@ class CryptoTailPolymarketReversalHarvestService(
             periodsRequested = periodStarts.size,
             periodsResolved = periodsResolved,
             observations = observations,
-            bucketsWritten = rows.size
+            bucketsWritten = rows.size,
+            slugNotFound = slugNotFound,
+            historyEmpty = historyEmpty,
+            tooFewPoints = tooFewPoints,
+            fetchError = fetchError,
+            coverageCapped = coverageCapped,
+            coverageDays = coverageDays
         )
     }
 

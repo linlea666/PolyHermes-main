@@ -27,6 +27,9 @@ import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogListRequest
 import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogListResponse
 import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogExportRequest
 import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogExportResponse
+import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogBatchDeleteRequest
+import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogPurgeRequest
+import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogDeleteResponse
 import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotListRequest
 import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotListResponse
 import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotExportRequest
@@ -302,6 +305,46 @@ class CryptoTailStrategyController(
         } catch (e: Exception) {
             logger.error("导出决策日志异常: ${e.message}", e)
             ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
+    @PostMapping("/decision-log/batch-delete")
+    fun batchDeleteDecisionLog(@RequestBody request: CryptoTailDecisionLogBatchDeleteRequest): ResponseEntity<ApiResponse<CryptoTailDecisionLogDeleteResponse>> {
+        return try {
+            if (request.ids.isEmpty()) {
+                return ResponseEntity.ok(ApiResponse.error(ErrorCode.PARAM_EMPTY, messageSource = messageSource))
+            }
+            val result = cryptoTailStrategyService.deleteDecisionLogs(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("批量删除决策日志失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_DECISION_LOG_DELETE_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("批量删除决策日志异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_DECISION_LOG_DELETE_FAILED, e.message, messageSource))
+        }
+    }
+
+    @PostMapping("/decision-log/purge")
+    fun purgeDecisionLog(@RequestBody request: CryptoTailDecisionLogPurgeRequest): ResponseEntity<ApiResponse<CryptoTailDecisionLogDeleteResponse>> {
+        return try {
+            if (request.beforeDate <= 0L) {
+                return ResponseEntity.ok(ApiResponse.error(ErrorCode.PARAM_INVALID, messageSource = messageSource))
+            }
+            val result = cryptoTailStrategyService.purgeDecisionLogs(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("清理决策日志失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_DECISION_LOG_DELETE_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("清理决策日志异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_DECISION_LOG_DELETE_FAILED, e.message, messageSource))
         }
     }
 

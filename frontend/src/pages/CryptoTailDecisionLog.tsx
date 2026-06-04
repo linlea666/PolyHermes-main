@@ -11,13 +11,17 @@ import {
   Button,
   DatePicker,
   Radio,
+  Popconfirm,
+  Dropdown,
+  Modal,
   message
 } from 'antd'
-import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons'
+import { DownloadOutlined, ReloadOutlined, DeleteOutlined, ClearOutlined, DownOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useMediaQuery } from 'react-responsive'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
+import type { Key } from 'react'
 import { apiService } from '../services/api'
 import type { CryptoTailStrategyDto, CryptoTailDecisionEventDto } from '../types'
 
@@ -25,6 +29,7 @@ const { Title } = Typography
 const { RangePicker } = DatePicker
 
 type RangePreset = 'today' | 'week' | '7d' | 'custom'
+type PurgePreset = 'beforeToday' | 'beforeWeek' | 'before7d' | 'custom'
 
 const CryptoTailDecisionLog: React.FC = () => {
   const { t } = useTranslation()
@@ -41,6 +46,12 @@ const CryptoTailDecisionLog: React.FC = () => {
   const [pageSize, setPageSize] = useState(20)
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
+
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
+  const [deleting, setDeleting] = useState(false)
+  const [purging, setPurging] = useState(false)
+  const [purgeModalOpen, setPurgeModalOpen] = useState(false)
+  const [purgeBefore, setPurgeBefore] = useState<Dayjs | null>(null)
 
   // 计算当前时间区间（毫秒）
   const resolveRange = useCallback((): { startDate?: number; endDate?: number } => {
@@ -104,9 +115,71 @@ const CryptoTailDecisionLog: React.FC = () => {
   // 筛选条件变化后回到第一页并查询
   useEffect(() => {
     setPage(1)
+    setSelectedRowKeys([])
     loadLogs({ page: 1 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId, preset, customRange])
+
+  // 批量删除已勾选的决策日志
+  const handleBatchDelete = async () => {
+    if (selectedRowKeys.length === 0) return
+    setDeleting(true)
+    try {
+      const ids = selectedRowKeys.map((k) => Number(k))
+      const res = await apiService.cryptoTailStrategy.decisionLogBatchDelete({ ids })
+      if (res.data.code === 0) {
+        message.success(t('cryptoTailStrategy.decisionLogPage.deleteSuccess', { count: res.data.data?.deleted ?? ids.length }))
+        setSelectedRowKeys([])
+        loadLogs()
+      } else {
+        message.error(res.data.msg || t('cryptoTailStrategy.decisionLogPage.deleteFailed'))
+      }
+    } catch {
+      message.error(t('cryptoTailStrategy.decisionLogPage.deleteFailed'))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  // 打开清理弹窗，按预设预填一个「之前」的日期
+  const openPurgeModal = (p: PurgePreset) => {
+    const now = dayjs()
+    if (p === 'beforeToday') {
+      setPurgeBefore(now.startOf('day'))
+    } else if (p === 'beforeWeek') {
+      setPurgeBefore(now.startOf('week'))
+    } else if (p === 'before7d') {
+      setPurgeBefore(now.subtract(7, 'day').startOf('day'))
+    } else {
+      setPurgeBefore(now.startOf('day'))
+    }
+    setPurgeModalOpen(true)
+  }
+
+  // 执行清理：删除 createdAt 严格小于所选日期的日志（按当前策略筛选范围）
+  const handlePurgeConfirm = async () => {
+    if (purgeBefore == null) {
+      message.warning(t('cryptoTailStrategy.decisionLogPage.purgePickDate'))
+      return
+    }
+    setPurging(true)
+    try {
+      const beforeDate = purgeBefore.startOf('day').valueOf()
+      const res = await apiService.cryptoTailStrategy.decisionLogPurge({ strategyId, beforeDate })
+      if (res.data.code === 0) {
+        message.success(t('cryptoTailStrategy.decisionLogPage.purgeSuccess', { count: res.data.data?.deleted ?? 0 }))
+        setPurgeModalOpen(false)
+        setSelectedRowKeys([])
+        loadLogs()
+      } else {
+        message.error(res.data.msg || t('cryptoTailStrategy.decisionLogPage.purgeFailed'))
+      }
+    } catch {
+      message.error(t('cryptoTailStrategy.decisionLogPage.purgeFailed'))
+    } finally {
+      setPurging(false)
+    }
+  }
 
   const handleExport = async () => {
     const { startDate, endDate } = resolveRange()
@@ -252,6 +325,37 @@ const CryptoTailDecisionLog: React.FC = () => {
             <Button type="primary" icon={<DownloadOutlined />} onClick={handleExport} loading={exporting}>
               {t('cryptoTailStrategy.decisionLogPage.exportJson')}
             </Button>
+            <Popconfirm
+              title={t('cryptoTailStrategy.decisionLogPage.batchDeleteConfirmTitle')}
+              description={t('cryptoTailStrategy.decisionLogPage.batchDeleteConfirmDesc', { count: selectedRowKeys.length })}
+              okButtonProps={{ danger: true, loading: deleting }}
+              onConfirm={handleBatchDelete}
+              disabled={selectedRowKeys.length === 0}
+            >
+              <Button danger icon={<DeleteOutlined />} disabled={selectedRowKeys.length === 0}>
+                {selectedRowKeys.length > 0
+                  ? t('cryptoTailStrategy.decisionLogPage.batchDeleteWithCount', { count: selectedRowKeys.length })
+                  : t('cryptoTailStrategy.decisionLogPage.batchDelete')}
+              </Button>
+            </Popconfirm>
+            <Dropdown
+              menu={{
+                items: [
+                  { key: 'beforeToday', label: t('cryptoTailStrategy.decisionLogPage.purgeBeforeToday') },
+                  { key: 'beforeWeek', label: t('cryptoTailStrategy.decisionLogPage.purgeBeforeWeek') },
+                  { key: 'before7d', label: t('cryptoTailStrategy.decisionLogPage.purgeBefore7d') },
+                  { key: 'custom', label: t('cryptoTailStrategy.decisionLogPage.purgeCustom') }
+                ],
+                onClick: ({ key }) => openPurgeModal(key as PurgePreset)
+              }}
+            >
+              <Button icon={<ClearOutlined />}>
+                <Space size={4}>
+                  {t('cryptoTailStrategy.decisionLogPage.purge')}
+                  <DownOutlined />
+                </Space>
+              </Button>
+            </Dropdown>
           </Space>
 
           <Table
@@ -260,6 +364,11 @@ const CryptoTailDecisionLog: React.FC = () => {
             loading={loading}
             dataSource={events}
             columns={columns}
+            rowSelection={{
+              selectedRowKeys,
+              onChange: (keys) => setSelectedRowKeys(keys),
+              preserveSelectedRowKeys: true
+            }}
             scroll={{ x: isMobile ? 900 : undefined }}
             locale={{
               emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('cryptoTailStrategy.decisionLog.empty')} />
@@ -279,6 +388,38 @@ const CryptoTailDecisionLog: React.FC = () => {
           />
         </Space>
       </Card>
+
+      <Modal
+        title={t('cryptoTailStrategy.decisionLogPage.purgeModalTitle')}
+        open={purgeModalOpen}
+        onOk={handlePurgeConfirm}
+        onCancel={() => setPurgeModalOpen(false)}
+        confirmLoading={purging}
+        okButtonProps={{ danger: true }}
+        okText={t('cryptoTailStrategy.decisionLogPage.purgeOk')}
+        cancelText={t('cryptoTailStrategy.decisionLogPage.purgeCancel')}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Typography.Text>
+            {strategyId > 0
+              ? t('cryptoTailStrategy.decisionLogPage.purgeScopeStrategy', {
+                  name: strategies.find((s) => s.id === strategyId)?.name || `#${strategyId}`
+                })
+              : t('cryptoTailStrategy.decisionLogPage.purgeScopeAll')}
+          </Typography.Text>
+          <Space>
+            <Typography.Text>{t('cryptoTailStrategy.decisionLogPage.purgeBeforeLabel')}</Typography.Text>
+            <DatePicker
+              value={purgeBefore}
+              onChange={(v) => setPurgeBefore(v)}
+              allowClear={false}
+            />
+          </Space>
+          <Typography.Text type="warning">
+            {t('cryptoTailStrategy.decisionLogPage.purgeWarning')}
+          </Typography.Text>
+        </Space>
+      </Modal>
     </div>
   )
 }

@@ -27,23 +27,32 @@ class GammaDataPolymarketHistoricalPriceSource(
 
     private val logger = LoggerFactory.getLogger(GammaDataPolymarketHistoricalPriceSource::class.java)
 
-    override fun fetchPeriodPath(
+    override fun fetchPeriod(
         fullSlugPrefix: String,
         intervalSeconds: Int,
         periodStartUnix: Long
-    ): PolymarketHistoricalPriceSource.PeriodPath? {
-        if (intervalSeconds <= 0 || periodStartUnix <= 0) return null
+    ): PolymarketHistoricalPriceSource.FetchResult {
+        val errorResult = PolymarketHistoricalPriceSource.FetchResult(PolymarketHistoricalPriceSource.FetchOutcome.FETCH_ERROR)
+        if (intervalSeconds <= 0 || periodStartUnix <= 0) return errorResult
 
-        val upTokenId = resolveUpTokenId(fullSlugPrefix, periodStartUnix) ?: return null
+        val upTokenId = try {
+            resolveUpTokenId(fullSlugPrefix, periodStartUnix)
+        } catch (e: Exception) {
+            logger.debug("解析 Up tokenId 异常 prefix=$fullSlugPrefix start=$periodStartUnix: ${e.message}")
+            return errorResult
+        } ?: return PolymarketHistoricalPriceSource.FetchResult(PolymarketHistoricalPriceSource.FetchOutcome.SLUG_NOT_FOUND)
 
         // 命中缓存优先
         val cached = priceHistoryRepository.findByTokenIdOrderByTUnixAsc(upTokenId)
         if (cached.isNotEmpty()) {
-            return PolymarketHistoricalPriceSource.PeriodPath(
-                periodStartUnix = periodStartUnix,
-                periodSeconds = intervalSeconds,
-                upTokenId = upTokenId,
-                points = cached.map { it.tUnix to it.price }
+            return PolymarketHistoricalPriceSource.FetchResult(
+                PolymarketHistoricalPriceSource.FetchOutcome.OK,
+                PolymarketHistoricalPriceSource.PeriodPath(
+                    periodStartUnix = periodStartUnix,
+                    periodSeconds = intervalSeconds,
+                    upTokenId = upTokenId,
+                    points = cached.map { it.tUnix to it.price }
+                )
             )
         }
 
@@ -65,16 +74,20 @@ class GammaDataPolymarketHistoricalPriceSource(
             }
         } catch (e: Exception) {
             logger.debug("prices-history 异常 token=$upTokenId: ${e.message}")
-            null
-        } ?: return null
+            return errorResult
+        }
 
-        if (history.isEmpty()) return null
+        if (history.isNullOrEmpty()) {
+            return PolymarketHistoricalPriceSource.FetchResult(PolymarketHistoricalPriceSource.FetchOutcome.HISTORY_EMPTY)
+        }
 
         val points = history
             .filter { it.t in periodStartUnix..periodEndUnix && it.p in 0.0..1.0 }
             .sortedBy { it.t }
             .map { it.t to BigDecimal.valueOf(it.p) }
-        if (points.isEmpty()) return null
+        if (points.isEmpty()) {
+            return PolymarketHistoricalPriceSource.FetchResult(PolymarketHistoricalPriceSource.FetchOutcome.HISTORY_EMPTY)
+        }
 
         try {
             val now = System.currentTimeMillis()
@@ -93,11 +106,14 @@ class GammaDataPolymarketHistoricalPriceSource(
             logger.debug("缓存历史赔率失败 token=$upTokenId: ${e.message}")
         }
 
-        return PolymarketHistoricalPriceSource.PeriodPath(
-            periodStartUnix = periodStartUnix,
-            periodSeconds = intervalSeconds,
-            upTokenId = upTokenId,
-            points = points
+        return PolymarketHistoricalPriceSource.FetchResult(
+            PolymarketHistoricalPriceSource.FetchOutcome.OK,
+            PolymarketHistoricalPriceSource.PeriodPath(
+                periodStartUnix = periodStartUnix,
+                periodSeconds = intervalSeconds,
+                upTokenId = upTokenId,
+                points = points
+            )
         )
     }
 

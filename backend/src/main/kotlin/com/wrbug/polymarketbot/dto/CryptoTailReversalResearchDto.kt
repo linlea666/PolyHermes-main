@@ -36,7 +36,15 @@ data class PolymarketReversalBackfillResponse(
     val periodsResolved: Int = 0,
     val observations: Int = 0,
     val bucketsWritten: Int = 0,
-    val dataSource: String = "POLYMARKET"
+    val dataSource: String = "POLYMARKET",
+    // 诊断分类计数：定位"为什么没数据"
+    val slugNotFound: Int = 0,
+    val historyEmpty: Int = 0,
+    val tooFewPoints: Int = 0,
+    val fetchError: Int = 0,
+    // 覆盖范围受 maxPeriods 截断标记与实际覆盖天数
+    val coverageCapped: Boolean = false,
+    val coverageDays: Double = 0.0
 )
 
 /** 历史反转研究列表请求 */

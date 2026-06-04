@@ -58,3 +58,27 @@ data class CryptoTailDecisionLogExportResponse(
     val total: Long = 0L,
     val exportedAt: Long = System.currentTimeMillis()
 )
+
+/**
+ * 决策日志批量删除请求（按 id 集合）
+ */
+data class CryptoTailDecisionLogBatchDeleteRequest(
+    val ids: List<Long> = emptyList()
+)
+
+/**
+ * 决策日志按时间清理请求
+ * @param strategyId 0 = 全部策略，>0 = 仅清理该策略
+ * @param beforeDate 清理 createdAt 严格小于该时间（毫秒）的日志
+ */
+data class CryptoTailDecisionLogPurgeRequest(
+    val strategyId: Long = 0L,
+    val beforeDate: Long = 0L
+)
+
+/**
+ * 决策日志删除/清理响应
+ */
+data class CryptoTailDecisionLogDeleteResponse(
+    val deleted: Int = 0
+)

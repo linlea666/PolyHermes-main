@@ -1792,6 +1792,14 @@ export interface PolymarketReversalBackfillResponse {
   observations: number
   bucketsWritten: number
   dataSource: string
+  /** 诊断分类计数：定位"为什么没数据" */
+  slugNotFound: number
+  historyEmpty: number
+  tooFewPoints: number
+  fetchError: number
+  /** 覆盖范围受 maxPeriods 截断标记与实际覆盖天数 */
+  coverageCapped: boolean
+  coverageDays: number
 }
 
 /** 历史反转研究列表请求 */
@@ -1923,6 +1931,22 @@ export interface CryptoTailDecisionLogExportResponse {
   list: CryptoTailDecisionEventDto[]
   total: number
   exportedAt: number
+}
+
+/** 决策日志批量删除请求（按 id 集合） */
+export interface CryptoTailDecisionLogBatchDeleteRequest {
+  ids: number[]
+}
+
+/** 决策日志按时间清理请求（strategyId<=0 表示全部策略，beforeDate 毫秒） */
+export interface CryptoTailDecisionLogPurgeRequest {
+  strategyId?: number
+  beforeDate: number
+}
+
+/** 决策日志删除/清理响应 */
+export interface CryptoTailDecisionLogDeleteResponse {
+  deleted: number
 }
 
 /** 单笔成交全链路分析快照（数值以字符串返回） */

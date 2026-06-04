@@ -1042,6 +1042,44 @@ class CryptoTailStrategyService(
         }
     }
 
+    /** 批量删除决策日志（按 id 集合），返回删除条数 */
+    @Transactional
+    fun deleteDecisionLogs(request: CryptoTailDecisionLogBatchDeleteRequest): Result<CryptoTailDecisionLogDeleteResponse> {
+        return try {
+            if (request.ids.isEmpty()) {
+                return Result.failure(IllegalArgumentException(ErrorCode.PARAM_EMPTY.messageKey))
+            }
+            val deleted = decisionEventRepository.deleteByIdInBulk(request.ids)
+            Result.success(CryptoTailDecisionLogDeleteResponse(deleted = deleted))
+        } catch (e: IllegalArgumentException) {
+            Result.failure(e)
+        } catch (e: Exception) {
+            logger.error("批量删除决策日志失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /** 按时间清理决策日志（strategyId<=0 = 全部策略），返回删除条数 */
+    @Transactional
+    fun purgeDecisionLogs(request: CryptoTailDecisionLogPurgeRequest): Result<CryptoTailDecisionLogDeleteResponse> {
+        return try {
+            if (request.beforeDate <= 0L) {
+                return Result.failure(IllegalArgumentException(ErrorCode.PARAM_INVALID.messageKey))
+            }
+            val deleted = if (request.strategyId > 0) {
+                decisionEventRepository.deleteByStrategyIdAndCreatedAtBeforeBulk(request.strategyId, request.beforeDate)
+            } else {
+                decisionEventRepository.deleteByCreatedAtBeforeBulk(request.beforeDate)
+            }
+            Result.success(CryptoTailDecisionLogDeleteResponse(deleted = deleted))
+        } catch (e: IllegalArgumentException) {
+            Result.failure(e)
+        } catch (e: Exception) {
+            logger.error("清理决策日志失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
     /** 为决策事件 DTO 批量填充策略名（一次性按 id 集合查询，避免 N+1） */
     private fun enrichStrategyName(list: List<CryptoTailDecisionEventDto>): List<CryptoTailDecisionEventDto> {
         if (list.isEmpty()) return list

@@ -796,6 +796,10 @@ export const apiService = {
       apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogListResponse>>('/crypto-tail-strategy/decision-log/list-all', data),
     decisionLogExport: (data: import('../types').CryptoTailDecisionLogExportRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogExportResponse>>('/crypto-tail-strategy/decision-log/export', data),
+    decisionLogBatchDelete: (data: import('../types').CryptoTailDecisionLogBatchDeleteRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogDeleteResponse>>('/crypto-tail-strategy/decision-log/batch-delete', data),
+    decisionLogPurge: (data: import('../types').CryptoTailDecisionLogPurgeRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogDeleteResponse>>('/crypto-tail-strategy/decision-log/purge', data),
     tradeSnapshotList: (data: import('../types').CryptoTailTradeSnapshotListRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailTradeSnapshotListResponse>>('/crypto-tail-strategy/decision/snapshot/list', data),
     tradeSnapshotExport: (data: import('../types').CryptoTailTradeSnapshotExportRequest) =>

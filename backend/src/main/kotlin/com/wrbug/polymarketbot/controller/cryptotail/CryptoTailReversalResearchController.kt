@@ -96,7 +96,13 @@ class CryptoTailReversalResearchController(
                         periodsResolved = summary.periodsResolved,
                         observations = summary.observations,
                         bucketsWritten = summary.bucketsWritten,
-                        dataSource = summary.dataSource
+                        dataSource = summary.dataSource,
+                        slugNotFound = summary.slugNotFound,
+                        historyEmpty = summary.historyEmpty,
+                        tooFewPoints = summary.tooFewPoints,
+                        fetchError = summary.fetchError,
+                        coverageCapped = summary.coverageCapped,
+                        coverageDays = summary.coverageDays
                     )
                 )
             )

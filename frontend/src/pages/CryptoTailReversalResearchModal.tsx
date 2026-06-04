@@ -3,7 +3,7 @@ import { Modal, Form, Select, InputNumber, Button, Table, Space, message, Tag, T
 import { useTranslation } from 'react-i18next'
 import { useMediaQuery } from 'react-responsive'
 import { apiService } from '../services/api'
-import type { ReversalStatDto } from '../types'
+import type { ReversalStatDto, PolymarketReversalBackfillResponse } from '../types'
 
 interface Props {
   open: boolean
@@ -12,6 +12,47 @@ interface Props {
 
 /** 样本不足阈值：低于此值的分桶统计可信度低，UI 标记提醒 */
 const LOW_SAMPLE_THRESHOLD = 30
+
+interface ReversalSummary {
+  totalSample: number
+  buckets: number
+  lowSampleBuckets: number
+  avgModelProb: number
+  avgVirtualWin: number | null
+}
+
+/** 以 sampleCount 加权汇总一组分桶的维持概率与虚拟胜率（评测对比与单次查询共用） */
+const computeSummary = (rows: ReversalStatDto[]): ReversalSummary => {
+  let totalSample = 0
+  let weightedModelProb = 0
+  let vWinSample = 0
+  let weightedVWin = 0
+  let lowSampleBuckets = 0
+  for (const r of rows) {
+    totalSample += r.sampleCount
+    weightedModelProb += Number(r.modelProb || 0) * r.sampleCount
+    if (r.sampleCount < LOW_SAMPLE_THRESHOLD) lowSampleBuckets++
+    if (r.virtualWinRate !== '' && r.virtualWinRate != null) {
+      vWinSample += r.sampleCount
+      weightedVWin += Number(r.virtualWinRate) * r.sampleCount
+    }
+  }
+  return {
+    totalSample,
+    buckets: rows.length,
+    lowSampleBuckets,
+    avgModelProb: totalSample > 0 ? weightedModelProb / totalSample : 0,
+    avgVirtualWin: vWinSample > 0 ? weightedVWin / vWinSample : null
+  }
+}
+
+interface CompareRow extends ReversalSummary {
+  key: string
+  dataSource: string
+  lookbackDays: number
+}
+
+const COMPARE_LOOKBACK_OPTIONS = [30, 60, 90, 180, 365]
 
 /**
  * 历史反转率研究弹窗：一键回填（基于 Binance 1m K 线）、查看分桶反转率、导出 CSV。
@@ -26,6 +67,11 @@ const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose }) => 
   const [backfilling, setBackfilling] = useState(false)
   const [backfillingPm, setBackfillingPm] = useState(false)
   const [dataSource, setDataSource] = useState<string>('BINANCE')
+  const [cmpLookbacks, setCmpLookbacks] = useState<number[]>([90, 180])
+  const [cmpSources, setCmpSources] = useState<string[]>(['BINANCE'])
+  const [cmpRows, setCmpRows] = useState<CompareRow[]>([])
+  const [comparing, setComparing] = useState(false)
+  const [pmDiag, setPmDiag] = useState<PolymarketReversalBackfillResponse | null>(null)
 
   const currentParams = (): { coin: string; intervalSeconds: number; lookbackDays: number } => {
     const v = form.getFieldsValue()
@@ -90,12 +136,17 @@ const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose }) => 
         return
       }
       const d = res.data.data
-      message.success(t('cryptoTailStrategy.reversal.backfillPmDone', {
-        buckets: d.bucketsWritten,
-        resolved: d.periodsResolved,
-        requested: d.periodsRequested,
-        obs: d.observations
-      }))
+      setPmDiag(d)
+      if (d.periodsResolved === 0) {
+        message.warning(t('cryptoTailStrategy.reversal.backfillPmZero', { requested: d.periodsRequested }))
+      } else {
+        message.success(t('cryptoTailStrategy.reversal.backfillPmDone', {
+          buckets: d.bucketsWritten,
+          resolved: d.periodsResolved,
+          requested: d.periodsRequested,
+          obs: d.observations
+        }))
+      }
       form.setFieldValue('dataSource', 'POLYMARKET')
       await runList()
     } catch {
@@ -136,29 +187,45 @@ const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose }) => 
   const samplingLabel = (s: number) => (s === 1 ? '1s' : s === 60 ? '1m' : s === 0 ? 'API' : `${s}s`)
 
   // 加权命中率汇总：以 sampleCount 加权的 model_prob 与虚拟胜率（仅当前已加载分桶）
-  const summary = useMemo(() => {
-    let totalSample = 0
-    let weightedModelProb = 0
-    let vWinSample = 0
-    let weightedVWin = 0
-    let lowSampleBuckets = 0
-    for (const r of rows) {
-      totalSample += r.sampleCount
-      weightedModelProb += Number(r.modelProb || 0) * r.sampleCount
-      if (r.sampleCount < LOW_SAMPLE_THRESHOLD) lowSampleBuckets++
-      if (r.virtualWinRate !== '' && r.virtualWinRate != null) {
-        vWinSample += r.sampleCount
-        weightedVWin += Number(r.virtualWinRate) * r.sampleCount
+  const summary = useMemo(() => computeSummary(rows), [rows])
+
+  // 评测对比：对所选 (数据源 × 回溯天数) 组合并排查询，取加权虚拟胜率（无则维持概率）最高者为最优
+  const runCompare = async () => {
+    const { coin, intervalSeconds, lookbackDays } = currentParams()
+    const lbs = cmpLookbacks.length > 0 ? cmpLookbacks : [lookbackDays]
+    const srcs = cmpSources.length > 0 ? cmpSources : ['BINANCE']
+    const combos: { dataSource: string; lookbackDays: number }[] = []
+    for (const s of srcs) for (const lb of lbs) combos.push({ dataSource: s, lookbackDays: lb })
+    setComparing(true)
+    try {
+      const results = await Promise.all(
+        combos.map(async (c): Promise<CompareRow> => {
+          let list: ReversalStatDto[] = []
+          try {
+            const res = await apiService.cryptoTailStrategy.reversalList({ coin, intervalSeconds, lookbackDays: c.lookbackDays, dataSource: c.dataSource })
+            if (res.data.code === 0 && res.data.data) list = res.data.data.list
+          } catch {
+            list = []
+          }
+          return { key: `${c.dataSource}-${c.lookbackDays}`, dataSource: c.dataSource, lookbackDays: c.lookbackDays, ...computeSummary(list) }
+        })
+      )
+      setCmpRows(results)
+      if (results.every((r) => r.totalSample === 0)) {
+        message.info(t('cryptoTailStrategy.reversal.compareEmpty'))
       }
+    } finally {
+      setComparing(false)
     }
-    return {
-      totalSample,
-      buckets: rows.length,
-      lowSampleBuckets,
-      avgModelProb: totalSample > 0 ? weightedModelProb / totalSample : 0,
-      avgVirtualWin: vWinSample > 0 ? weightedVWin / vWinSample : null
-    }
-  }, [rows])
+  }
+
+  // 最优组合 key：仅在有样本的组合中比较，优先加权虚拟胜率，回退加权维持概率
+  const bestCompareKey = useMemo(() => {
+    const valid = cmpRows.filter((r) => r.totalSample > 0)
+    if (valid.length === 0) return null
+    const score = (r: CompareRow) => (r.avgVirtualWin != null ? r.avgVirtualWin : r.avgModelProb)
+    return valid.reduce((best, r) => (score(r) > score(best) ? r : best)).key
+  }, [cmpRows])
 
   const columns = [
     {
@@ -257,6 +324,104 @@ const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose }) => 
         <Button onClick={runList} loading={loading}>{t('cryptoTailStrategy.reversal.queryBtn')}</Button>
         <Button onClick={runExport} disabled={rows.length === 0}>{t('cryptoTailStrategy.reversal.exportBtn')}</Button>
       </Space>
+
+      {pmDiag && (
+        <Alert
+          type={pmDiag.periodsResolved === 0 ? 'warning' : pmDiag.coverageCapped ? 'info' : 'success'}
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('cryptoTailStrategy.reversal.pmDiagTitle', {
+            resolved: pmDiag.periodsResolved,
+            requested: pmDiag.periodsRequested,
+            buckets: pmDiag.bucketsWritten
+          })}
+          description={
+            <div>
+              <div>
+                {t('cryptoTailStrategy.reversal.pmDiagDetail', {
+                  slugNotFound: pmDiag.slugNotFound,
+                  historyEmpty: pmDiag.historyEmpty,
+                  tooFewPoints: pmDiag.tooFewPoints,
+                  fetchError: pmDiag.fetchError
+                })}
+              </div>
+              {pmDiag.coverageCapped && (
+                <div style={{ marginTop: 4 }}>
+                  {t('cryptoTailStrategy.reversal.pmDiagCoverage', {
+                    days: pmDiag.coverageDays.toFixed(2),
+                    periods: pmDiag.periodsRequested
+                  })}
+                </div>
+              )}
+            </div>
+          }
+        />
+      )}
+
+      <div style={{ marginBottom: 16, padding: 12, background: 'rgba(0,0,0,0.02)', borderRadius: 8 }}>
+        <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+          {t('cryptoTailStrategy.reversal.compareTitle')}
+        </Typography.Text>
+        <Space wrap align="center">
+          <span>{t('cryptoTailStrategy.reversal.compareDataSource')}</span>
+          <Select
+            mode="multiple"
+            style={{ minWidth: 200 }}
+            value={cmpSources}
+            onChange={setCmpSources}
+            options={[{ value: 'BINANCE', label: 'BINANCE' }, { value: 'POLYMARKET', label: 'POLYMARKET' }]}
+          />
+          <span>{t('cryptoTailStrategy.reversal.compareLookbacks')}</span>
+          <Select
+            mode="multiple"
+            style={{ minWidth: 220 }}
+            value={cmpLookbacks}
+            onChange={setCmpLookbacks}
+            options={COMPARE_LOOKBACK_OPTIONS.map((d) => ({ value: d, label: `${d}d` }))}
+          />
+          <Button type="primary" ghost loading={comparing} onClick={runCompare}>
+            {t('cryptoTailStrategy.reversal.compareBtn')}
+          </Button>
+        </Space>
+        {cmpRows.length > 0 && (
+          <Table<CompareRow>
+            style={{ marginTop: 12 }}
+            rowKey="key"
+            size="small"
+            pagination={false}
+            dataSource={cmpRows}
+            columns={[
+              {
+                title: t('cryptoTailStrategy.reversal.dataSource'),
+                dataIndex: 'dataSource',
+                render: (v: string, r: CompareRow) => (
+                  <Space size={4}>
+                    <Tag color={v === 'BINANCE' ? 'blue' : 'gold'}>{v}</Tag>
+                    {r.key === bestCompareKey && <Tag color="green">{t('cryptoTailStrategy.reversal.compareBest')}</Tag>}
+                  </Space>
+                )
+              },
+              { title: t('cryptoTailStrategy.reversal.lookbackDays'), dataIndex: 'lookbackDays', render: (v: number) => `${v}d` },
+              { title: t('cryptoTailStrategy.reversal.summaryAvgModelProb'), dataIndex: 'avgModelProb', render: (v: number) => pct(v) },
+              {
+                title: t('cryptoTailStrategy.reversal.summaryVirtualWin'),
+                dataIndex: 'avgVirtualWin',
+                render: (v: number | null) => (v == null ? '-' : pct(v))
+              },
+              { title: t('cryptoTailStrategy.reversal.summaryTotalSample'), dataIndex: 'totalSample' },
+              {
+                title: t('cryptoTailStrategy.reversal.summaryLowSample'),
+                key: 'lowSample',
+                render: (_: unknown, r: CompareRow) => (
+                  <span style={r.lowSampleBuckets > 0 ? { color: '#fa8c16' } : undefined}>
+                    {r.lowSampleBuckets} / {r.buckets}
+                  </span>
+                )
+              }
+            ]}
+          />
+        )}
+      </div>
       {rows.length > 0 && (
         <Row gutter={16} style={{ marginBottom: 12 }}>
           <Col span={isMobile ? 12 : 6}>

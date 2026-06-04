@@ -24,6 +24,7 @@ import {
   Typography,
   Upload
 } from 'antd'
+import type { FormInstance } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { PlusOutlined, EditOutlined, UnorderedListOutlined, LineChartOutlined, InfoCircleOutlined, WarningOutlined, CalendarOutlined, FileTextOutlined, DeleteOutlined, ExportOutlined, ImportOutlined, UploadOutlined, BulbOutlined } from '@ant-design/icons'
@@ -37,6 +38,8 @@ import { getVersionInfo } from '../utils/version'
 import CryptoTailPnlCurveModal from './CryptoTailPnlCurveModal'
 import CryptoTailReversalResearchModal from './CryptoTailReversalResearchModal'
 import CryptoTailTailDiffAdvisorModal from './CryptoTailTailDiffAdvisorModal'
+import TailDiffEntrySegmentsField from '../components/TailDiffEntrySegmentsField'
+import TailDiffExitPresetField from '../components/TailDiffExitPresetField'
 import type { CryptoTailTailDiffParams, CryptoTailTailDiffPreviewResponse } from '../types'
 
 /** 尾盘价差模式（TAIL_DIFF, V62）表单默认值，与后端 V62 SQL / 实体默认保持一致 */
@@ -210,6 +213,102 @@ const buildTailDiffPayload = (v: Record<string, unknown>): CryptoTailTailDiffPar
   tailDiffConsecLossStopCount: numOrUndef(v.tailDiffConsecLossStopCount),
   tailDiffEntrySegmentsJson: strOrEmpty(v.tailDiffEntrySegmentsJson)
 })
+
+/** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
+const inferCoinFromSlug = (slug?: string): 'BTC' | 'ETH' | null => {
+  const s = (slug ?? '').toLowerCase()
+  if (s.includes('btc')) return 'BTC'
+  if (s.includes('eth')) return 'ETH'
+  return null
+}
+
+/**
+ * 反转研究数据覆盖提示：TAIL_DIFF 策略保存/编辑时，按当前 coin/周期/回溯天数/数据源 查询是否已有回填数据。
+ * 无数据 → 警示 HYBRID 将退化为解析解；非 BTC/ETH → 提示无统计数据。复用 reversal/list，不新建后端管线。
+ */
+const TailDiffStatsCoverageAlert: React.FC<{ form: FormInstance; marketOptions: CryptoTailMarketOptionDto[] }> = ({ form, marketOptions }) => {
+  const { t } = useTranslation()
+  const mode = Form.useWatch('mode', form)
+  const marketSlugPrefix = Form.useWatch('marketSlugPrefix', form) as string | undefined
+  const lookbackDays = Form.useWatch('tailDiffStatsLookbackDays', form) as number | undefined
+  const statsDataSource = Form.useWatch('tailDiffStatsDataSource', form) as string | undefined
+  const modelProbSource = Form.useWatch('tailDiffModelProbSource', form) as string | undefined
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ok' | 'empty'>('idle')
+
+  const coin = inferCoinFromSlug(marketSlugPrefix)
+  const intervalSeconds = marketOptions.find((m) => m.slug === marketSlugPrefix)?.intervalSeconds
+  const active = mode === 3 && (modelProbSource ?? 'HYBRID') !== 'FALLBACK'
+
+  useEffect(() => {
+    if (!active || coin == null || !intervalSeconds || !lookbackDays) {
+      setStatus('idle')
+      return
+    }
+    let cancelled = false
+    setStatus('loading')
+    const timer = setTimeout(async () => {
+      try {
+        const res = await apiService.cryptoTailStrategy.reversalList({
+          coin,
+          intervalSeconds,
+          lookbackDays: Number(lookbackDays),
+          dataSource: statsDataSource ?? 'BINANCE'
+        })
+        if (cancelled) return
+        const list = res.data.code === 0 && res.data.data ? res.data.data.list : []
+        setStatus(list.length > 0 ? 'ok' : 'empty')
+      } catch {
+        if (!cancelled) setStatus('idle')
+      }
+    }, 400)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [active, coin, intervalSeconds, lookbackDays, statsDataSource])
+
+  if (!active) return null
+  if (coin == null) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={t('cryptoTailStrategy.form.statsCoverage.coinUnsupported')}
+      />
+    )
+  }
+  if (status === 'empty') {
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={t('cryptoTailStrategy.form.statsCoverage.noDataTitle')}
+        description={t('cryptoTailStrategy.form.statsCoverage.noDataDesc', {
+          coin,
+          lookback: lookbackDays,
+          source: statsDataSource ?? 'BINANCE'
+        })}
+      />
+    )
+  }
+  if (status === 'ok') {
+    return (
+      <Alert
+        type="success"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={t('cryptoTailStrategy.form.statsCoverage.ok', {
+          coin,
+          lookback: lookbackDays,
+          source: statsDataSource ?? 'BINANCE'
+        })}
+      />
+    )
+  }
+  return null
+}
 
 const CryptoTailStrategyList: React.FC = () => {
   const { t, i18n } = useTranslation()
@@ -2722,7 +2821,7 @@ const CryptoTailStrategyList: React.FC = () => {
                   }
                 }]}
               >
-                <Input.TextArea rows={4} placeholder={t('cryptoTailStrategy.form.tailDiffEntrySegmentsPlaceholder')} />
+                <TailDiffEntrySegmentsField />
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>
@@ -2776,6 +2875,7 @@ const CryptoTailStrategyList: React.FC = () => {
                   ]}
                 />
               </Form.Item>
+              <TailDiffStatsCoverageAlert form={form} marketOptions={marketOptions} />
 
               <Form.Item style={{ marginBottom: 8 }}>
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.tailDiffBookSubsection')}</Typography.Text>
@@ -2862,21 +2962,21 @@ const CryptoTailStrategyList: React.FC = () => {
                 label={t('cryptoTailStrategy.form.tailDiffExitPresetNormalJson')}
                 rules={[{ validator: (_r, v) => (isExitPresetJsonValid(v) ? Promise.resolve() : Promise.reject(new Error(t('cryptoTailStrategy.form.tailDiffExitPresetInvalid')))) }]}
               >
-                <Input.TextArea rows={3} placeholder={t('cryptoTailStrategy.form.tailDiffExitPresetPlaceholder')} />
+                <TailDiffExitPresetField tier="NORMAL" />
               </Form.Item>
               <Form.Item
                 name="tailDiffExitPresetPremiumJson"
                 label={t('cryptoTailStrategy.form.tailDiffExitPresetPremiumJson')}
                 rules={[{ validator: (_r, v) => (isExitPresetJsonValid(v) ? Promise.resolve() : Promise.reject(new Error(t('cryptoTailStrategy.form.tailDiffExitPresetInvalid')))) }]}
               >
-                <Input.TextArea rows={3} placeholder={t('cryptoTailStrategy.form.tailDiffExitPresetPlaceholder')} />
+                <TailDiffExitPresetField tier="PREMIUM" />
               </Form.Item>
               <Form.Item
                 name="tailDiffExitPresetTopJson"
                 label={t('cryptoTailStrategy.form.tailDiffExitPresetTopJson')}
                 rules={[{ validator: (_r, v) => (isExitPresetJsonValid(v) ? Promise.resolve() : Promise.reject(new Error(t('cryptoTailStrategy.form.tailDiffExitPresetInvalid')))) }]}
               >
-                <Input.TextArea rows={3} placeholder={t('cryptoTailStrategy.form.tailDiffExitPresetPlaceholder')} />
+                <TailDiffExitPresetField tier="TOP" />
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>

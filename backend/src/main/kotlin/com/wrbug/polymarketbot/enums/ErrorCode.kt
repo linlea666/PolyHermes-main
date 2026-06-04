@@ -291,6 +291,7 @@ enum class ErrorCode(
     SERVER_CRYPTO_TAIL_STRATEGY_DELETE_FAILED(5622, "删除加密价差策略失败", "error.server.crypto_tail_strategy_delete_failed"),
     SERVER_CRYPTO_TAIL_STRATEGY_LIST_FETCH_FAILED(5623, "查询加密价差策略列表失败", "error.server.crypto_tail_strategy_list_fetch_failed"),
     SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED(5624, "查询触发记录失败", "error.server.crypto_tail_strategy_triggers_fetch_failed"),
+    SERVER_CRYPTO_TAIL_STRATEGY_DECISION_LOG_DELETE_FAILED(5625, "删除决策日志失败", "error.server.crypto_tail_strategy_decision_log_delete_failed"),
 
     // 反转率研究服务 (5630-5639)
     SERVER_REVERSAL_RESEARCH_AGG_FAILED(5630, "反转率聚合失败", "error.server.reversal_research_agg_failed"),
