@@ -154,6 +154,12 @@ const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose, onAdo
       setPmDiag(d)
       if (d.periodsResolved === 0) {
         message.warning(t('cryptoTailStrategy.reversal.backfillPmZero', { requested: d.periodsRequested }))
+      } else if (d.pending > 0) {
+        message.success(t('cryptoTailStrategy.reversal.backfillPmContinue', {
+          resolved: d.periodsResolved,
+          newlyFetched: d.newlyFetched,
+          pending: d.pending
+        }))
       } else {
         message.success(t('cryptoTailStrategy.reversal.backfillPmDone', {
           buckets: d.bucketsWritten,
@@ -353,6 +359,14 @@ const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose, onAdo
           description={
             <div>
               <div>
+                {t('cryptoTailStrategy.reversal.pmDiagProgress', {
+                  reused: pmDiag.reused,
+                  newlyFetched: pmDiag.newlyFetched,
+                  pending: pmDiag.pending,
+                  days: pmDiag.coverageDays.toFixed(2)
+                })}
+              </div>
+              <div style={{ marginTop: 4 }}>
                 {t('cryptoTailStrategy.reversal.pmDiagDetail', {
                   slugNotFound: pmDiag.slugNotFound,
                   historyEmpty: pmDiag.historyEmpty,
@@ -362,9 +376,8 @@ const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose, onAdo
               </div>
               {pmDiag.coverageCapped && (
                 <div style={{ marginTop: 4 }}>
-                  {t('cryptoTailStrategy.reversal.pmDiagCoverage', {
-                    days: pmDiag.coverageDays.toFixed(2),
-                    periods: pmDiag.periodsRequested
+                  {t('cryptoTailStrategy.reversal.pmDiagContinue', {
+                    pending: pmDiag.pending
                   })}
                 </div>
               )}

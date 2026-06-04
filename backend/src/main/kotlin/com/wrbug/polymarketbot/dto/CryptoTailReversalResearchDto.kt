@@ -42,9 +42,13 @@ data class PolymarketReversalBackfillResponse(
     val historyEmpty: Int = 0,
     val tooFewPoints: Int = 0,
     val fetchError: Int = 0,
-    // 覆盖范围受 maxPeriods 截断标记与实际覆盖天数
+    // 覆盖范围：仍有未采集周期（pending>0）时为 true；coverageDays 为已覆盖天数
     val coverageCapped: Boolean = false,
-    val coverageDays: Double = 0.0
+    val coverageDays: Double = 0.0,
+    // 增量进度：本次复用缓存 / 新联网采集 / 受预算限制尚未采集（再次执行可续跑）
+    val reused: Int = 0,
+    val newlyFetched: Int = 0,
+    val pending: Int = 0
 )
 
 /** 历史反转研究列表请求 */

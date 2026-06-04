@@ -1797,9 +1797,13 @@ export interface PolymarketReversalBackfillResponse {
   historyEmpty: number
   tooFewPoints: number
   fetchError: number
-  /** 覆盖范围受 maxPeriods 截断标记与实际覆盖天数 */
+  /** 覆盖范围：仍有未采集周期（pending>0）时为 true；coverageDays 为已覆盖天数 */
   coverageCapped: boolean
   coverageDays: number
+  /** 增量进度：本次复用缓存 / 新联网采集 / 受预算限制尚未采集（再次执行可续跑） */
+  reused: number
+  newlyFetched: number
+  pending: number
 }
 
 /** 历史反转研究列表请求 */

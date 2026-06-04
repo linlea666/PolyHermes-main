@@ -102,7 +102,10 @@ class CryptoTailReversalResearchController(
                         tooFewPoints = summary.tooFewPoints,
                         fetchError = summary.fetchError,
                         coverageCapped = summary.coverageCapped,
-                        coverageDays = summary.coverageDays
+                        coverageDays = summary.coverageDays,
+                        reused = summary.reused,
+                        newlyFetched = summary.newlyFetched,
+                        pending = summary.pending
                     )
                 )
             )

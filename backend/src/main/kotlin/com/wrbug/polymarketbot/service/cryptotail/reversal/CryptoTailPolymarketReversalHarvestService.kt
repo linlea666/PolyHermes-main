@@ -5,7 +5,8 @@ import com.wrbug.polymarketbot.repository.CryptoTailReversalStatRepository
 import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffBuckets
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 import java.math.BigDecimal
 import java.math.RoundingMode
 
@@ -24,9 +25,13 @@ import java.math.RoundingMode
 @Service
 class CryptoTailPolymarketReversalHarvestService(
     private val historicalPriceSource: PolymarketHistoricalPriceSource,
-    private val reversalStatRepository: CryptoTailReversalStatRepository
+    private val reversalStatRepository: CryptoTailReversalStatRepository,
+    transactionManager: PlatformTransactionManager
 ) {
     private val logger = LoggerFactory.getLogger(CryptoTailPolymarketReversalHarvestService::class.java)
+
+    /** 仅用于聚合结果写库的短事务（采集网络请求不在事务内，避免长事务卡死）。 */
+    private val transactionTemplate = TransactionTemplate(transactionManager)
 
     companion object {
         const val DATA_SOURCE = "POLYMARKET"
@@ -50,10 +55,16 @@ class CryptoTailPolymarketReversalHarvestService(
         val historyEmpty: Int = 0,
         val tooFewPoints: Int = 0,
         val fetchError: Int = 0,
-        // 覆盖范围：受 maxPeriods 上限截断时为 true（实际仅覆盖最近 periodsRequested 个周期）
+        // 覆盖范围：仍有未采集周期（pending>0）时为 true，提示用户再次点击续跑
         val coverageCapped: Boolean = false,
-        // 实际覆盖天数（periodsRequested * interval / 86400，向下保留两位由前端展示）
-        val coverageDays: Double = 0.0
+        // 已覆盖天数（已有数据周期 * interval / 86400，前端展示保留两位）
+        val coverageDays: Double = 0.0,
+        // 增量进度：本次复用缓存的周期数（零网络）
+        val reused: Int = 0,
+        // 本次新联网采集成功的周期数
+        val newlyFetched: Int = 0,
+        // 受本次预算（maxPeriods）限制、尚未采集的周期数（再次点击可续跑补全）
+        val pending: Int = 0
     )
 
     private class Bucket {
@@ -70,9 +81,15 @@ class CryptoTailPolymarketReversalHarvestService(
 
     /**
      * 回填一个 (coin, interval, lookbackDays) 维度（POLYMARKET）。幂等：先删旧分桶再写新分桶。
+     *
+     * 增量续跑（V71）：
+     *  - 候选覆盖整个回溯窗口（不再受 maxPeriods 截断窗口）；
+     *  - 已缓存周期零网络复用；maxPeriods 现表示"本次最多新联网采集的周期数"（含失败尝试，限流保护）；
+     *  - 预算用尽后剩余未采集周期记为 pending，再次点击即可续跑补全；
+     *  - 网络采集在事务外进行，仅聚合写库用短事务，避免长事务卡死。
+     *
      * @return null 表示币种/周期不支持；其余情况即使 0 命中也返回 summary（PoC 不阻塞）。
      */
-    @Transactional
     fun backfill(coin: String, intervalSeconds: Int, lookbackDays: Int, maxPeriods: Int = DEFAULT_MAX_PERIODS): BackfillSummary? {
         val coinUpper = coin.trim().uppercase()
         val coinSlug = coinToSlug[coinUpper] ?: run {
@@ -81,24 +98,27 @@ class CryptoTailPolymarketReversalHarvestService(
         }
         val label = intervalToLabel[intervalSeconds] ?: return null
         if (lookbackDays <= 0) return null
-        val cap = maxPeriods.coerceIn(1, 2000)
+        // 本次新联网采集预算（已缓存周期不占预算）
+        val fetchBudget = maxPeriods.coerceIn(1, 2000)
 
         val fullSlugPrefix = "$coinSlug-updown-$label"
         val nowUnix = System.currentTimeMillis() / 1000L
         // 最近一个已完全结算周期的起点
         val latestClosedStart = ((nowUnix - intervalSeconds) / intervalSeconds) * intervalSeconds
         val lookbackStart = nowUnix - lookbackDays.toLong() * 24L * 3600L
-        // 回溯窗口内的理论周期总数（不计 cap）；用于判断 maxPeriods 是否截断覆盖范围
-        val theoreticalPeriods = ((latestClosedStart - lookbackStart) / intervalSeconds + 1).coerceAtLeast(0L)
-        // 候选周期起点（从最近向更早，最多 cap 个）
+        // 候选周期起点：覆盖整个回溯窗口（从最近向更早）
         val periodStarts = ArrayList<Long>()
         var ps = latestClosedStart
-        while (ps >= lookbackStart && periodStarts.size < cap) {
+        while (ps >= lookbackStart) {
             periodStarts.add(ps)
             ps -= intervalSeconds
         }
-        val coverageCapped = theoreticalPeriods > periodStarts.size
-        val coverageDays = periodStarts.size.toLong() * intervalSeconds / 86400.0
+        // 批量预载缓存状态（一次查询），用于判定哪些周期需要联网、是否消耗预算
+        val states = if (periodStarts.isEmpty()) {
+            emptyMap()
+        } else {
+            historicalPriceSource.cacheStates(fullSlugPrefix, periodStarts.last(), periodStarts.first())
+        }
 
         val buckets = HashMap<BucketKey, Bucket>()
         var periodsResolved = 0
@@ -108,8 +128,26 @@ class CryptoTailPolymarketReversalHarvestService(
         var historyEmpty = 0
         var tooFewPoints = 0
         var fetchError = 0
+        // 增量进度计数
+        var reused = 0
+        var newlyFetched = 0
+        var pending = 0
+        var budgetLeft = fetchBudget
 
         for (periodStart in periodStarts) {
+            val state = states[periodStart] ?: PolymarketHistoricalPriceSource.CacheState.MISS
+            // 永久负缓存周期：零网络跳过（不占预算、不计本次诊断）
+            if (state == PolymarketHistoricalPriceSource.CacheState.CACHED_EMPTY) {
+                continue
+            }
+            // 未缓存且预算用尽：留待下次续跑
+            if (state == PolymarketHistoricalPriceSource.CacheState.MISS && budgetLeft <= 0) {
+                pending++
+                continue
+            }
+            val networkAttempt = state == PolymarketHistoricalPriceSource.CacheState.MISS
+            if (networkAttempt) budgetLeft--
+
             val result = try {
                 historicalPriceSource.fetchPeriod(fullSlugPrefix, intervalSeconds, periodStart)
             } catch (e: Exception) {
@@ -134,6 +172,7 @@ class CryptoTailPolymarketReversalHarvestService(
             }
 
             periodsResolved++
+            if (result.fromCache) reused++ else newlyFetched++
             val periodEnd = periodStart + intervalSeconds
             val finalUp = path.points.last().second
             val settledOutcome = if (finalUp >= HALF) 0 else 1
@@ -184,9 +223,6 @@ class CryptoTailPolymarketReversalHarvestService(
             }
         }
 
-        reversalStatRepository.deleteByCoinAndIntervalSecondsAndLookbackDaysAndDataSource(
-            coinUpper, intervalSeconds, lookbackDays, DATA_SOURCE
-        )
         val now = System.currentTimeMillis()
         val rows = buckets.map { (k, b) ->
             val modelProb = if (b.sample > 0)
@@ -218,9 +254,19 @@ class CryptoTailPolymarketReversalHarvestService(
                 updatedAt = now
             )
         }
-        reversalStatRepository.saveAll(rows)
-        val diag = "slugNotFound=$slugNotFound historyEmpty=$historyEmpty tooFewPoints=$tooFewPoints fetchError=$fetchError"
-        val coverageMsg = if (coverageCapped) " [覆盖被 maxPeriods 截断: 仅最近 ${"%.2f".format(coverageDays)} 天/${periodStarts.size} 周期, 回溯窗口理论 $theoreticalPeriods 周期]" else ""
+        // 聚合结果写库用短事务（网络采集已在事务外完成，避免长事务卡死）
+        transactionTemplate.execute {
+            reversalStatRepository.deleteByCoinAndIntervalSecondsAndLookbackDaysAndDataSource(
+                coinUpper, intervalSeconds, lookbackDays, DATA_SOURCE
+            )
+            reversalStatRepository.saveAll(rows)
+        }
+
+        // 仍有未采集周期即视为覆盖未满，提示续跑
+        val coverageCapped = pending > 0
+        val coverageDays = periodsResolved.toLong() * intervalSeconds / 86400.0
+        val diag = "reused=$reused newlyFetched=$newlyFetched pending=$pending slugNotFound=$slugNotFound historyEmpty=$historyEmpty tooFewPoints=$tooFewPoints fetchError=$fetchError"
+        val coverageMsg = if (coverageCapped) " [本次预算用尽, 尚余 $pending 周期未采集, 再次执行可续跑补全]" else ""
         if (periodsResolved == 0) {
             // 0 命中是最常见的"看似失败"：升级为 warn 并打印分类原因，便于定位
             logger.warn("Polymarket 反转回填 0 命中: coin=$coinUpper interval=$intervalSeconds lookback=$lookbackDays requested=${periodStarts.size} $diag$coverageMsg")
@@ -240,7 +286,10 @@ class CryptoTailPolymarketReversalHarvestService(
             tooFewPoints = tooFewPoints,
             fetchError = fetchError,
             coverageCapped = coverageCapped,
-            coverageDays = coverageDays
+            coverageDays = coverageDays,
+            reused = reused,
+            newlyFetched = newlyFetched,
+            pending = pending
         )
     }
 
