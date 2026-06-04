@@ -643,6 +643,57 @@ data class CryptoTailStrategy(
     @Column(name = "tail_diff_entry_segments_json", columnDefinition = "TEXT")
     val tailDiffEntrySegmentsJson: String? = null,
 
+    // ===== 尾盘价差评分增强（V72，对标 gtp 机会评分系统吸收 3 个增量点）=====
+    // 默认值均 = 原硬编码行为，零回归。
+
+    /** 赔率滞后分模式：STATIC=现状(modelProb-midImplied) / DYNAMIC=标的领先动量-赔率动量 / HYBRID=两者均值 */
+    @Column(name = "tail_diff_odds_lag_mode", nullable = false, length = 16)
+    val tailDiffOddsLagMode: String = "STATIC",
+
+    /** 动态赔率滞后观测窗口秒数（gtp 建议 5-10s） */
+    @Column(name = "tail_diff_odds_lag_window_seconds", nullable = false)
+    val tailDiffOddsLagWindowSeconds: Int = 5,
+
+    /** 标的朝领先方向移动满分锚点（σ 单位） */
+    @Column(name = "tail_diff_lag_price_move_full_scale_sigma", nullable = false, precision = 20, scale = 8)
+    val tailDiffLagPriceMoveFullScaleSigma: BigDecimal = BigDecimal("0.5"),
+
+    /** 同期赔率上行满分锚点（概率单位） */
+    @Column(name = "tail_diff_lag_odds_move_full_scale", nullable = false, precision = 20, scale = 8)
+    val tailDiffLagOddsMoveFullScale: BigDecimal = BigDecimal("0.05"),
+
+    /** 赔率低估分满分锚点：edge / 此值（原写死 0.10） */
+    @Column(name = "tail_diff_edge_full_scale", nullable = false, precision = 20, scale = 8)
+    val tailDiffEdgeFullScale: BigDecimal = BigDecimal("0.10"),
+
+    /** 静态赔率滞后分满分锚点（原写死 0.15） */
+    @Column(name = "tail_diff_lag_full_scale", nullable = false, precision = 20, scale = 8)
+    val tailDiffLagFullScale: BigDecimal = BigDecimal("0.15"),
+
+    /** 历史胜率分归一化下限（原写死 0.90） */
+    @Column(name = "tail_diff_history_prob_floor", nullable = false, precision = 20, scale = 8)
+    val tailDiffHistoryProbFloor: BigDecimal = BigDecimal("0.90"),
+
+    /** 历史胜率分归一化上限（原写死 1.00） */
+    @Column(name = "tail_diff_history_prob_ceil", nullable = false, precision = 20, scale = 8)
+    val tailDiffHistoryProbCeil: BigDecimal = BigDecimal("1.00"),
+
+    /** 价差优势分满分锚点倍数：满分 σ = minDiffSigma × 此倍数（原写死 3） */
+    @Column(name = "tail_diff_sigma_score_multiple", nullable = false, precision = 20, scale = 8)
+    val tailDiffSigmaScoreMultiple: BigDecimal = BigDecimal("3.0"),
+
+    /** 是否启用分数 Kelly 下注上限（默认 false = 仅按 tier 倍率） */
+    @Column(name = "tail_diff_enable_kelly_cap", nullable = false)
+    val tailDiffEnableKellyCap: Boolean = false,
+
+    /** Kelly 折扣系数（实盘建议 1/10~1/20） */
+    @Column(name = "tail_diff_kelly_fraction", nullable = false, precision = 20, scale = 8)
+    val tailDiffKellyFraction: BigDecimal = BigDecimal("0.10"),
+
+    /** 盘口可成交深度下注比例：上限 = min(bidDepth, askDepth) × 此比例；0=不启用 */
+    @Column(name = "tail_diff_depth_fill_ratio", nullable = false, precision = 20, scale = 8)
+    val tailDiffDepthFillRatio: BigDecimal = BigDecimal.ZERO,
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

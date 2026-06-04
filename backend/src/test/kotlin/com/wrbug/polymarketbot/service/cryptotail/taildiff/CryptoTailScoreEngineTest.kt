@@ -2,6 +2,7 @@ package com.wrbug.polymarketbot.service.cryptotail.taildiff
 
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.enums.TradingMode
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
@@ -118,5 +119,67 @@ class CryptoTailScoreEngineTest {
     @Test
     fun `fast reverse velocity is vetoed`() {
         assertTrue(engine.evaluate(input(reverseVelocity = "0.9"), strategy()).vetoes.contains("PRICE_RETRACING_FAST"))
+    }
+
+    // ===== V72 增强：零回归 + 新功能 =====
+
+    @Test
+    fun `STATIC lag mode ignores dynamic inputs (zero regression)`() {
+        val baseline = engine.evaluate(input(), strategy())
+        // 默认 STATIC：即使喂入动态领先/赔率动量，分数与分项也完全不变
+        val withDynamic = engine.evaluate(
+            input().copy(priceLeadMoveSigma = BigDecimal("0.5"), oddsMoveOverWindow = BigDecimal.ZERO),
+            strategy()
+        )
+        assertEquals(baseline.score, withDynamic.score)
+        assertEquals(baseline.component.scoreOddsLag, withDynamic.component.scoreOddsLag)
+    }
+
+    @Test
+    fun `default anchors reproduce previous hardcoded scoring (zero regression)`() {
+        // 默认 strategy 的锚点字段 = 原硬编码常量（edge/0.10, lag/0.15, history[0.90,1.0], 3×minSigma）
+        // 这里固定一组输入，验证分项与历史实现一致（edge=0.05→0.5; midGap=0.07→0.4667...; diffSigma=2.5,min1.8,max5.4）
+        val out = engine.evaluate(input(), strategy())
+        // edge 0.05 / 0.10 = 0.5 → ×权重20 = 10.00
+        assertEquals(BigDecimal("10.00"), out.component.scoreOddsUnderprice)
+        // diffSigma 2.5：min1.8 max5.4 → (2.5-1.8)/(5.4-1.8)=0.19444 → ×25 = 4.86
+        assertEquals(BigDecimal("4.86"), out.component.scoreDiff)
+    }
+
+    @Test
+    fun `DYNAMIC lag rewards underlying lead extension without odds catch-up`() {
+        val dynStrategy = strategy().copy(tailDiffOddsLagMode = "DYNAMIC")
+        // 标的大幅扩大领先（0.5σ）但赔率纹丝不动（0）→ 滞后分高
+        val highLag = engine.evaluate(
+            input().copy(priceLeadMoveSigma = BigDecimal("0.5"), oddsMoveOverWindow = BigDecimal.ZERO),
+            dynStrategy
+        )
+        // 同样领先扩大，但赔率已经追上（涨 0.05）→ 滞后分低
+        val lowLag = engine.evaluate(
+            input().copy(priceLeadMoveSigma = BigDecimal("0.5"), oddsMoveOverWindow = BigDecimal("0.05")),
+            dynStrategy
+        )
+        assertTrue(
+            highLag.component.scoreOddsLag > lowLag.component.scoreOddsLag,
+            "expected high-lag(${highLag.component.scoreOddsLag}) > low-lag(${lowLag.component.scoreOddsLag})"
+        )
+    }
+
+    @Test
+    fun `DYNAMIC lag falls back to static when dynamic inputs unavailable`() {
+        val dynStrategy = strategy().copy(tailDiffOddsLagMode = "DYNAMIC")
+        // 动态数据不可用（null）→ 回退静态滞后，分项应与 STATIC 一致
+        val dynamicNa = engine.evaluate(input(), dynStrategy)
+        val static = engine.evaluate(input(), strategy())
+        assertEquals(static.component.scoreOddsLag, dynamicNa.component.scoreOddsLag)
+    }
+
+    @Test
+    fun `configurable edge full scale changes underprice score`() {
+        // 把满分锚点从 0.10 收紧到 0.05 → edge=0.05 直接满分（原来只有 0.5）
+        val tightStrategy = strategy().copy(tailDiffEdgeFullScale = BigDecimal("0.05"))
+        val out = engine.evaluate(input(edge = "0.05"), tightStrategy)
+        // 满分 ×权重20 = 20.00
+        assertEquals(BigDecimal("20.00"), out.component.scoreOddsUnderprice)
     }
 }

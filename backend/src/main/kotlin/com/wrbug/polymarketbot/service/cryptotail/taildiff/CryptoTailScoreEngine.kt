@@ -54,7 +54,12 @@ class CryptoTailScoreEngine {
         val reverseVelocitySigmaPerSec: BigDecimal,
         val reverseVelocityReason: String?,
         // 候选金额（用于盘口深度否决）
-        val candidateAmountUsdc: BigDecimal
+        val candidateAmountUsdc: BigDecimal,
+        // 动态赔率滞后因子（V72，DYNAMIC/HYBRID 模式用；null=不可用，回退静态滞后）
+        /** 窗口内标的朝领先方向移动的 σ 单位幅度（带符号，正=领先扩大） */
+        val priceLeadMoveSigma: BigDecimal? = null,
+        /** 同期赔率上行幅度（带符号，正=赔率跟上） */
+        val oddsMoveOverWindow: BigDecimal? = null
     )
 
     /** 评分结果 */
@@ -182,9 +187,10 @@ class CryptoTailScoreEngine {
     }
 
     private fun computeRawScores(input: Input, strategy: CryptoTailStrategy): ComponentScores {
-        // (1) 价差优势分：diffSigma 归一化（[minDiffSigma, 3*minDiffSigma] → [0, 1]）
+        // (1) 价差优势分：diffSigma 归一化（[minDiffSigma, multiple×minDiffSigma] → [0, 1]）
         val minSigma = strategy.tailDiffMinDiffSigma.coerceAtLeastOne()
-        val maxSigma = minSigma.multiply(BigDecimal("3"))
+        val sigmaMultiple = strategy.tailDiffSigmaScoreMultiple.let { if (it <= BigDecimal.ONE) BigDecimal("3") else it }
+        val maxSigma = minSigma.multiply(sigmaMultiple)
         val sigmaScore = normalize01(input.diffSigma, minSigma, maxSigma)
 
         // (2) 时间优势分：越接近 windowEnd 越好（剩余越少分越高，前提是未越过窗口）
@@ -196,20 +202,30 @@ class CryptoTailScoreEngine {
             BigDecimal.ONE.subtract(raw).coerceIn01()
         } else BigDecimal.ZERO
 
-        // (3) 赔率低估分：edge / 0.10 → 满分（edge=10% 视为顶级低估）
-        val oddsUnderpriceScore = normalize01(input.edge, BigDecimal.ZERO, BigDecimal("0.10"))
+        // (3) 赔率低估分：edge / edgeFullScale → 满分（默认 0.10，即 edge=10% 视为顶级低估）
+        val edgeFullScale = strategy.tailDiffEdgeFullScale.let { if (it <= BigDecimal.ZERO) BigDecimal("0.10") else it }
+        val oddsUnderpriceScore = normalize01(input.edge, BigDecimal.ZERO, edgeFullScale)
 
-        // (4) 赔率滞后分：modelProb - midImpliedProb → [0, 0.15] 归一化
-        val lag = input.modelProb.subtract(input.midImpliedProb)
-        val oddsLagScore = normalize01(lag, BigDecimal.ZERO, BigDecimal("0.15"))
+        // (4) 赔率滞后分：STATIC=modelProb-midImplied / DYNAMIC=领先动量-赔率动量 / HYBRID=两者均值
+        val lagFullScale = strategy.tailDiffLagFullScale.let { if (it <= BigDecimal.ZERO) BigDecimal("0.15") else it }
+        val staticLag = input.modelProb.subtract(input.midImpliedProb)
+        val staticLagScore = normalize01(staticLag, BigDecimal.ZERO, lagFullScale)
+        val oddsLagScore = when (strategy.tailDiffOddsLagMode.uppercase()) {
+            "DYNAMIC" -> dynamicLagScore(input, strategy) ?: staticLagScore
+            "HYBRID" -> {
+                val dyn = dynamicLagScore(input, strategy)
+                if (dyn != null) staticLagScore.add(dyn).divide(BigDecimal("2"), 6, RoundingMode.HALF_UP) else staticLagScore
+            }
+            else -> staticLagScore
+        }
 
-        // (5) 历史胜率分：statsSampleCount 不足时按 0.5；够时直接用 (modelProb-0.9)/0.10
+        // (5) 历史胜率分：statsSampleCount 不足时按 0.5；够时用 (modelProb-floor)/(ceil-floor)
         val historyScore = when {
             input.statsSampleCount < strategy.tailDiffStatsMinSamples ->
                 BigDecimal("0.5") // 中性分，避免无统计样本时一律得 0
             input.modelProbSource.startsWith("HYBRID_FALLBACK") || input.modelProbSource == "FALLBACK" ->
                 BigDecimal("0.5")
-            else -> normalize01(input.modelProb, BigDecimal("0.90"), BigDecimal("1.00"))
+            else -> normalize01(input.modelProb, strategy.tailDiffHistoryProbFloor, strategy.tailDiffHistoryProbCeil)
         }
 
         // (6) 盘口质量分：spread 越小、深度越大越好（两者均权 0.5）
@@ -279,6 +295,23 @@ class CryptoTailScoreEngine {
             scoreBook = raw.book.multiply(w(5)).setScale(2, RoundingMode.HALF_UP),
             scoreData = raw.data.multiply(w(6)).setScale(2, RoundingMode.HALF_UP)
         )
+    }
+
+    /**
+     * 动态赔率滞后分（gtp §12）：标的朝领先方向扩大幅度（priceComp）− 同期赔率上行幅度（oddsComp）。
+     *  - 标的领先未扩大（<=0）→ 0 分（无滞后机会）
+     *  - 标的大幅领先但赔率没跟 → priceComp 高、oddsComp 低 → 高分
+     * 数据不可用（任一为 null）→ 返回 null，调用方回退静态滞后。
+     */
+    private fun dynamicLagScore(input: Input, strategy: CryptoTailStrategy): BigDecimal? {
+        val priceMove = input.priceLeadMoveSigma ?: return null
+        val oddsMove = input.oddsMoveOverWindow ?: return null
+        if (priceMove <= BigDecimal.ZERO) return BigDecimal.ZERO
+        val priceFull = strategy.tailDiffLagPriceMoveFullScaleSigma.let { if (it <= BigDecimal.ZERO) BigDecimal("0.5") else it }
+        val oddsFull = strategy.tailDiffLagOddsMoveFullScale.let { if (it <= BigDecimal.ZERO) BigDecimal("0.05") else it }
+        val priceComp = normalize01(priceMove, BigDecimal.ZERO, priceFull)
+        val oddsComp = normalize01(oddsMove, BigDecimal.ZERO, oddsFull)
+        return priceComp.subtract(oddsComp).coerceIn01()
     }
 
     private fun normalize01(value: BigDecimal, min: BigDecimal, max: BigDecimal): BigDecimal {

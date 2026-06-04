@@ -108,6 +108,38 @@ class CryptoTailReverseVelocityTracker {
         )
     }
 
+    /**
+     * 计算窗口内「标的朝领先方向移动」的 σ 单位幅度（V72，动态赔率滞后因子用）。
+     *
+     * 与 [computeReverseVelocity] 复用同一条价格序列（[observe] 已喂入），但方向相反：
+     *  - outcomeIndex=0（持仓 Up，领先方向=价格上行）：lead = last - first
+     *  - outcomeIndex=1（持仓 Down，领先方向=价格下行）：lead = first - last
+     * 返回带符号 σ 幅度（正值=领先在扩大，负值=领先在收窄）。样本不足/σ 无效 → 返回 null（调用方回退静态滞后）。
+     *
+     * 复用决策（扩展复用）：仅新增只读读取方法，不改动 [computeReverseVelocity] 现有逻辑与序列维护。
+     */
+    fun computeLeadMoveSigma(
+        marketSlugPrefix: String,
+        outcomeIndex: Int,
+        sigmaPerSqrtS: BigDecimal,
+        windowSeconds: Int = 10,
+        nowMs: Long = System.currentTimeMillis()
+    ): BigDecimal? {
+        val tracker = trackers.getIfPresent(marketSlugPrefix) ?: return null
+        val snapshot = tracker.snapshot(windowSeconds, nowMs)
+        if (snapshot.size < 2) return null
+        if (sigmaPerSqrtS <= BigDecimal.ZERO) return null
+        val first = snapshot.first()
+        val last = snapshot.last()
+        val elapsedSec = (last.ts - first.ts).coerceAtLeast(1L) / 1000.0
+        if (elapsedSec < 1.0) return null
+        val priceDelta = last.price.subtract(first.price)
+        val leadAmount = if (outcomeIndex == 0) priceDelta else priceDelta.negate()
+        val expectedMove = sigmaPerSqrtS.toDouble() * Math.sqrt(elapsedSec)
+        if (expectedMove <= 0.0) return null
+        return BigDecimal(leadAmount.toDouble() / expectedMove).setScale(6, RoundingMode.HALF_UP)
+    }
+
     private data class Sample(val price: BigDecimal, val ts: Long)
 
     private class SlugSeries {

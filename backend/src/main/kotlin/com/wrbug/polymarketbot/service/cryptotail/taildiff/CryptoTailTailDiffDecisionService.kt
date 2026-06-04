@@ -37,6 +37,7 @@ class CryptoTailTailDiffDecisionService(
     private val sizingPolicy: CryptoTailTailDiffSizingPolicy,
     private val exitPresetResolver: TailDiffExitPresetResolver,
     private val reverseVelocityTracker: CryptoTailReverseVelocityTracker,
+    private val oddsVelocityTracker: CryptoTailOddsVelocityTracker,
     private val reversalStatsLookup: TailReversalStatsLookup,
     private val entrySegmentResolver: TailDiffEntrySegmentResolver,
     private val decisionRecorder: CryptoTailDecisionRecorder
@@ -139,6 +140,9 @@ class CryptoTailTailDiffDecisionService(
 
         // 2) 反抽速度采样（持续喂入；评估反抽用）
         reverseVelocityTracker.observe(strategy.marketSlugPrefix, closeP, nowMs)
+        // 2b) 赔率速度采样（动态赔率滞后因子用；按 outcome 分序列，喂入该 token 的最优买价）
+        val oddsLagKey = "${strategy.marketSlugPrefix}-$outcomeIndex"
+        oddsVelocityTracker.observe(oddsLagKey, orderbook.bestBid, nowMs)
 
         // 3) σ 与 BarrierProbability：复用 BARRIER 内核计算 pWin/safeRatio/方向
         val sigma = periodPriceProvider.getSigmaPerSqrtS(
@@ -230,6 +234,25 @@ class CryptoTailTailDiffDecisionService(
         )
         val reverseVelocity = if (velocity.isReversing) velocity.velocitySigmaPerSec else BigDecimal.ZERO
 
+        // 7b) 动态赔率滞后因子（V62→V72）：仅 DYNAMIC/HYBRID 模式参与评分；STATIC 模式下不读取（节省计算）
+        val (priceLeadMoveSigma, oddsMoveOverWindow) = if (strategy.tailDiffOddsLagMode.uppercase() != "STATIC") {
+            val lead = reverseVelocityTracker.computeLeadMoveSigma(
+                marketSlugPrefix = strategy.marketSlugPrefix,
+                outcomeIndex = outcomeIndex,
+                sigmaPerSqrtS = sigma,
+                windowSeconds = strategy.tailDiffOddsLagWindowSeconds,
+                nowMs = nowMs
+            )
+            val oddsMove = oddsVelocityTracker.computeOddsMove(
+                key = oddsLagKey,
+                windowSeconds = strategy.tailDiffOddsLagWindowSeconds,
+                nowMs = nowMs
+            ).let { if (it.reason == null) it.oddsDelta else null }
+            lead to oddsMove
+        } else {
+            null to null
+        }
+
         // 8) 候选金额（先按 1 USDC 算预设，深度否决用；最后再用 tier 计算真正金额）
         val candidateAmountForBookCheck = strategy.tailDiffBaseAmount
             .multiply(strategy.tailDiffTierTopMult.max(BigDecimal.ONE))
@@ -261,7 +284,9 @@ class CryptoTailTailDiffDecisionService(
             priceAgeMs = periodPriceProvider.getCurrentPriceAgeMs(strategy.marketSlugPrefix),
             reverseVelocitySigmaPerSec = reverseVelocity,
             reverseVelocityReason = velocity.reason,
-            candidateAmountUsdc = candidateAmountForBookCheck
+            candidateAmountUsdc = candidateAmountForBookCheck,
+            priceLeadMoveSigma = priceLeadMoveSigma,
+            oddsMoveOverWindow = oddsMoveOverWindow
         )
 
         val scoreOutput = scoreEngine.evaluate(input, effStrategy)
@@ -360,8 +385,16 @@ class CryptoTailTailDiffDecisionService(
         }
         confirmCounter.invalidate(key)
 
-        // 13) 分层金额 + 退出预设冻结
-        val sizing = sizingPolicy.computeAmount(strategy, tier, spendableBalance)
+        // 13) 分层金额 + 退出预设冻结（V72：可选叠加 1/10 Kelly 与盘口可成交深度上限）
+        val availableDepthUsd = input.bidDepthUsd.min(input.askDepthUsd)
+        val sizing = sizingPolicy.computeAmount(
+            strategy = strategy,
+            tier = tier,
+            spendableBalance = spendableBalance,
+            modelProb = modelProb,
+            effectiveCost = effectiveCost,
+            availableDepthUsd = availableDepthUsd
+        )
         if (sizing.amountUsdc <= BigDecimal.ZERO) {
             return skip(
                 strategy, periodStartUnix, outcomeIndex,

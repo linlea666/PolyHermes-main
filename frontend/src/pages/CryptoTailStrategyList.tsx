@@ -87,7 +87,20 @@ const TAIL_DIFF_DEFAULTS = {
   tailDiffDailyLossLimitUsdc: undefined as string | undefined,
   tailDiffConsecLossPauseCount: 2,
   tailDiffConsecLossStopCount: 3,
-  tailDiffEntrySegmentsJson: ''
+  tailDiffEntrySegmentsJson: '',
+  // ===== 评分增强（V72）：默认值 = 后端默认（零回归）=====
+  tailDiffOddsLagMode: 'STATIC',
+  tailDiffOddsLagWindowSeconds: 5,
+  tailDiffLagPriceMoveFullScaleSigma: '0.5',
+  tailDiffLagOddsMoveFullScale: '0.05',
+  tailDiffEdgeFullScale: '0.10',
+  tailDiffLagFullScale: '0.15',
+  tailDiffHistoryProbFloor: '0.90',
+  tailDiffHistoryProbCeil: '1.00',
+  tailDiffSigmaScoreMultiple: '3.0',
+  tailDiffEnableKellyCap: false,
+  tailDiffKellyFraction: '0.10',
+  tailDiffDepthFillRatio: '0'
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -135,7 +148,19 @@ const buildTailDiffFormValues = (record: CryptoTailStrategyDto): typeof TAIL_DIF
   tailDiffDailyLossLimitUsdc: record.tailDiffDailyLossLimitUsdc ?? TAIL_DIFF_DEFAULTS.tailDiffDailyLossLimitUsdc,
   tailDiffConsecLossPauseCount: record.tailDiffConsecLossPauseCount ?? TAIL_DIFF_DEFAULTS.tailDiffConsecLossPauseCount,
   tailDiffConsecLossStopCount: record.tailDiffConsecLossStopCount ?? TAIL_DIFF_DEFAULTS.tailDiffConsecLossStopCount,
-  tailDiffEntrySegmentsJson: record.tailDiffEntrySegmentsJson ?? TAIL_DIFF_DEFAULTS.tailDiffEntrySegmentsJson
+  tailDiffEntrySegmentsJson: record.tailDiffEntrySegmentsJson ?? TAIL_DIFF_DEFAULTS.tailDiffEntrySegmentsJson,
+  tailDiffOddsLagMode: record.tailDiffOddsLagMode ?? TAIL_DIFF_DEFAULTS.tailDiffOddsLagMode,
+  tailDiffOddsLagWindowSeconds: record.tailDiffOddsLagWindowSeconds ?? TAIL_DIFF_DEFAULTS.tailDiffOddsLagWindowSeconds,
+  tailDiffLagPriceMoveFullScaleSigma: record.tailDiffLagPriceMoveFullScaleSigma ?? TAIL_DIFF_DEFAULTS.tailDiffLagPriceMoveFullScaleSigma,
+  tailDiffLagOddsMoveFullScale: record.tailDiffLagOddsMoveFullScale ?? TAIL_DIFF_DEFAULTS.tailDiffLagOddsMoveFullScale,
+  tailDiffEdgeFullScale: record.tailDiffEdgeFullScale ?? TAIL_DIFF_DEFAULTS.tailDiffEdgeFullScale,
+  tailDiffLagFullScale: record.tailDiffLagFullScale ?? TAIL_DIFF_DEFAULTS.tailDiffLagFullScale,
+  tailDiffHistoryProbFloor: record.tailDiffHistoryProbFloor ?? TAIL_DIFF_DEFAULTS.tailDiffHistoryProbFloor,
+  tailDiffHistoryProbCeil: record.tailDiffHistoryProbCeil ?? TAIL_DIFF_DEFAULTS.tailDiffHistoryProbCeil,
+  tailDiffSigmaScoreMultiple: record.tailDiffSigmaScoreMultiple ?? TAIL_DIFF_DEFAULTS.tailDiffSigmaScoreMultiple,
+  tailDiffEnableKellyCap: record.tailDiffEnableKellyCap ?? TAIL_DIFF_DEFAULTS.tailDiffEnableKellyCap,
+  tailDiffKellyFraction: record.tailDiffKellyFraction ?? TAIL_DIFF_DEFAULTS.tailDiffKellyFraction,
+  tailDiffDepthFillRatio: record.tailDiffDepthFillRatio ?? TAIL_DIFF_DEFAULTS.tailDiffDepthFillRatio
 })
 
 const numOrUndef = (x: unknown): number | undefined => (x != null && x !== '' ? Number(x) : undefined)
@@ -211,7 +236,19 @@ const buildTailDiffPayload = (v: Record<string, unknown>): CryptoTailTailDiffPar
   tailDiffDailyLossLimitUsdc: strOrEmpty(v.tailDiffDailyLossLimitUsdc),
   tailDiffConsecLossPauseCount: numOrUndef(v.tailDiffConsecLossPauseCount),
   tailDiffConsecLossStopCount: numOrUndef(v.tailDiffConsecLossStopCount),
-  tailDiffEntrySegmentsJson: strOrEmpty(v.tailDiffEntrySegmentsJson)
+  tailDiffEntrySegmentsJson: strOrEmpty(v.tailDiffEntrySegmentsJson),
+  tailDiffOddsLagMode: strOrUndef(v.tailDiffOddsLagMode),
+  tailDiffOddsLagWindowSeconds: numOrUndef(v.tailDiffOddsLagWindowSeconds),
+  tailDiffLagPriceMoveFullScaleSigma: strOrUndef(v.tailDiffLagPriceMoveFullScaleSigma),
+  tailDiffLagOddsMoveFullScale: strOrUndef(v.tailDiffLagOddsMoveFullScale),
+  tailDiffEdgeFullScale: strOrUndef(v.tailDiffEdgeFullScale),
+  tailDiffLagFullScale: strOrUndef(v.tailDiffLagFullScale),
+  tailDiffHistoryProbFloor: strOrUndef(v.tailDiffHistoryProbFloor),
+  tailDiffHistoryProbCeil: strOrUndef(v.tailDiffHistoryProbCeil),
+  tailDiffSigmaScoreMultiple: strOrUndef(v.tailDiffSigmaScoreMultiple),
+  tailDiffEnableKellyCap: typeof v.tailDiffEnableKellyCap === 'boolean' ? v.tailDiffEnableKellyCap : undefined,
+  tailDiffKellyFraction: strOrUndef(v.tailDiffKellyFraction),
+  tailDiffDepthFillRatio: strOrUndef(v.tailDiffDepthFillRatio)
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -2954,6 +2991,44 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.tailDiffScoreTuneSubsection')}</Typography.Text>
+              </Form.Item>
+              <Alert type="info" showIcon style={{ marginBottom: 12 }} message={t('cryptoTailStrategy.form.tailDiffScoreTuneHint')} />
+              <Form.Item name="tailDiffOddsLagMode" label={t('cryptoTailStrategy.form.tailDiffOddsLagMode')}>
+                <Select
+                  options={[
+                    { value: 'STATIC', label: t('cryptoTailStrategy.form.tailDiffOddsLagModeStatic') },
+                    { value: 'DYNAMIC', label: t('cryptoTailStrategy.form.tailDiffOddsLagModeDynamic') },
+                    { value: 'HYBRID', label: t('cryptoTailStrategy.form.tailDiffOddsLagModeHybrid') }
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item name="tailDiffOddsLagWindowSeconds" label={t('cryptoTailStrategy.form.tailDiffOddsLagWindowSeconds')}>
+                <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="tailDiffLagPriceMoveFullScaleSigma" label={t('cryptoTailStrategy.form.tailDiffLagPriceMoveFullScaleSigma')}>
+                <InputNumber min={0} step={0.1} style={{ width: '100%' }} addonAfter="σ" stringMode />
+              </Form.Item>
+              <Form.Item name="tailDiffLagOddsMoveFullScale" label={t('cryptoTailStrategy.form.tailDiffLagOddsMoveFullScale')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="tailDiffEdgeFullScale" label={t('cryptoTailStrategy.form.tailDiffEdgeFullScale')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="tailDiffLagFullScale" label={t('cryptoTailStrategy.form.tailDiffLagFullScale')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="tailDiffHistoryProbFloor" label={t('cryptoTailStrategy.form.tailDiffHistoryProbFloor')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="tailDiffHistoryProbCeil" label={t('cryptoTailStrategy.form.tailDiffHistoryProbCeil')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="tailDiffSigmaScoreMultiple" label={t('cryptoTailStrategy.form.tailDiffSigmaScoreMultiple')}>
+                <InputNumber min={1} step={0.5} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+
+              <Form.Item style={{ marginBottom: 8 }}>
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.tailDiffTierSubsection')}</Typography.Text>
               </Form.Item>
               <Form.Item name="tailDiffMinEntryScore" label={t('cryptoTailStrategy.form.tailDiffMinEntryScore')} rules={[{ required: true }]}>
@@ -2979,6 +3054,16 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="tailDiffMaxAmountPerOrder" label={t('cryptoTailStrategy.form.tailDiffMaxAmountPerOrder')} rules={[{ required: true }]}>
                 <InputNumber min={0} step={1} style={{ width: '100%' }} addonBefore="$" stringMode />
+              </Form.Item>
+              <Alert type="info" showIcon style={{ marginBottom: 12 }} message={t('cryptoTailStrategy.form.tailDiffSizingCapHint')} />
+              <Form.Item name="tailDiffEnableKellyCap" label={t('cryptoTailStrategy.form.tailDiffEnableKellyCap')} valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="tailDiffKellyFraction" label={t('cryptoTailStrategy.form.tailDiffKellyFraction')}>
+                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="tailDiffDepthFillRatio" label={t('cryptoTailStrategy.form.tailDiffDepthFillRatio')}>
+                <InputNumber min={0} step={0.1} style={{ width: '100%' }} stringMode />
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>

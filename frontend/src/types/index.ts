@@ -1657,6 +1657,19 @@ export interface CryptoTailStrategyDto {
   tailDiffConsecLossPauseCount?: number
   tailDiffConsecLossStopCount?: number
   tailDiffEntrySegmentsJson?: string
+  // ===== 尾盘价差评分增强（V72）=====
+  tailDiffOddsLagMode?: string
+  tailDiffOddsLagWindowSeconds?: number
+  tailDiffLagPriceMoveFullScaleSigma?: string
+  tailDiffLagOddsMoveFullScale?: string
+  tailDiffEdgeFullScale?: string
+  tailDiffLagFullScale?: string
+  tailDiffHistoryProbFloor?: string
+  tailDiffHistoryProbCeil?: string
+  tailDiffSigmaScoreMultiple?: string
+  tailDiffEnableKellyCap?: boolean
+  tailDiffKellyFraction?: string
+  tailDiffDepthFillRatio?: string
   createdAt: number
   updatedAt: number
 }
@@ -1707,6 +1720,19 @@ export interface CryptoTailTailDiffParams {
   tailDiffConsecLossPauseCount?: number
   tailDiffConsecLossStopCount?: number
   tailDiffEntrySegmentsJson?: string
+  // ===== 尾盘价差评分增强（V72）=====
+  tailDiffOddsLagMode?: string
+  tailDiffOddsLagWindowSeconds?: number
+  tailDiffLagPriceMoveFullScaleSigma?: string
+  tailDiffLagOddsMoveFullScale?: string
+  tailDiffEdgeFullScale?: string
+  tailDiffLagFullScale?: string
+  tailDiffHistoryProbFloor?: string
+  tailDiffHistoryProbCeil?: string
+  tailDiffSigmaScoreMultiple?: string
+  tailDiffEnableKellyCap?: boolean
+  tailDiffKellyFraction?: string
+  tailDiffDepthFillRatio?: string
 }
 
 /** 历史反转回填请求（samplingSeconds：1=尾盘 1s 细采样，60=1m 默认） */
