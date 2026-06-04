@@ -50,6 +50,8 @@ data class CryptoTailStrategyCreateRequest(
     val entryOrderType: String? = null,
     /** FAK 进场限价滑点上限（V53）：最终限价受 EV 安全最高价和 maxEntryPrice/bracketMaxEntryPrice 共同约束，默认 0.02 */
     val entryFakSlippage: String? = null,
+    /** FAK 退出限价滑点（V66，全局）：FAK 卖出限价 = bestBid - exitFakSlippage，默认 0.02 */
+    val exitFakSlippage: String? = null,
     /** maker 挂单相对 bestBid 价格偏移(可负) */
     val makerPriceOffset: String? = null,
     /** maker 距结算多少秒未成交触发撤单决策 */
@@ -199,7 +201,8 @@ data class CryptoTailStrategyCreateRequest(
     val tailDiffExitPresetTopJson: String? = null,
     val tailDiffDailyLossLimitUsdc: String? = null,
     val tailDiffConsecLossPauseCount: Int? = null,
-    val tailDiffConsecLossStopCount: Int? = null
+    val tailDiffConsecLossStopCount: Int? = null,
+    val tailDiffEntrySegmentsJson: String? = null
 )
 
 /**
@@ -237,6 +240,8 @@ data class CryptoTailStrategyUpdateRequest(
     val entryOrderType: String? = null,
     /** FAK 进场限价滑点（V53） */
     val entryFakSlippage: String? = null,
+    /** FAK 退出限价滑点（V66，全局） */
+    val exitFakSlippage: String? = null,
     val makerPriceOffset: String? = null,
     val makerCancelBeforeSettleSeconds: Int? = null,
     val makerFallbackTaker: Boolean? = null,
@@ -373,7 +378,8 @@ data class CryptoTailStrategyUpdateRequest(
     val tailDiffExitPresetTopJson: String? = null,
     val tailDiffDailyLossLimitUsdc: String? = null,
     val tailDiffConsecLossPauseCount: Int? = null,
-    val tailDiffConsecLossStopCount: Int? = null
+    val tailDiffConsecLossStopCount: Int? = null,
+    val tailDiffEntrySegmentsJson: String? = null
 )
 
 /**
@@ -424,6 +430,8 @@ data class CryptoTailStrategyDto(
     val entryOrderType: String = "FAK",
     /** FAK 进场限价滑点上限（V53）：最终限价受 EV 安全最高价和 maxEntryPrice/bracketMaxEntryPrice 共同约束 */
     val entryFakSlippage: String = "0.02",
+    /** FAK 退出限价滑点（V66，全局） */
+    val exitFakSlippage: String = "0.02",
     /** maker 挂单相对 bestBid 价格偏移 */
     val makerPriceOffset: String = "0",
     /** maker 距结算多少秒未成交触发撤单决策 */
@@ -582,6 +590,7 @@ data class CryptoTailStrategyDto(
     val tailDiffDailyLossLimitUsdc: String? = null,
     val tailDiffConsecLossPauseCount: Int = 2,
     val tailDiffConsecLossStopCount: Int = 3,
+    val tailDiffEntrySegmentsJson: String? = null,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )

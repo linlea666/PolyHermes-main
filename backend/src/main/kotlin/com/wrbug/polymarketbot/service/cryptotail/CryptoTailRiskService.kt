@@ -1,6 +1,8 @@
 package com.wrbug.polymarketbot.service.cryptotail
 
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
+import com.wrbug.polymarketbot.entity.CryptoTailStrategyTrigger
+import com.wrbug.polymarketbot.enums.TradingMode
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
 import org.slf4j.LoggerFactory
@@ -42,8 +44,12 @@ class CryptoTailRiskService(
     fun checkRiskGate(strategy: CryptoTailStrategy): RiskResult {
         val strategyId = strategy.id ?: return RiskResult.PASS
 
-        // 日亏熔断
-        val lossLimit = strategy.dailyLossLimitUsdc
+        // 日亏熔断（TAIL_DIFF 优先用专属阈值 tailDiffDailyLossLimitUsdc，为 null 时回退全局 dailyLossLimitUsdc）
+        val lossLimit = if (strategy.mode == TradingMode.TAIL_DIFF) {
+            strategy.tailDiffDailyLossLimitUsdc ?: strategy.dailyLossLimitUsdc
+        } else {
+            strategy.dailyLossLimitUsdc
+        }
         if (lossLimit != null && lossLimit > BigDecimal.ZERO) {
             val startOfDayMs = LocalDate.now(ZoneId.systemDefault())
                 .atStartOfDay(ZoneId.systemDefault())
@@ -93,6 +99,13 @@ class CryptoTailRiskService(
 
         val latestResolved = triggerRepository.findLatestResolvedByStrategyId(strategyId, PageRequest.of(0, 20))
 
+        // TAIL_DIFF 用专属连亏暂停/当日停策略阈值，替代下方通用 pauseAfterLossMinutes/maxConsecutiveLosses 逻辑，
+        // 避免双重门控与语义冲突；日亏/并发/日订单/账户级风控仍复用上方通用闸。
+        if (strategy.mode == TradingMode.TAIL_DIFF) {
+            checkTailDiffConsecutiveLossGate(strategy, latestResolved, startOfDayMs, nowMs)?.let { return it }
+            return RiskResult.PASS
+        }
+
         val pauseAfterLossMinutes = strategy.pauseAfterLossMinutes
         if (pauseAfterLossMinutes > 0) {
             val latest = latestResolved.firstOrNull()
@@ -122,6 +135,51 @@ class CryptoTailRiskService(
         }
 
         return RiskResult.PASS
+    }
+
+    /**
+     * TAIL_DIFF 专属连亏闸：
+     *  - 连亏达 tailDiffConsecLossStopCount → 当日停策略（拦截后无法再下单，等同当天熔断到日终）。
+     *  - 连亏达 tailDiffConsecLossPauseCount（但未达 stop）→ 在 pauseAfterLossMinutes 冷却窗内暂停，冷却到期自动恢复。
+     * 连亏 streak 以"今日已结算触发记录、按结算时间倒序的最近连续亏损笔数"计；一旦出现盈利则归零。
+     */
+    private fun checkTailDiffConsecutiveLossGate(
+        strategy: CryptoTailStrategy,
+        latestResolved: List<CryptoTailStrategyTrigger>,
+        startOfDayMs: Long,
+        nowMs: Long
+    ): RiskResult? {
+        val strategyId = strategy.id
+        // 仅统计今日已结算的记录（新的一天自动重置；latestResolved 已按结算时间倒序，最新在前）
+        val todayResolved = latestResolved.filter { (it.settledAt ?: it.createdAt) >= startOfDayMs }
+        val todayLossStreak = todayResolved
+            .takeWhile { (it.realizedPnl ?: BigDecimal.ZERO) < BigDecimal.ZERO }
+            .size
+
+        val stopCount = strategy.tailDiffConsecLossStopCount
+        if (stopCount > 0 && todayLossStreak >= stopCount) {
+            val reason = "TAIL_DIFF 当日连续亏损 $todayLossStreak 达到当日停策略阈值 $stopCount"
+            logger.info("crypto-tail TAIL_DIFF 风控拦截(连亏当日停): strategyId=$strategyId, $reason")
+            return RiskResult(false, "RISK_TAIL_DIFF_CONSEC_STOP", reason)
+        }
+
+        val pauseCount = strategy.tailDiffConsecLossPauseCount
+        if (pauseCount > 0 && todayLossStreak >= pauseCount) {
+            val pauseMinutes = strategy.pauseAfterLossMinutes
+            if (pauseMinutes > 0) {
+                val lastLoss = todayResolved.firstOrNull()
+                val lastLossTs = lastLoss?.settledAt ?: lastLoss?.createdAt
+                if (lastLossTs != null) {
+                    val until = lastLossTs + pauseMinutes * 60_000L
+                    if (nowMs < until) {
+                        val reason = "TAIL_DIFF 连续亏损 $todayLossStreak 达到暂停阈值 $pauseCount，冷却剩余 ${(until - nowMs) / 1000}s"
+                        logger.info("crypto-tail TAIL_DIFF 风控拦截(连亏暂停): strategyId=$strategyId, $reason")
+                        return RiskResult(false, "RISK_TAIL_DIFF_CONSEC_PAUSE", reason)
+                    }
+                }
+            }
+        }
+        return null
     }
 
     private fun checkAccountRiskGate(

@@ -1,10 +1,11 @@
 package com.wrbug.polymarketbot.dto
 
-/** 历史反转回填请求 */
+/** 历史反转回填请求（samplingSeconds：1=尾盘 1s 细采样，60=1m 默认） */
 data class ReversalBackfillRequest(
     val coin: String = "",
     val intervalSeconds: Int = 300,
-    val lookbackDays: Int = 180
+    val lookbackDays: Int = 180,
+    val samplingSeconds: Int = 60
 )
 
 /** 历史反转回填响应 */
@@ -12,6 +13,7 @@ data class ReversalBackfillResponse(
     val coin: String = "",
     val intervalSeconds: Int = 0,
     val lookbackDays: Int = 0,
+    val samplingSeconds: Int = 60,
     val periodsProcessed: Int = 0,
     val observations: Int = 0,
     val bucketsWritten: Int = 0
@@ -61,6 +63,22 @@ data class ReversalStatDto(
     val modelProb: String = "0",
     /** 反转率 0~1 = 1 - modelProb */
     val reversalRate: String = "0",
+    /** 取样间隔（秒）：60=1m，1=尾盘 1s，0=POLYMARKET 原生不规则采样 */
+    val samplingSeconds: Int = 60,
+    /** 去重后贡献该桶的不同周期数 */
+    val distinctPeriodCount: Int = 0,
+    /** 平均最大不利偏移（领先方向胜率口径）；不可用为空串 */
+    val maeAvg: String = "",
+    /** 平均最大有利偏移（领先方向胜率口径）；不可用为空串 */
+    val mfeAvg: String = "",
+    /** 虚拟括号退出先触达 TP 的比例；不可用为空串 */
+    val virtualTpRate: String = "",
+    /** 虚拟括号退出先触达 STOP 的比例；不可用为空串 */
+    val virtualStopRate: String = "",
+    /** 虚拟括号退出净盈利比例；不可用为空串 */
+    val virtualWinRate: String = "",
+    /** 虚拟括号退出每单位平均盈亏；不可用为空串 */
+    val virtualPnlAvg: String = "",
     val computedAt: Long = 0L
 )
 

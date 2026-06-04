@@ -47,6 +47,38 @@ data class CryptoTailReversalStat(
     @Column(name = "model_prob", nullable = false, precision = 20, scale = 8)
     val modelProb: BigDecimal = BigDecimal.ZERO,
 
+    /** 本行回填所用最细取样间隔（秒）：60=旧 1m；1=尾盘 1s 细采样 */
+    @Column(name = "sampling_seconds", nullable = false)
+    val samplingSeconds: Int = 60,
+
+    /** first-satisfy 去重后贡献该桶的不同周期数（每周期对同桶最多计一次） */
+    @Column(name = "distinct_period_count", nullable = false)
+    val distinctPeriodCount: Int = 0,
+
+    /** 平均最大不利偏移（领先方向胜率 p 口径，0~1）；不可用为 null */
+    @Column(name = "mae_avg", precision = 20, scale = 8)
+    val maeAvg: BigDecimal? = null,
+
+    /** 平均最大有利偏移（领先方向胜率 p 口径，0~1）；不可用为 null */
+    @Column(name = "mfe_avg", precision = 20, scale = 8)
+    val mfeAvg: BigDecimal? = null,
+
+    /** 虚拟括号退出：结算前先触达 TP(p>=0.99) 的比例；不可用为 null */
+    @Column(name = "virtual_tp_rate", precision = 20, scale = 8)
+    val virtualTpRate: BigDecimal? = null,
+
+    /** 虚拟括号退出：结算前先触达 STOP(p<=0.70) 的比例；不可用为 null */
+    @Column(name = "virtual_stop_rate", precision = 20, scale = 8)
+    val virtualStopRate: BigDecimal? = null,
+
+    /** 虚拟括号退出净盈利（pnl>0）的比例；不可用为 null */
+    @Column(name = "virtual_win_rate", precision = 20, scale = 8)
+    val virtualWinRate: BigDecimal? = null,
+
+    /** 虚拟括号退出每单位平均盈亏（proceeds - cost）；不可用为 null */
+    @Column(name = "virtual_pnl_avg", precision = 20, scale = 8)
+    val virtualPnlAvg: BigDecimal? = null,
+
     @Column(name = "computed_at", nullable = false)
     val computedAt: Long = 0L,
 

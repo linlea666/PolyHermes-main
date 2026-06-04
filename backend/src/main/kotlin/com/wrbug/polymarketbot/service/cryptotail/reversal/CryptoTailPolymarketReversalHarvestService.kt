@@ -47,7 +47,16 @@ class CryptoTailPolymarketReversalHarvestService(
         val dataSource: String = DATA_SOURCE
     )
 
-    private data class Bucket(var sample: Int = 0, var reversed: Int = 0)
+    private class Bucket {
+        var sample: Int = 0
+        var reversed: Int = 0
+        var maeSum: Double = 0.0
+        var mfeSum: Double = 0.0
+        var tpHit: Int = 0
+        var stopHit: Int = 0
+        var win: Int = 0
+        var pnlSum: Double = 0.0
+    }
     private data class BucketKey(val outcomeIndex: Int, val oddsBucket: String, val remainingBucket: String)
 
     /**
@@ -96,20 +105,48 @@ class CryptoTailPolymarketReversalHarvestService(
             val finalUp = path.points.last().second
             val settledOutcome = if (finalUp >= HALF) 0 else 1
 
+            // 预计算该周期观测点（过滤越界赔率/越界剩余时间）
+            val obsList = ArrayList<ObsPoint>(path.points.size)
             for ((t, upPrice) in path.points) {
                 val remaining = (periodEnd - t).toInt()
                 if (remaining <= 0) continue
                 if (upPrice < BigDecimal.ZERO || upPrice > BigDecimal.ONE) continue
                 val leadOutcome = if (upPrice >= HALF) 0 else 1
-                val favoriteOdds = if (upPrice >= HALF) upPrice else BigDecimal.ONE.subtract(upPrice)
+                obsList.add(ObsPoint(remaining = remaining, leadOutcome = leadOutcome, upPrice = upPrice.toDouble()))
+            }
+            if (obsList.isEmpty()) continue
+
+            // first-satisfy 去重：同周期同桶仅记最早命中的观测点
+            val seenKeysThisPeriod = HashSet<BucketKey>()
+            for (k in obsList.indices) {
+                val obs = obsList[k]
+                val favoriteOdds = if (obs.leadOutcome == 0) BigDecimal(obs.upPrice) else BigDecimal.ONE.subtract(BigDecimal(obs.upPrice))
                 val key = BucketKey(
-                    outcomeIndex = leadOutcome,
+                    outcomeIndex = obs.leadOutcome,
                     oddsBucket = TailDiffBuckets.oddsBucket(favoriteOdds),
-                    remainingBucket = TailDiffBuckets.remainingBucket(remaining)
+                    remainingBucket = TailDiffBuckets.remainingBucket(obs.remaining)
                 )
+                if (!seenKeysThisPeriod.add(key)) continue
+
+                // 领先方向胜率：Up 领先取 up，Down 领先取 1-up
+                val entryPLead = if (obs.leadOutcome == 0) obs.upPrice else 1.0 - obs.upPrice
+                val forwardP = ArrayList<Double>(obsList.size - k - 1)
+                for (j in k + 1 until obsList.size) {
+                    val upj = obsList[j].upPrice
+                    forwardP.add(if (obs.leadOutcome == 0) upj else 1.0 - upj)
+                }
+                val settledLeadWin = obs.leadOutcome == settledOutcome
+                val m = TailReversalMetrics.bracket(entryPLead, forwardP, settledLeadWin)
+
                 val b = buckets.getOrPut(key) { Bucket() }
                 b.sample++
-                if (leadOutcome != settledOutcome) b.reversed++
+                if (!settledLeadWin) b.reversed++
+                b.maeSum += m.mae
+                b.mfeSum += m.mfe
+                if (m.tpHit) b.tpHit++
+                if (m.stopHit) b.stopHit++
+                if (m.win) b.win++
+                b.pnlSum += m.pnl
                 observations++
             }
         }
@@ -134,6 +171,15 @@ class CryptoTailPolymarketReversalHarvestService(
                 sampleCount = b.sample,
                 reversedCount = b.reversed,
                 modelProb = modelProb,
+                // POLYMARKET 用 CLOB 价格历史的原生不规则采样点，无固定取样间隔 → 0 标记
+                samplingSeconds = 0,
+                distinctPeriodCount = b.sample,
+                maeAvg = avg(b.maeSum, b.sample),
+                mfeAvg = avg(b.mfeSum, b.sample),
+                virtualTpRate = rate(b.tpHit, b.sample),
+                virtualStopRate = rate(b.stopHit, b.sample),
+                virtualWinRate = rate(b.win, b.sample),
+                virtualPnlAvg = avg(b.pnlSum, b.sample),
                 computedAt = now,
                 createdAt = now,
                 updatedAt = now
@@ -151,6 +197,14 @@ class CryptoTailPolymarketReversalHarvestService(
             bucketsWritten = rows.size
         )
     }
+
+    private fun avg(sum: Double, count: Int): BigDecimal? =
+        if (count > 0) BigDecimal(sum / count).setScale(8, RoundingMode.HALF_UP) else null
+
+    private fun rate(hit: Int, count: Int): BigDecimal? =
+        if (count > 0) BigDecimal(hit.toDouble() / count).setScale(8, RoundingMode.HALF_UP) else null
+
+    private data class ObsPoint(val remaining: Int, val leadOutcome: Int, val upPrice: Double)
 
     private val HALF = BigDecimal("0.5")
 }

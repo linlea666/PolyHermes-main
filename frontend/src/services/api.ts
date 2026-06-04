@@ -576,6 +576,8 @@ export const apiService = {
       allowBoostWithKelly?: boolean
       /** FAK 进场限价滑点（V53），BARRIER + BRACKET 共用 */
       entryFakSlippage?: string
+      /** FAK 退出限价滑点（V66，全局，所有模式） */
+      exitFakSlippage?: string
       // 阶梯模式（V52）
       mode?: number
       bracketEntryProb?: string
@@ -685,6 +687,8 @@ export const apiService = {
       allowBoostWithKelly?: boolean
       /** FAK 进场限价滑点（V53），BARRIER + BRACKET 共用 */
       entryFakSlippage?: string
+      /** FAK 退出限价滑点（V66，全局，所有模式） */
+      exitFakSlippage?: string
       // 阶梯模式（V52）
       mode?: number
       bracketEntryProb?: string

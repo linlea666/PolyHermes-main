@@ -61,7 +61,8 @@ class CryptoTailBracketExitService(
     private val periodPriceProvider: PeriodPriceProvider,
     private val decisionRecorder: CryptoTailDecisionRecorder,
     private val wickSignalService: CryptoTailWickSignalService,
-    private val tailDiffExitPresetResolver: TailDiffExitPresetResolver
+    private val tailDiffExitPresetResolver: TailDiffExitPresetResolver,
+    private val reverseVelocityTracker: com.wrbug.polymarketbot.service.cryptotail.taildiff.CryptoTailReverseVelocityTracker
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailBracketExitService::class.java)
@@ -262,7 +263,9 @@ class CryptoTailBracketExitService(
         val pWinHolding: BigDecimal,
         val safeRatio: BigDecimal,
         /** 当前价缓存年龄（毫秒）；价源无法提供时为 null。用于 Smart Hard Stop 价源新鲜度复核。 */
-        val priceAgeMs: Long?
+        val priceAgeMs: Long?,
+        /** 持仓中"向 open 方向反抽"的速度（σ/s）；非反抽或样本不足时为 0。仅 TAIL_DIFF 动态退出消费。 */
+        val reverseVelocitySigmaPerSec: BigDecimal = BigDecimal.ZERO
     ) {
         /**
          * 价源是否新鲜（用于智能硬止损豁免）：年龄非空且 <= maxPriceAgeMs（maxPriceAgeMs<=0 视为关闭限制=新鲜）。
@@ -294,13 +297,26 @@ class CryptoTailBracketExitService(
         ) ?: return null
         val r = BarrierProbability.winProbTerminal(gap, sigma, remaining) ?: return null
         val holdingPWin = if (r.side == trigger.outcomeIndex) r.pWin else BigDecimal.ONE.subtract(r.pWin)
+        // 持仓阶段也持续喂入反抽速度采样：入场 evaluate() 在重复持仓后不再被调用（见 ExecutionService 重复持仓守卫），
+        // 故反抽序列必须在退出评估热路径上补喂，否则 TAIL_DIFF 动态退出的 maxReverseVelocitySigma 永远拿不到样本。
+        val nowMs = System.currentTimeMillis()
+        reverseVelocityTracker.observe(strategy.marketSlugPrefix, closeP, nowMs)
+        val reverseVelocity = reverseVelocityTracker.computeReverseVelocity(
+            marketSlugPrefix = strategy.marketSlugPrefix,
+            outcomeIndex = trigger.outcomeIndex,
+            sigmaPerSqrtS = sigma,
+            windowSeconds = strategy.tailDiffReverseVelocityWindowSeconds,
+            nowMs = nowMs
+        )
+        val reverseVelocitySigmaPerSec = if (reverseVelocity.isReversing) reverseVelocity.velocitySigmaPerSec else BigDecimal.ZERO
         return HoldingState(
             gap = gap,
             modelSide = r.side,
             pWinModel = r.pWin,
             pWinHolding = holdingPWin,
             safeRatio = r.safeRatio,
-            priceAgeMs = periodPriceProvider.getCurrentPriceAgeMs(strategy.marketSlugPrefix)
+            priceAgeMs = periodPriceProvider.getCurrentPriceAgeMs(strategy.marketSlugPrefix),
+            reverseVelocitySigmaPerSec = reverseVelocitySigmaPerSec
         )
     }
 
@@ -513,7 +529,10 @@ class CryptoTailBracketExitService(
         val tier = TailDiffTier.fromLabel(trigger.tier)
         val preset = resolveTailDiffPresetForTrigger(strategy, trigger, tier)
         if (preset.holdToExpiry) {
-            return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[TOP] holdToExpiry=true，持有到结算 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
+            // TOP 不再"无脑持有到结算"：即便 holdToExpiry，仍保留硬危险兜底（minOdds/反抽/价差坍缩/方向翻转），
+            // 仅跳过 modelProb/diffSigma 这类较软的模型衰减退出，避免最大仓位在剧烈反转下零保护。
+            dynamicExitDecision(preset, trigger, holding, bestBid, tier, hardOnly = true)?.let { return it }
+            return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "TOP"}] holdToExpiry=true，持有到结算（已通过硬危险兜底）remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
         }
         val entryFillPrice = trigger.entryFillPrice ?: run {
             val fs = trigger.filledSize
@@ -534,42 +553,8 @@ class CryptoTailBracketExitService(
                 )
             }
         }
-        // 3) DynamicExit：modelProb / diffSigma / bestBid 任一跌破即退出
-        if (preset.dynamicExit.enabled && holding != null) {
-            if (holding.pWinHolding < preset.dynamicExit.minModelProbAfterEntry) {
-                return Decision(
-                    ExitKind.MODEL_INVALID,
-                    BigDecimal.ONE,
-                    "TAIL_DIFF[${tier?.label ?: "?"}] DynamicExit: pWin=${holding.pWinHolding.toPlainString()}<${preset.dynamicExit.minModelProbAfterEntry.toPlainString()}",
-                    clearTp1HoldStartedAt = true
-                )
-            }
-            if (holding.safeRatio < preset.dynamicExit.minDiffSigmaAfterEntry) {
-                return Decision(
-                    ExitKind.MODEL_INVALID,
-                    BigDecimal.ONE,
-                    "TAIL_DIFF[${tier?.label ?: "?"}] DynamicExit: diffSigma=${holding.safeRatio.toPlainString()}<${preset.dynamicExit.minDiffSigmaAfterEntry.toPlainString()}",
-                    clearTp1HoldStartedAt = true
-                )
-            }
-            if (bestBid < preset.dynamicExit.minOddsAfterEntry) {
-                return Decision(
-                    ExitKind.STOP,
-                    BigDecimal.ONE,
-                    "TAIL_DIFF[${tier?.label ?: "?"}] DynamicExit: bestBid=${bestBid.toPlainString()}<${preset.dynamicExit.minOddsAfterEntry.toPlainString()}",
-                    clearTp1HoldStartedAt = true
-                )
-            }
-            // 方向反转视为反抽
-            if (trigger.entryModelSide != null && holding.modelSide != trigger.entryModelSide) {
-                return Decision(
-                    ExitKind.MODEL_FLIP,
-                    BigDecimal.ONE,
-                    "TAIL_DIFF[${tier?.label ?: "?"}] DynamicExit: modelSide flip from ${trigger.entryModelSide} to ${holding.modelSide}",
-                    clearTp1HoldStartedAt = true
-                )
-            }
-        }
+        // 3) DynamicExit：modelProb / diffSigma / bestBid / 价差坍缩 / 反抽 / 方向翻转 任一触发即退出
+        dynamicExitDecision(preset, trigger, holding, bestBid, tier, hardOnly = false)?.let { return it }
         // 4) TpLimit
         if (preset.tpLimit.enabled && bestBid >= preset.tpLimit.price) {
             val ratio = preset.tpLimit.ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
@@ -581,6 +566,87 @@ class CryptoTailBracketExitService(
             )
         }
         return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "?"}] 继续持有 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
+    }
+
+    /**
+     * TAIL_DIFF 动态退出评估（从 decideTailDiffExit 提取，供普通流程与 TOP 持有兜底共用）。
+     *
+     * @param hardOnly true=仅评估"硬危险"条件（minOdds / 价差坍缩 / 反抽 / 方向翻转），跳过 modelProb/diffSigma
+     *                 这类较软的模型衰减退出；用于 holdToExpiry（TOP）档的最小兜底，避免大仓位零保护。
+     *                 false=评估全部动态退出条件（NORMAL/PREMIUM 常规流程）。
+     * @return 命中则返回对应 Decision；未命中或 dynamicExit 关闭/holding 不可用时返回 null。
+     */
+    private fun dynamicExitDecision(
+        preset: TailDiffExitPreset,
+        trigger: CryptoTailStrategyTrigger,
+        holding: HoldingState?,
+        bestBid: BigDecimal,
+        tier: TailDiffTier?,
+        hardOnly: Boolean
+    ): Decision? {
+        if (!preset.dynamicExit.enabled || holding == null) return null
+        val label = tier?.label ?: "?"
+        // 软退出（模型衰减）：仅在非 hardOnly 时评估
+        if (!hardOnly && holding.pWinHolding < preset.dynamicExit.minModelProbAfterEntry) {
+            return Decision(
+                ExitKind.MODEL_INVALID,
+                BigDecimal.ONE,
+                "TAIL_DIFF[$label] DynamicExit: pWin=${holding.pWinHolding.toPlainString()}<${preset.dynamicExit.minModelProbAfterEntry.toPlainString()}",
+                clearTp1HoldStartedAt = true
+            )
+        }
+        if (!hardOnly && holding.safeRatio < preset.dynamicExit.minDiffSigmaAfterEntry) {
+            return Decision(
+                ExitKind.MODEL_INVALID,
+                BigDecimal.ONE,
+                "TAIL_DIFF[$label] DynamicExit: diffSigma=${holding.safeRatio.toPlainString()}<${preset.dynamicExit.minDiffSigmaAfterEntry.toPlainString()}",
+                clearTp1HoldStartedAt = true
+            )
+        }
+        // 硬危险：bestBid 跌破 minOdds
+        if (bestBid < preset.dynamicExit.minOddsAfterEntry) {
+            return Decision(
+                ExitKind.STOP,
+                BigDecimal.ONE,
+                "TAIL_DIFF[$label] DynamicExit: bestBid=${bestBid.toPlainString()}<${preset.dynamicExit.minOddsAfterEntry.toPlainString()}",
+                clearTp1HoldStartedAt = true
+            )
+        }
+        // 价差坍缩：相对入场 diffSigma 回撤比例超过 maxDiffRetracePct（入场快照 trigger.diffSigma 为 ground truth）
+        val entryDiffSigma = trigger.diffSigma
+        if (entryDiffSigma != null && entryDiffSigma > BigDecimal.ZERO && preset.dynamicExit.maxDiffRetracePct > BigDecimal.ZERO) {
+            val retrace = entryDiffSigma.subtract(holding.safeRatio)
+                .divide(entryDiffSigma, 8, RoundingMode.HALF_UP)
+            if (retrace > preset.dynamicExit.maxDiffRetracePct) {
+                return Decision(
+                    ExitKind.MODEL_INVALID,
+                    BigDecimal.ONE,
+                    "TAIL_DIFF[$label] DynamicExit: diffRetrace=${retrace.toPlainString()}>${preset.dynamicExit.maxDiffRetracePct.toPlainString()} (entryDiffSigma=${entryDiffSigma.toPlainString()}, current=${holding.safeRatio.toPlainString()})",
+                    clearTp1HoldStartedAt = true
+                )
+            }
+        }
+        // 快速反抽：持仓中向 open 方向反抽速度超过 maxReverseVelocitySigma（σ/s）
+        if (preset.dynamicExit.maxReverseVelocitySigma > BigDecimal.ZERO &&
+            holding.reverseVelocitySigmaPerSec > preset.dynamicExit.maxReverseVelocitySigma
+        ) {
+            return Decision(
+                ExitKind.STOP,
+                BigDecimal.ONE,
+                "TAIL_DIFF[$label] DynamicExit: reverseVelocity=${holding.reverseVelocitySigmaPerSec.toPlainString()}σ/s>${preset.dynamicExit.maxReverseVelocitySigma.toPlainString()}",
+                clearTp1HoldStartedAt = true
+            )
+        }
+        // 方向反转视为反抽
+        if (trigger.entryModelSide != null && holding.modelSide != trigger.entryModelSide) {
+            return Decision(
+                ExitKind.MODEL_FLIP,
+                BigDecimal.ONE,
+                "TAIL_DIFF[$label] DynamicExit: modelSide flip from ${trigger.entryModelSide} to ${holding.modelSide}",
+                clearTp1HoldStartedAt = true
+            )
+        }
+        return null
     }
 
     /**
@@ -621,6 +687,7 @@ class CryptoTailBracketExitService(
         val tpRaw = raw["tp_limit"] as? Map<String, Any?> ?: emptyMap()
         val slRaw = raw["stop_loss"] as? Map<String, Any?> ?: emptyMap()
         val dynRaw = raw["dynamic_exit"] as? Map<String, Any?> ?: emptyMap()
+        val execRaw = raw["execution"] as? Map<String, Any?> ?: emptyMap()
         return TailDiffExitPreset(
             holdToExpiry = anyBool(raw["hold_to_expiry"], default.holdToExpiry),
             tpLimit = TailDiffExitPreset.TpLimit(
@@ -641,8 +708,20 @@ class CryptoTailBracketExitService(
                 minModelProbAfterEntry = anyBd(dynRaw["min_model_prob_after_entry"], default.dynamicExit.minModelProbAfterEntry),
                 minOddsAfterEntry = anyBd(dynRaw["min_odds_after_entry"], default.dynamicExit.minOddsAfterEntry),
                 maxReverseVelocitySigma = anyBd(dynRaw["max_reverse_velocity_sigma"], default.dynamicExit.maxReverseVelocitySigma)
+            ),
+            execution = TailDiffExitPreset.Execution(
+                tpSlippage = anyBdOrNull(execRaw["tp_slippage"]) ?: default.execution.tpSlippage,
+                stopSlippage = anyBdOrNull(execRaw["stop_slippage"]) ?: default.execution.stopSlippage,
+                worstPrice = anyBdOrNull(execRaw["worst_price"]) ?: default.execution.worstPrice
             )
         )
+    }
+
+    private fun anyBdOrNull(v: Any?): BigDecimal? = when (v) {
+        is BigDecimal -> v
+        is Number -> BigDecimal(v.toString())
+        is String -> if (v.isBlank()) null else v.toSafeBigDecimal()
+        else -> null
     }
 
     private fun checkTakeProfitLiquidity(
@@ -719,7 +798,7 @@ class CryptoTailBracketExitService(
                     waitReason = "EXIT_QUOTE_STALE"
                 )
             }
-            val exitPrice = computeExitPrice("FAK", bestBid)
+            val exitPrice = computeExitPrice("FAK", bestBid, strategy.exitFakSlippage)
             val executable = snapshot.executableBidSizeAtBestOrBetter(exitPrice, targetSize)
                 .setScale(sizeDecimalScale, RoundingMode.DOWN)
                 .min(targetSize)
@@ -994,16 +1073,21 @@ class CryptoTailBracketExitService(
      *         避免直接挂 bestBid 立即被对手 taker 吃掉成 taker（postOnly 会拒绝触发死循环）。
      *         此处 +0.01 是 1 个 tick，让 sell 单稳定停在卖盘队尾，等待价格上行被吃。
      */
-    private fun computeExitPrice(orderType: String, bestBid: BigDecimal): BigDecimal {
+    private fun computeExitPrice(
+        orderType: String,
+        bestBid: BigDecimal,
+        slippage: BigDecimal = EXIT_FAK_SLIPPAGE
+    ): BigDecimal {
+        val fakSlippage = slippage.max(BigDecimal.ZERO)
         return when (orderType.uppercase()) {
-            "FAK" -> bestBid.subtract(EXIT_FAK_SLIPPAGE)
+            "FAK" -> bestBid.subtract(fakSlippage)
                 .setScale(PRICE_SCALE, RoundingMode.DOWN)
                 .max(MIN_PRICE)
             "MAKER", "GTC", "GTC_POST_ONLY" -> bestBid.add(MAKER_OFFSET)
                 .setScale(PRICE_SCALE, RoundingMode.DOWN)
                 .min(MAX_PRICE)
                 .max(MIN_PRICE)
-            else -> bestBid.subtract(EXIT_FAK_SLIPPAGE)
+            else -> bestBid.subtract(fakSlippage)
                 .setScale(PRICE_SCALE, RoundingMode.DOWN)
                 .max(MIN_PRICE)
         }
@@ -1040,10 +1124,27 @@ class CryptoTailBracketExitService(
         val orderType = when (kind) {
             ExitKind.STOP, ExitKind.HARD_STOP, ExitKind.MODEL_INVALID, ExitKind.MODEL_FLIP,
             ExitKind.GAP_FLIP, ExitKind.TRAILING_STOP, ExitKind.WICK_REVERSAL, ExitKind.FORCE -> "FAK"
-            ExitKind.TP1, ExitKind.TP2 -> if (strategy.exitOrderType.uppercase() == "MAKER") "GTC" else "FAK"
+            // TAIL_DIFF 退出一律 FAK：避免止盈走 GTC 挂单后，后续止损被 pending 守卫阻塞无法抢占（OCO 缺口）。
+            // 其他模式维持原行为（MAKER 配置走 GTC，由 Reconciler 负责超时撤改）。
+            ExitKind.TP1, ExitKind.TP2 ->
+                if (strategy.mode != TradingMode.TAIL_DIFF && strategy.exitOrderType.uppercase() == "MAKER") "GTC" else "FAK"
             ExitKind.SETTLE -> "FAK"  // 不应到这（SETTLE 由 SettlementService 处理）
         }
-        val exitPrice = computeExitPrice(orderType, bestBid)
+        // TAIL_DIFF：用入场冻结预设的 execution 块覆盖退出滑点（按 TP/STOP 分别取），并应用 worstPrice 绝对底线；
+        // 其他模式与未配置时回退全局 strategy.exitFakSlippage（行为不变）。
+        val (effExitSlippage, worstPriceFloor) = if (strategy.mode == TradingMode.TAIL_DIFF) {
+            val preset = resolveTailDiffPresetForTrigger(strategy, trigger, TailDiffTier.fromLabel(trigger.tier))
+            val isTp = kind == ExitKind.TP1 || kind == ExitKind.TP2
+            val slip = (if (isTp) preset.execution.tpSlippage else preset.execution.stopSlippage) ?: strategy.exitFakSlippage
+            slip to preset.execution.worstPrice
+        } else {
+            strategy.exitFakSlippage to null
+        }
+        var exitPrice = computeExitPrice(orderType, bestBid, effExitSlippage)
+        // worstPrice：FAK 卖出限价不得低于该底线（限价被抬高 → 低于底线时不成交，避免滑点把仓位贱卖）
+        if (orderType.uppercase() == "FAK" && worstPriceFloor != null && worstPriceFloor > BigDecimal.ZERO) {
+            exitPrice = exitPrice.max(worstPriceFloor.setScale(PRICE_SCALE, RoundingMode.DOWN))
+        }
         val sizeStr = targetSize.toPlainString()
 
         val signedOrder = try {

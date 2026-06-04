@@ -363,3 +363,55 @@ HYBRID   : 样本足 → HYBRID_STATS（历史）；否则 HYBRID_FALLBACK（Bar
 3. 跑 BINANCE 反转回填（180 天），可选跑 Polymarket PoC 做双源对比。
 4. 用参数建议器查看分桶与推荐，手动微调阈值后保存。
 5. 关闭 SHADOW、以最小金额实盘灰度，结合每日盈亏/连亏风控观察。
+
+---
+
+## 15. 实盘审查后的增强（P0/P1 + 入场分段 + 退出滑点）
+
+### 15.1 P0 风控与动态退出补线
+- **TAIL_DIFF 风控参数接线**（`CryptoTailRiskService`）：`tailDiffDailyLossLimitUsdc` 在 TAIL_DIFF 模式覆盖全局日亏限额（为空回退全局）；`tailDiffConsecLossPauseCount/StopCount` 通过 `checkTailDiffConsecutiveLossGate` 生效（此前定义未接线）。
+- **动态退出条件强制执行**（`CryptoTailBracketExitService.decideTailDiffExit` → `dynamicExitDecision`）：`maxReverseVelocitySigma`（反抽速度过快）与 `maxDiffRetracePct`（价差/σ 回撤过深）此前配置未读取，现已纳入退出判定。
+- **反抽速度状态喂数**：`CryptoTailReverseVelocityTracker` 此前仅在入场评估喂数，持仓期无数据。现于 `computeHoldingState` 内 `observe()`，使持仓期速度退出可触发。
+
+### 15.2 P1 安全网与 OCO 规避
+- **TOP 档（holdToExpiry）安全网**：原 `holdToExpiry=true` 对不利波动零保护。现 `dynamicExitDecision(hardOnly=true)` 允许 `minOddsAfterEntry`/`maxReverseVelocitySigma`/`maxDiffRetracePct`/模型方向翻转等硬条件在持有到结算下仍触发退出（不引入硬止盈）。
+- **强制 FAK 退出规避 OCO 阻塞**：TAIL_DIFF 的 TP1/TP2 一律走 FAK，避免挂单型止盈长期占用 pending 守卫而阻塞止损。
+
+### 15.3 入场分段（copy-overlay）
+- 新增 `tailDiffEntrySegmentsJson`（V65 迁移）。`TailDiffEntrySegmentResolver` 按剩余秒命中分段，`copy()` 覆盖 `{minEntryScore, minDiffSigma, minEdge, hardMaxPrice, window 上下界}` 后交回原 ScoreEngine/分层/退出冻结链路，零回归。
+- `exit_tier_bias`：分段可指定退出分层偏置，覆盖评分分层用于冻结退出预设。
+- 空/NULL 段 → 行为完全不变（单窗口）；非空但 remaining 不落任何段 → `WINDOW_NO_SEGMENT` SKIP（opt-in）。
+- `checkEntryMarketQuality` 用 `windowEnvelope` 取所有段并集做预过滤，确保早窗能通过粗筛。
+
+### 15.4 退出滑点可配
+- **全局**：新增 `exitFakSlippage`（V66 迁移，默认 0.02），`computeExitPrice(orderType, bestBid, slippage)` 接收滑点参数，所有模式 FAK 卖出限价 = `bestBid - exitFakSlippage`（裁剪到合法价格区间）。
+- **TAIL_DIFF 专属覆盖**（退出预设 JSON 内 `execution` 块，随入场快照冻结）：
+  - `tp_slippage` / `stop_slippage`：按 TP / STOP 分别覆盖全局 `exitFakSlippage`（缺省回退全局）。
+  - `worst_price`：FAK 卖出限价绝对底线，`exitPrice = max(bestBid - slippage, worst_price)`；当 `bestBid` 低于底线时 FAK 不成交，避免滑点把仓位贱卖（语义为"宁可不卖，留到结算"）。
+  - 序列化/反序列化已在 `TailDiffExitPreset.toMap()`、`TailDiffExitPresetResolver.parsePreset()` 与 `CryptoTailBracketExitService.parseTailDiffPresetFromMap()` 三处对齐；默认全 null → 行为不变。
+
+> 已显式延后：未成交 FAK 的有界改价重试循环（`max_exit_retries`/`reprice_step`/`reprice_interval_ms`/`reprice_seq`）与对账器，因涉及状态机与并发守卫改造，单独排期。
+
+---
+
+## 16. 历史反转统计精度增强（V67 + 细采样 + 去重 + MAE/MFE/虚拟退出）
+
+### 16.1 数据库与实体
+- V67 在 `crypto_tail_reversal_stat` 追加可加列（旧行/旧查询不受影响）：`sampling_seconds`、`distinct_period_count`、`mae_avg`、`mfe_avg`、`virtual_tp_rate`、`virtual_stop_rate`、`virtual_win_rate`、`virtual_pnl_avg`。实体 [CryptoTailReversalStat.kt](backend/src/main/kotlin/com/wrbug/polymarketbot/entity/CryptoTailReversalStat.kt) 同步新增字段（指标列可空）。
+
+### 16.2 采样与去重
+- **细采样（BINANCE）**：[CryptoTailReversalHarvestService.kt](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/reversal/CryptoTailReversalHarvestService.kt) `backfill` 新增 `samplingSeconds`（默认 60=1m 旧行为；1=1s 细采样）。1s 数据量巨大，自动把回溯天数收敛到 ≤14 天（约 121 万根、1210 页，落在 2000 请求上限内）并告警。Binance 无原生 5s K 线，故仅提供 1s/1m。σ 滑动窗口改为按时间跨度（3600s）自适应步数，1m 下仍为 60 步（向后兼容）。
+- **first-satisfy 去重**：BINANCE 与 POLYMARKET 两个回填器都改为"同一周期对同一桶仅记最早命中的观测点"，消除相邻观测点强相关导致的样本虚高，使 `model_prob` 估计更可信。`distinct_period_count` 记录去重后贡献该桶的周期数。
+
+### 16.3 MAE/MFE 与虚拟括号退出
+- 统一口径在 [TailReversalMetrics.kt](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/reversal/TailReversalMetrics.kt)：以"领先方向胜率 p"为路径变量。
+  - POLYMARKET：p = 真实赔率（领先方向）。
+  - BINANCE：p = `BarrierProbability.winProbTerminal` 推导的终值胜率（同样换算到领先方向）。
+  - MAE/MFE = 入场后相对入场 p 的最大不利/有利偏移。
+  - 虚拟括号退出：成本=入场 p；前瞻路径先触达 TP(p≥0.99) 按 0.99 结清、先触达 STOP(p≤0.70) 按 0.70 结清，否则按结算结清（领先方向赢=1，输=0）。输出 `virtual_tp_rate`/`virtual_stop_rate`/`virtual_win_rate`/`virtual_pnl_avg`。
+
+### 16.4 接口与前端
+- 回填请求 [ReversalBackfillRequest] 增加 `samplingSeconds`；`ReversalStatDto` + CSV 导出新增全部精度列；[控制器](backend/src/main/kotlin/com/wrbug/polymarketbot/controller/cryptotail/CryptoTailReversalResearchController.kt) 透传与映射。
+- 研究弹窗 [CryptoTailReversalResearchModal.tsx](frontend/src/pages/CryptoTailReversalResearchModal.tsx)：新增采样间隔选择（1m/1s）、MAE/MFE/虚拟胜率/TP%/STOP%/单位盈亏列、加权命中率汇总（加权维持概率、加权虚拟胜率、样本总数、低样本分桶数）、低样本分桶标记（橙色 Tag + 行淡化，阈值 30）、以及 POLYMARKET 数据源的 PoC 警示横幅。三语 i18n 已补齐。
+
+> 口径说明：BINANCE 的 MAE/MFE/虚拟退出基于 `winProbTerminal` 概率代理（非真实赔率）；POLYMARKET 基于真实赔率路径但为 PoC 样本。两者均作研究参考，不直接进入实盘下单决策（实盘 modelProb 仍由 ScoreEngine 的 STATS/HYBRID 策略消费 `model_prob`）。

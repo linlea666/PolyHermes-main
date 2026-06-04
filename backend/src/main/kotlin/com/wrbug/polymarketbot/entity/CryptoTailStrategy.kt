@@ -352,6 +352,13 @@ data class CryptoTailStrategy(
     @Column(name = "entry_fak_slippage", nullable = false, precision = 20, scale = 8)
     val entryFakSlippage: BigDecimal = BigDecimal("0.02"),
 
+    /**
+     * FAK 退出限价滑点（V66 引入，全局生效，所有模式）：FAK 卖出限价 = bestBid - exitFakSlippage（向下取整到 tick）。
+     * 镜像 entryFakSlippage：滑点越大越易立即成交。取值范围 [0, 0.10]，默认 0.02。
+     */
+    @Column(name = "exit_fak_slippage", nullable = false, precision = 20, scale = 8)
+    val exitFakSlippage: BigDecimal = BigDecimal("0.02"),
+
     /** maker 挂单相对 bestBid 的价格偏移(可负)，挂单价=bestBid+offset(不越过bestAsk 以保持 maker, 并封顶 maxEntryPrice)，默认 0=平 bestBid */
     @Column(name = "maker_price_offset", nullable = false, precision = 20, scale = 8)
     val makerPriceOffset: BigDecimal = BigDecimal.ZERO,
@@ -627,6 +634,14 @@ data class CryptoTailStrategy(
     /** 连续 N 笔亏损后熔断到日终 */
     @Column(name = "tail_diff_consec_loss_stop_count", nullable = false)
     val tailDiffConsecLossStopCount: Int = 3,
+
+    /**
+     * 入场分段 JSON（数组）：每段定义剩余时间窗口 [remaining_lo, remaining_hi] 及阈值覆盖
+     * (min_score/min_diff_sigma/min_edge/max_ask) 与可选 exit_tier_bias。
+     * 为空/NULL 时退化为单窗口（windowStart/End），行为完全不变。
+     */
+    @Column(name = "tail_diff_entry_segments_json", columnDefinition = "TEXT")
+    val tailDiffEntrySegmentsJson: String? = null,
 
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,

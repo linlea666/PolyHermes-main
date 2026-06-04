@@ -1474,6 +1474,7 @@ export interface CryptoTailStrategyDto {
   entryOrderType?: string
   /** FAK 进场限价滑点（V53）：limit = effectiveCost + 此值, 封顶 maxEntryPrice/bracketMaxEntryPrice */
   entryFakSlippage?: string
+  exitFakSlippage?: string
   /** maker 挂单相对 bestBid 价格偏移(可负) */
   makerPriceOffset?: string
   /** maker 距结算多少秒未成交触发撤单决策 */
@@ -1655,6 +1656,7 @@ export interface CryptoTailStrategyDto {
   tailDiffDailyLossLimitUsdc?: string
   tailDiffConsecLossPauseCount?: number
   tailDiffConsecLossStopCount?: number
+  tailDiffEntrySegmentsJson?: string
   createdAt: number
   updatedAt: number
 }
@@ -1704,13 +1706,15 @@ export interface CryptoTailTailDiffParams {
   tailDiffDailyLossLimitUsdc?: string
   tailDiffConsecLossPauseCount?: number
   tailDiffConsecLossStopCount?: number
+  tailDiffEntrySegmentsJson?: string
 }
 
-/** 历史反转回填请求 */
+/** 历史反转回填请求（samplingSeconds：1=尾盘 1s 细采样，60=1m 默认） */
 export interface ReversalBackfillRequest {
   coin: string
   intervalSeconds: number
   lookbackDays: number
+  samplingSeconds?: number
 }
 
 /** 历史反转回填响应 */
@@ -1718,6 +1722,7 @@ export interface ReversalBackfillResponse {
   coin: string
   intervalSeconds: number
   lookbackDays: number
+  samplingSeconds: number
   periodsProcessed: number
   observations: number
   bucketsWritten: number
@@ -1811,6 +1816,14 @@ export interface ReversalStatDto {
   reversedCount: number
   modelProb: string
   reversalRate: string
+  samplingSeconds: number
+  distinctPeriodCount: number
+  maeAvg: string
+  mfeAvg: string
+  virtualTpRate: string
+  virtualStopRate: string
+  virtualWinRate: string
+  virtualPnlAvg: string
   computedAt: number
 }
 

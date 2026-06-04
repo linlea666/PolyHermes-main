@@ -38,6 +38,7 @@ class CryptoTailTailDiffDecisionService(
     private val exitPresetResolver: TailDiffExitPresetResolver,
     private val reverseVelocityTracker: CryptoTailReverseVelocityTracker,
     private val reversalStatsLookup: TailReversalStatsLookup,
+    private val entrySegmentResolver: TailDiffEntrySegmentResolver,
     private val decisionRecorder: CryptoTailDecisionRecorder
 ) {
 
@@ -120,6 +121,15 @@ class CryptoTailTailDiffDecisionService(
         val nowSeconds = nowMs / 1000
         val remainingSeconds = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toInt()
 
+        // 0) 入场分段：命中段后用段内窗口/阈值覆盖策略对应字段（copy-overlay），ScoreEngine 照常读取即得分段有效阈值。
+        //    segments 为空 → 默认段(无覆盖)，行为与单窗口完全一致；配置了 segments 但 remaining 不落任何段 → SKIP。
+        val segment = entrySegmentResolver.resolve(strategy, remainingSeconds)
+            ?: return skip(
+                strategy, periodStartUnix, outcomeIndex, listOf("WINDOW_NO_SEGMENT"),
+                "剩余 ${remainingSeconds}s 不在任何入场分段窗口内", remainingSeconds, orderbook
+            )
+        val effStrategy = entrySegmentResolver.applyOverrides(strategy, segment)
+
         // 1) 价源就绪
         if (!periodPriceProvider.isAvailable(strategy.marketSlugPrefix)) {
             return skip(strategy, periodStartUnix, outcomeIndex, listOf("PRICE_SOURCE_NOT_READY"), "价源未就绪", remainingSeconds, orderbook)
@@ -197,7 +207,7 @@ class CryptoTailTailDiffDecisionService(
         val rawAskPrice = bestAsk ?: bestBid.add(strategy.tailDiffCostBuffer)
         val feePerShare = rawAskPrice.multiply(BigDecimal(strategy.takerFeeBps))
             .divide(BigDecimal(10000), 8, RoundingMode.HALF_UP)
-        val effectiveCost = rawAskPrice.add(feePerShare).min(strategy.tailDiffHardMaxPrice)
+        val effectiveCost = rawAskPrice.add(feePerShare).min(effStrategy.tailDiffHardMaxPrice)
         val edge = modelProb.subtract(effectiveCost)
         val midImpliedProb = if (bestAsk != null) bestBid.add(bestAsk).divide(BigDecimal(2), 8, RoundingMode.HALF_UP) else bestBid
 
@@ -245,12 +255,12 @@ class CryptoTailTailDiffDecisionService(
             candidateAmountUsdc = candidateAmountForBookCheck
         )
 
-        val scoreOutput = scoreEngine.evaluate(input, strategy)
+        val scoreOutput = scoreEngine.evaluate(input, effStrategy)
         val tier = scoreOutput.tier
 
         // 9) 评分日志（每 5s 一次，所有 tick 都参与候选，但不刷库）
         recordScoreSnapshot(
-            strategy, periodStartUnix, outcomeIndex, scoreOutput, input,
+            effStrategy, periodStartUnix, outcomeIndex, scoreOutput, input,
             tier = tier, source = modelProbSource, statsResult = statsResult,
             remainingSeconds = remainingSeconds, nowMs = nowMs
         )
@@ -292,7 +302,7 @@ class CryptoTailTailDiffDecisionService(
                 score = scoreOutput.score,
                 tier = null,
                 passed = false,
-                reason = "分数=${scoreOutput.score}<minEntryScore=${strategy.tailDiffMinEntryScore}",
+                reason = "分数=${scoreOutput.score}<minEntryScore=${effStrategy.tailDiffMinEntryScore}",
                 components = scoreOutput.component,
                 rawComponents = scoreOutput.rawComponentScores,
                 diffSigma = diffSigma,
@@ -354,15 +364,18 @@ class CryptoTailTailDiffDecisionService(
                 remainingSeconds, orderbook
             )
         }
-        val (preset, presetJson) = exitPresetResolver.resolveAndFreeze(strategy, tier)
+        // 退出分层：段内 exit_tier_bias 优先（如早窗用 PREMIUM 的 0.98 止盈+动态止损，而非 TOP 持有到结算）；
+        // 仓位仍按评分分层 tier 计算，仅退出预设按 bias 档冻结。
+        val exitTier = entrySegmentResolver.resolveExitTier(segment, tier)
+        val (preset, presetJson) = exitPresetResolver.resolveAndFreeze(strategy, exitTier)
 
         // 14) BUY 决策日志
         recordBuyDecision(
-            strategy, periodStartUnix, outcomeIndex, scoreOutput, input,
+            effStrategy, periodStartUnix, outcomeIndex, scoreOutput, input,
             tier = tier, source = modelProbSource, statsResult = statsResult,
             remainingSeconds = remainingSeconds,
             amountUsdc = sizing.amountUsdc, tierMultiplier = sizing.effectiveMultiplier,
-            limitPriceCap = strategy.tailDiffHardMaxPrice,
+            limitPriceCap = effStrategy.tailDiffHardMaxPrice,
             shadowMode = strategy.tailDiffShadowMode,
             nowMs = nowMs
         )
@@ -373,7 +386,7 @@ class CryptoTailTailDiffDecisionService(
             tier = tier,
             passed = true,
             amountUsdc = sizing.amountUsdc,
-            limitPriceCap = strategy.tailDiffHardMaxPrice,
+            limitPriceCap = effStrategy.tailDiffHardMaxPrice,
             exitPreset = preset,
             exitPresetJson = presetJson,
             diffSigma = diffSigma,

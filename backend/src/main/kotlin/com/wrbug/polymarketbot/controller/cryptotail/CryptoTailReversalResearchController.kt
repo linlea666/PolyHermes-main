@@ -52,7 +52,7 @@ class CryptoTailReversalResearchController(
             return ResponseEntity.ok(ApiResponse.error(ErrorCode.REVERSAL_RESEARCH_PARAM_INVALID, messageSource = messageSource))
         }
         return try {
-            val summary = harvestService.backfill(coin, request.intervalSeconds, request.lookbackDays)
+            val summary = harvestService.backfill(coin, request.intervalSeconds, request.lookbackDays, request.samplingSeconds)
                 ?: return ResponseEntity.ok(ApiResponse.error(ErrorCode.REVERSAL_RESEARCH_NO_DATA, messageSource = messageSource))
             ResponseEntity.ok(
                 ApiResponse.success(
@@ -60,6 +60,7 @@ class CryptoTailReversalResearchController(
                         coin = summary.coin,
                         intervalSeconds = summary.intervalSeconds,
                         lookbackDays = summary.lookbackDays,
+                        samplingSeconds = summary.samplingSeconds,
                         periodsProcessed = summary.periodsProcessed,
                         observations = summary.observations,
                         bucketsWritten = summary.bucketsWritten
@@ -133,10 +134,10 @@ class CryptoTailReversalResearchController(
                     coin, request.intervalSeconds, request.lookbackDays, request.dataSource.ifBlank { "BINANCE" }
                 )
             val sb = StringBuilder()
-            sb.append("coin,interval_seconds,outcome_index,diff_sigma_bucket,odds_bucket,remaining_bucket,lookback_days,data_source,sample_count,reversed_count,model_prob,reversal_rate\n")
+            sb.append("coin,interval_seconds,outcome_index,diff_sigma_bucket,odds_bucket,remaining_bucket,lookback_days,data_source,sampling_seconds,sample_count,distinct_period_count,reversed_count,model_prob,reversal_rate,mae_avg,mfe_avg,virtual_tp_rate,virtual_stop_rate,virtual_win_rate,virtual_pnl_avg\n")
             for (r in rows) {
                 val dto = r.toDto()
-                sb.append("${dto.coin},${dto.intervalSeconds},${dto.outcomeIndex},${dto.diffSigmaBucket},${dto.oddsBucket},${dto.remainingBucket},${dto.lookbackDays},${dto.dataSource},${dto.sampleCount},${dto.reversedCount},${dto.modelProb},${dto.reversalRate}\n")
+                sb.append("${dto.coin},${dto.intervalSeconds},${dto.outcomeIndex},${dto.diffSigmaBucket},${dto.oddsBucket},${dto.remainingBucket},${dto.lookbackDays},${dto.dataSource},${dto.samplingSeconds},${dto.sampleCount},${dto.distinctPeriodCount},${dto.reversedCount},${dto.modelProb},${dto.reversalRate},${dto.maeAvg},${dto.mfeAvg},${dto.virtualTpRate},${dto.virtualStopRate},${dto.virtualWinRate},${dto.virtualPnlAvg}\n")
             }
             val filename = "reversal_${coin}_${request.intervalSeconds}s_${request.lookbackDays}d.csv"
             ResponseEntity.ok(ApiResponse.success(ReversalResearchCsvResponse(filename = filename, csv = sb.toString(), total = rows.size)))
@@ -161,6 +162,14 @@ class CryptoTailReversalResearchController(
             reversedCount = reversedCount,
             modelProb = modelProb.toPlainString(),
             reversalRate = reversalRate.toPlainString(),
+            samplingSeconds = samplingSeconds,
+            distinctPeriodCount = distinctPeriodCount,
+            maeAvg = maeAvg?.toPlainString() ?: "",
+            mfeAvg = mfeAvg?.toPlainString() ?: "",
+            virtualTpRate = virtualTpRate?.toPlainString() ?: "",
+            virtualStopRate = virtualStopRate?.toPlainString() ?: "",
+            virtualWinRate = virtualWinRate?.toPlainString() ?: "",
+            virtualPnlAvg = virtualPnlAvg?.toPlainString() ?: "",
             computedAt = computedAt
         )
     }

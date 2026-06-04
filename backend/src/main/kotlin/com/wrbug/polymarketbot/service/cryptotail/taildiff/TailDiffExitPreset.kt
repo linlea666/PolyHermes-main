@@ -28,7 +28,9 @@ data class TailDiffExitPreset(
     /** 固定止损：bestBid <= entryFillPrice * (1 - offset) 或 bestBid <= minPrice 时止损 */
     val stopLoss: StopLoss = StopLoss(),
     /** 动态条件退出：盘中 modelProb/diffSigma/赔率/反抽速度触发 */
-    val dynamicExit: DynamicExit = DynamicExit()
+    val dynamicExit: DynamicExit = DynamicExit(),
+    /** 退出执行参数：FAK 退出滑点（按 TP/STOP 分别覆盖全局 exitFakSlippage）与最差成交价底线 */
+    val execution: Execution = Execution()
 ) {
     data class TpLimit(
         val enabled: Boolean = true,
@@ -62,6 +64,18 @@ data class TailDiffExitPreset(
         val maxReverseVelocitySigma: BigDecimal = BigDecimal("0.40")
     )
 
+    /**
+     * 退出执行参数（TAIL_DIFF 专属覆盖，均为可选，null=继承全局 exitFakSlippage / 不启用）：
+     *  - tpSlippage：止盈(TP1/TP2) FAK 卖出滑点覆盖；
+     *  - stopSlippage：止损(STOP/HARD_STOP/MODEL_xxx 等) FAK 卖出滑点覆盖；
+     *  - worstPrice：FAK 卖出限价绝对底线（exitPrice = max(bestBid - slippage, worstPrice)），防滑点把限价压到不合理低位。
+     */
+    data class Execution(
+        val tpSlippage: BigDecimal? = null,
+        val stopSlippage: BigDecimal? = null,
+        val worstPrice: BigDecimal? = null
+    )
+
     /** 用于 trigger.exitPresetJson 落库的简洁 Map（保留全部精度） */
     fun toMap(): Map<String, Any> = mapOf(
         "hold_to_expiry" to holdToExpiry,
@@ -83,7 +97,12 @@ data class TailDiffExitPreset(
             "min_model_prob_after_entry" to dynamicExit.minModelProbAfterEntry.toPlainString(),
             "min_odds_after_entry" to dynamicExit.minOddsAfterEntry.toPlainString(),
             "max_reverse_velocity_sigma" to dynamicExit.maxReverseVelocitySigma.toPlainString()
-        )
+        ),
+        "execution" to buildMap {
+            execution.tpSlippage?.let { put("tp_slippage", it.toPlainString()) }
+            execution.stopSlippage?.let { put("stop_slippage", it.toPlainString()) }
+            execution.worstPrice?.let { put("worst_price", it.toPlainString()) }
+        }
     )
 }
 
@@ -128,6 +147,7 @@ class TailDiffExitPresetResolver {
         val tpLimitRaw = raw["tp_limit"] as? Map<String, Any?> ?: emptyMap()
         val stopLossRaw = raw["stop_loss"] as? Map<String, Any?> ?: emptyMap()
         val dynamicRaw = raw["dynamic_exit"] as? Map<String, Any?> ?: emptyMap()
+        val executionRaw = raw["execution"] as? Map<String, Any?> ?: emptyMap()
         return TailDiffExitPreset(
             holdToExpiry = raw["hold_to_expiry"].asBool(default.holdToExpiry),
             tpLimit = TailDiffExitPreset.TpLimit(
@@ -148,8 +168,20 @@ class TailDiffExitPresetResolver {
                 minModelProbAfterEntry = dynamicRaw["min_model_prob_after_entry"].asBigDecimal(default.dynamicExit.minModelProbAfterEntry),
                 minOddsAfterEntry = dynamicRaw["min_odds_after_entry"].asBigDecimal(default.dynamicExit.minOddsAfterEntry),
                 maxReverseVelocitySigma = dynamicRaw["max_reverse_velocity_sigma"].asBigDecimal(default.dynamicExit.maxReverseVelocitySigma)
+            ),
+            execution = TailDiffExitPreset.Execution(
+                tpSlippage = executionRaw["tp_slippage"].asBigDecimalOrNull() ?: default.execution.tpSlippage,
+                stopSlippage = executionRaw["stop_slippage"].asBigDecimalOrNull() ?: default.execution.stopSlippage,
+                worstPrice = executionRaw["worst_price"].asBigDecimalOrNull() ?: default.execution.worstPrice
             )
         )
+    }
+
+    private fun Any?.asBigDecimalOrNull(): BigDecimal? = when (this) {
+        is BigDecimal -> this
+        is Number -> BigDecimal(this.toString())
+        is String -> if (this.isBlank()) null else this.toSafeBigDecimal()
+        else -> null
     }
 
     private fun Any?.asBool(default: Boolean): Boolean = when (this) {
@@ -194,11 +226,13 @@ class TailDiffExitPresetResolver {
             )
         )
         TailDiffTier.TOP -> TailDiffExitPreset(
+            // 持有到结算为主，但开启动态退出作为"硬危险兜底"：退出评估在 holdToExpiry 下以 hardOnly 模式
+            // 仅触发 minOdds/价差坍缩/反抽/方向翻转，剧烈反转时仍能止损，避免最大仓位零保护。
             holdToExpiry = true,
             tpLimit = TailDiffExitPreset.TpLimit(enabled = false, price = BigDecimal.ONE, ratio = BigDecimal.ONE),
             stopLoss = TailDiffExitPreset.StopLoss(enabled = false, offset = BigDecimal("0.40"), minPrice = BigDecimal("0.50"), ratio = BigDecimal.ONE),
             dynamicExit = TailDiffExitPreset.DynamicExit(
-                enabled = false,
+                enabled = true,
                 minDiffSigmaAfterEntry = BigDecimal("0.5"),
                 maxDiffRetracePct = BigDecimal("0.80"),
                 minModelProbAfterEntry = BigDecimal("0.80"),

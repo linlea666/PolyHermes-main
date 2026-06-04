@@ -95,7 +95,8 @@ class CryptoTailStrategyExecutionService(
     private val wickSignalService: CryptoTailWickSignalService,
     private val orderbookSnapshotFetcher: CryptoTailOrderbookSnapshotFetcher,
     private val boostService: CryptoTailBoostService,
-    private val tailDiffDecisionService: CryptoTailTailDiffDecisionService
+    private val tailDiffDecisionService: CryptoTailTailDiffDecisionService,
+    private val tailDiffEntrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailStrategyExecutionService::class.java)
@@ -670,10 +671,14 @@ class CryptoTailStrategyExecutionService(
         val nowMs = System.currentTimeMillis()
         val nowSeconds = nowMs / 1000
         val remainingSeconds = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toInt()
-        // TAIL_DIFF 用独立窗口：tailDiffMinRemainingSeconds（默认 50）到 tailDiffWindowStartSeconds（默认 150）；
+        // TAIL_DIFF 用独立窗口：未配置入场分段时取 tailDiffMinRemainingSeconds~tailDiffWindowStartSeconds（默认 50~150）；
+        // 配置了分段则取所有段的窗口包络 [min(remaining_lo), max(remaining_hi)]，避免早窗候选被预过滤误拦。
         // 其他模式沿用 BARRIER/BRACKET 的 minRemainingSeconds/maxRemainingSeconds 全周期窗口。
-        val effMinRemaining = if (strategy.mode == TradingMode.TAIL_DIFF) strategy.tailDiffMinRemainingSeconds else strategy.minRemainingSeconds
-        val effMaxRemaining = if (strategy.mode == TradingMode.TAIL_DIFF) strategy.tailDiffWindowStartSeconds else strategy.maxRemainingSeconds
+        val (effMinRemaining, effMaxRemaining) = if (strategy.mode == TradingMode.TAIL_DIFF) {
+            tailDiffEntrySegmentResolver.windowEnvelope(strategy)
+        } else {
+            strategy.minRemainingSeconds to strategy.maxRemainingSeconds
+        }
         val belowMinRemaining = effMinRemaining > 0 && remainingSeconds < effMinRemaining
         val aboveMaxRemaining = effMaxRemaining > 0 && remainingSeconds > effMaxRemaining
         if (belowMinRemaining || aboveMaxRemaining) {

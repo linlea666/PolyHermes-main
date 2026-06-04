@@ -83,7 +83,8 @@ const TAIL_DIFF_DEFAULTS = {
   tailDiffExitPresetTopJson: '',
   tailDiffDailyLossLimitUsdc: undefined as string | undefined,
   tailDiffConsecLossPauseCount: 2,
-  tailDiffConsecLossStopCount: 3
+  tailDiffConsecLossStopCount: 3,
+  tailDiffEntrySegmentsJson: ''
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -130,7 +131,8 @@ const buildTailDiffFormValues = (record: CryptoTailStrategyDto): typeof TAIL_DIF
   tailDiffExitPresetTopJson: record.tailDiffExitPresetTopJson ?? TAIL_DIFF_DEFAULTS.tailDiffExitPresetTopJson,
   tailDiffDailyLossLimitUsdc: record.tailDiffDailyLossLimitUsdc ?? TAIL_DIFF_DEFAULTS.tailDiffDailyLossLimitUsdc,
   tailDiffConsecLossPauseCount: record.tailDiffConsecLossPauseCount ?? TAIL_DIFF_DEFAULTS.tailDiffConsecLossPauseCount,
-  tailDiffConsecLossStopCount: record.tailDiffConsecLossStopCount ?? TAIL_DIFF_DEFAULTS.tailDiffConsecLossStopCount
+  tailDiffConsecLossStopCount: record.tailDiffConsecLossStopCount ?? TAIL_DIFF_DEFAULTS.tailDiffConsecLossStopCount,
+  tailDiffEntrySegmentsJson: record.tailDiffEntrySegmentsJson ?? TAIL_DIFF_DEFAULTS.tailDiffEntrySegmentsJson
 })
 
 const numOrUndef = (x: unknown): number | undefined => (x != null && x !== '' ? Number(x) : undefined)
@@ -180,7 +182,8 @@ const buildTailDiffPayload = (v: Record<string, unknown>): CryptoTailTailDiffPar
   tailDiffExitPresetTopJson: strOrUndef(v.tailDiffExitPresetTopJson),
   tailDiffDailyLossLimitUsdc: strOrUndef(v.tailDiffDailyLossLimitUsdc),
   tailDiffConsecLossPauseCount: numOrUndef(v.tailDiffConsecLossPauseCount),
-  tailDiffConsecLossStopCount: numOrUndef(v.tailDiffConsecLossStopCount)
+  tailDiffConsecLossStopCount: numOrUndef(v.tailDiffConsecLossStopCount),
+  tailDiffEntrySegmentsJson: strOrUndef(v.tailDiffEntrySegmentsJson)
 })
 
 const CryptoTailStrategyList: React.FC = () => {
@@ -338,6 +341,7 @@ const CryptoTailStrategyList: React.FC = () => {
       gasCostUsdc: '0',
       entryOrderType: 'FAK',
       entryFakSlippage: '0.02',
+      exitFakSlippage: '0.02',
       makerPriceOffset: '0',
       makerCancelBeforeSettleSeconds: 5,
       makerFallbackTaker: false,
@@ -461,6 +465,7 @@ const CryptoTailStrategyList: React.FC = () => {
       gasCostUsdc: record.gasCostUsdc ?? '0',
       entryOrderType: record.entryOrderType ?? 'FAK',
       entryFakSlippage: record.entryFakSlippage ?? '0.02',
+      exitFakSlippage: record.exitFakSlippage ?? '0.02',
       makerPriceOffset: record.makerPriceOffset ?? '0',
       makerCancelBeforeSettleSeconds: record.makerCancelBeforeSettleSeconds ?? 5,
       makerFallbackTaker: record.makerFallbackTaker ?? false,
@@ -721,6 +726,7 @@ const CryptoTailStrategyList: React.FC = () => {
         takerFeeBps: v.takerFeeBps != null ? Number(v.takerFeeBps) : undefined,
         gasCostUsdc: v.gasCostUsdc != null ? String(v.gasCostUsdc) : undefined,
         entryFakSlippage: v.entryFakSlippage != null ? String(v.entryFakSlippage) : undefined,
+        exitFakSlippage: v.exitFakSlippage != null ? String(v.exitFakSlippage) : undefined,
         sigmaMethod: v.sigmaMethod != null ? String(v.sigmaMethod) : undefined,
         ewmaLambda: v.ewmaLambda != null ? String(v.ewmaLambda) : undefined,
         minSafeRatio: v.minSafeRatio != null ? String(v.minSafeRatio) : undefined,
@@ -2371,6 +2377,31 @@ const CryptoTailStrategyList: React.FC = () => {
               >
                 <InputNumber min={0} max={0.1} step={0.01} style={{ width: '100%' }} stringMode />
               </Form.Item>
+              <Form.Item
+                name="exitFakSlippage"
+                label={
+                  <Space size={4}>
+                    <span>{t('cryptoTailStrategy.form.exitFakSlippage')}</span>
+                    <Tooltip title={t('cryptoTailStrategy.form.exitFakSlippageTip')}>
+                      <InfoCircleOutlined style={{ color: '#999', cursor: 'help', fontSize: 14 }} />
+                    </Tooltip>
+                  </Space>
+                }
+                rules={[
+                  {
+                    validator: (_, value) => {
+                      if (value == null || value === '') return Promise.resolve()
+                      const n = Number(value)
+                      if (Number.isNaN(n) || n < 0 || n > 0.1) {
+                        return Promise.reject(new Error(t('cryptoTailStrategy.form.exitFakSlippageTip')))
+                      }
+                      return Promise.resolve()
+                    }
+                  }
+                ]}
+              >
+                <InputNumber min={0} max={0.1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
               {isBarrierMode && (
                 <>
                   <Form.Item
@@ -2664,6 +2695,34 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="tailDiffConfirmTicks" label={t('cryptoTailStrategy.form.tailDiffConfirmTicks')} rules={[{ required: true }]}>
                 <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item
+                name="tailDiffEntrySegmentsJson"
+                label={t('cryptoTailStrategy.form.tailDiffEntrySegmentsJson')}
+                extra={t('cryptoTailStrategy.form.tailDiffEntrySegmentsHelp')}
+                rules={[{
+                  validator: (_rule, value) => {
+                    if (!value || !String(value).trim()) return Promise.resolve()
+                    try {
+                      const arr = JSON.parse(value)
+                      if (!Array.isArray(arr) || arr.length === 0) {
+                        return Promise.reject(new Error(t('cryptoTailStrategy.form.tailDiffEntrySegmentsInvalid')))
+                      }
+                      for (const seg of arr) {
+                        const hi = Number(seg?.remaining_hi)
+                        const lo = Number(seg?.remaining_lo)
+                        if (!Number.isFinite(hi) || !Number.isFinite(lo) || lo < 0 || hi < lo) {
+                          return Promise.reject(new Error(t('cryptoTailStrategy.form.tailDiffEntrySegmentsInvalid')))
+                        }
+                      }
+                      return Promise.resolve()
+                    } catch {
+                      return Promise.reject(new Error(t('cryptoTailStrategy.form.tailDiffEntrySegmentsInvalid')))
+                    }
+                  }
+                }]}
+              >
+                <Input.TextArea rows={4} placeholder={t('cryptoTailStrategy.form.tailDiffEntrySegmentsPlaceholder')} />
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>

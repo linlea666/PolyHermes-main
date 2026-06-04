@@ -33,7 +33,8 @@ class CryptoTailStrategyService(
     private val tradeSnapshotRepository: CryptoTailTradeSnapshotRepository,
     private val calibrationService: CryptoTailCalibrationService,
     private val eventPublisher: ApplicationEventPublisher,
-    private val exitRepository: CryptoTailStrategyExitRepository
+    private val exitRepository: CryptoTailStrategyExitRepository,
+    private val entrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailStrategyService::class.java)
@@ -105,6 +106,10 @@ class CryptoTailStrategyService(
             val gasCostUsdc = request.gasCostUsdc?.toSafeBigDecimal() ?: BigDecimal.ZERO
             val entryOrderType = (request.entryOrderType ?: "FAK").trim().uppercase()
             val entryFakSlippage = request.entryFakSlippage?.toSafeBigDecimal() ?: BigDecimal("0.02")
+            val exitFakSlippage = request.exitFakSlippage?.toSafeBigDecimal() ?: BigDecimal("0.02")
+            if (!isEntryFakSlippageValid(exitFakSlippage)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.PARAM_ERROR.messageKey))
+            }
             val makerPriceOffset = request.makerPriceOffset?.toSafeBigDecimal() ?: BigDecimal.ZERO
             val makerCancelBeforeSettleSeconds = request.makerCancelBeforeSettleSeconds ?: 5
             val makerFallbackTaker = request.makerFallbackTaker ?: false
@@ -262,6 +267,7 @@ class CryptoTailStrategyService(
                 gasCostUsdc = gasCostUsdc,
                 entryOrderType = entryOrderType,
                 entryFakSlippage = entryFakSlippage,
+                exitFakSlippage = exitFakSlippage,
                 makerPriceOffset = makerPriceOffset,
                 makerCancelBeforeSettleSeconds = makerCancelBeforeSettleSeconds,
                 makerFallbackTaker = makerFallbackTaker,
@@ -396,7 +402,8 @@ class CryptoTailStrategyService(
                 tailDiffExitPresetTopJson = td.exitPresetTopJson,
                 tailDiffDailyLossLimitUsdc = td.dailyLossLimitUsdc,
                 tailDiffConsecLossPauseCount = td.consecLossPauseCount,
-                tailDiffConsecLossStopCount = td.consecLossStopCount
+                tailDiffConsecLossStopCount = td.consecLossStopCount,
+                tailDiffEntrySegmentsJson = td.entrySegmentsJson
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -466,6 +473,10 @@ class CryptoTailStrategyService(
             val newGasCostUsdc = request.gasCostUsdc?.toSafeBigDecimal() ?: existing.gasCostUsdc
             val newEntryOrderType = (request.entryOrderType?.trim()?.uppercase()) ?: existing.entryOrderType
             val newEntryFakSlippage = request.entryFakSlippage?.toSafeBigDecimal() ?: existing.entryFakSlippage
+            val newExitFakSlippage = request.exitFakSlippage?.toSafeBigDecimal() ?: existing.exitFakSlippage
+            if (!isEntryFakSlippageValid(newExitFakSlippage)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.PARAM_ERROR.messageKey))
+            }
             val newMakerPriceOffset = request.makerPriceOffset?.toSafeBigDecimal() ?: existing.makerPriceOffset
             val newMakerCancelBeforeSettleSeconds = request.makerCancelBeforeSettleSeconds ?: existing.makerCancelBeforeSettleSeconds
             val newMakerFallbackTaker = request.makerFallbackTaker ?: existing.makerFallbackTaker
@@ -621,6 +632,7 @@ class CryptoTailStrategyService(
                 gasCostUsdc = newGasCostUsdc,
                 entryOrderType = newEntryOrderType,
                 entryFakSlippage = newEntryFakSlippage,
+                exitFakSlippage = newExitFakSlippage,
                 makerPriceOffset = newMakerPriceOffset,
                 makerCancelBeforeSettleSeconds = newMakerCancelBeforeSettleSeconds,
                 makerFallbackTaker = newMakerFallbackTaker,
@@ -755,6 +767,7 @@ class CryptoTailStrategyService(
                 tailDiffDailyLossLimitUsdc = td.dailyLossLimitUsdc,
                 tailDiffConsecLossPauseCount = td.consecLossPauseCount,
                 tailDiffConsecLossStopCount = td.consecLossStopCount,
+                tailDiffEntrySegmentsJson = td.entrySegmentsJson,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -1471,7 +1484,8 @@ class CryptoTailStrategyService(
         val exitPresetTopJson: String?,
         val dailyLossLimitUsdc: BigDecimal?,
         val consecLossPauseCount: Int,
-        val consecLossStopCount: Int
+        val consecLossStopCount: Int,
+        val entrySegmentsJson: String?
     )
 
     private fun normalizeTailDiffSource(raw: String?): String {
@@ -1523,7 +1537,8 @@ class CryptoTailStrategyService(
         exitPresetTopJson = r.tailDiffExitPresetTopJson?.takeIf { it.isNotBlank() },
         dailyLossLimitUsdc = r.tailDiffDailyLossLimitUsdc?.takeIf { it.isNotBlank() }?.toSafeBigDecimal(),
         consecLossPauseCount = r.tailDiffConsecLossPauseCount ?: 2,
-        consecLossStopCount = r.tailDiffConsecLossStopCount ?: 3
+        consecLossStopCount = r.tailDiffConsecLossStopCount ?: 3,
+        entrySegmentsJson = r.tailDiffEntrySegmentsJson?.takeIf { it.isNotBlank() }
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -1570,7 +1585,8 @@ class CryptoTailStrategyService(
         exitPresetTopJson = r.tailDiffExitPresetTopJson?.let { it.takeIf { s -> s.isNotBlank() } } ?: e.tailDiffExitPresetTopJson,
         dailyLossLimitUsdc = r.tailDiffDailyLossLimitUsdc?.let { if (it.isBlank()) null else it.toSafeBigDecimal() } ?: e.tailDiffDailyLossLimitUsdc,
         consecLossPauseCount = r.tailDiffConsecLossPauseCount ?: e.tailDiffConsecLossPauseCount,
-        consecLossStopCount = r.tailDiffConsecLossStopCount ?: e.tailDiffConsecLossStopCount
+        consecLossStopCount = r.tailDiffConsecLossStopCount ?: e.tailDiffConsecLossStopCount,
+        entrySegmentsJson = r.tailDiffEntrySegmentsJson?.let { it.takeIf { s -> s.isNotBlank() } } ?: e.tailDiffEntrySegmentsJson
     )
 
     /** TAIL_DIFF 参数校验：价格区间、概率/边际、权重总和、分层阈值递增、方向枚举等 */
@@ -1606,6 +1622,7 @@ class CryptoTailStrategyService(
         if (td.tierNormalMult <= zero || td.tierPremiumMult <= zero || td.tierTopMult <= zero) return false
         td.dailyLossLimitUsdc?.let { if (it < zero) return false }
         if (td.consecLossPauseCount < 0 || td.consecLossStopCount < 0) return false
+        if (!entrySegmentResolver.isValid(td.entrySegmentsJson)) return false
         return true
     }
 
@@ -1648,6 +1665,7 @@ class CryptoTailStrategyService(
             gasCostUsdc = e.gasCostUsdc.toPlainString(),
             entryOrderType = e.entryOrderType,
             entryFakSlippage = e.entryFakSlippage.toPlainString(),
+            exitFakSlippage = e.exitFakSlippage.toPlainString(),
             makerPriceOffset = e.makerPriceOffset.toPlainString(),
             makerCancelBeforeSettleSeconds = e.makerCancelBeforeSettleSeconds,
             makerFallbackTaker = e.makerFallbackTaker,
@@ -1786,6 +1804,7 @@ class CryptoTailStrategyService(
             tailDiffDailyLossLimitUsdc = e.tailDiffDailyLossLimitUsdc?.toPlainString(),
             tailDiffConsecLossPauseCount = e.tailDiffConsecLossPauseCount,
             tailDiffConsecLossStopCount = e.tailDiffConsecLossStopCount,
+            tailDiffEntrySegmentsJson = e.tailDiffEntrySegmentsJson,
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )
