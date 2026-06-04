@@ -254,6 +254,54 @@ class CryptoTailExitOrderReconciler(
             kind == "WICK_REVERSAL"
 
     /**
+     * 抢占式撤单（供 [CryptoTailBracketExitService] 急跌止损抢占调用）：
+     * 立即撤掉一张 pending 退出单，复查实际成交后落终态（部分成交→success，零成交→cancelled），
+     * 并同步 trigger.remainingSize/exitStatus。复用对账同款 [finalizeExit] / [syncTriggerAfterExitFinalized]，
+     * 撤单后以链上/CLOB 实际 sizeMatched 为准回写 remaining，杜绝抢占后重复挂单导致的超卖。
+     *
+     * @return true=已落终态并同步（调用方可据最新 remaining 继续抢占下单）；false=上下文缺失，调用方应放弃本次抢占
+     */
+    suspend fun cancelPendingExitForPreempt(exit: CryptoTailStrategyExit): Boolean {
+        val trigger = triggerRepository.findById(exit.triggerId).orElse(null) ?: return false
+        val periodStartUnix = trigger.periodStartUnix
+        val orderId = exit.orderId
+        if (orderId.isNullOrBlank()) {
+            finalizeExit(exit, "cancelled", null, null, "抢占撤单：缺少 orderId 视为未成交", periodStartUnix)
+            syncTriggerAfterExitFinalized(trigger.id!!)
+            return true
+        }
+        val strategy = strategyRepository.findById(exit.strategyId).orElse(null) ?: return false
+        val ctx = accountContextFactory.build(strategy) ?: return false
+        try {
+            ctx.clobApi.cancelOrder(orderId)
+        } catch (e: Exception) {
+            logger.warn("抢占撤单失败: exitId=${exit.id} orderId=$orderId, ${e.message}")
+        }
+        // 撤单后复查最后成交（与 reconcileOne 同口径）
+        val (matched, price) = try {
+            val after = ctx.clobApi.getOrder(orderId)
+            if (after.isSuccessful) {
+                val b = after.body()
+                (b?.sizeMatched?.toSafeBigDecimal() ?: BigDecimal.ZERO) to
+                    (b?.price?.toSafeBigDecimal() ?: (exit.exitPrice ?: BigDecimal.ZERO))
+            } else {
+                BigDecimal.ZERO to (exit.exitPrice ?: BigDecimal.ZERO)
+            }
+        } catch (e: Exception) {
+            (exit.filledSize ?: BigDecimal.ZERO) to (exit.exitPrice ?: BigDecimal.ZERO)
+        }
+        if (matched > BigDecimal.ZERO) {
+            val fillAmount = matched.multiply(price).setScale(8, RoundingMode.HALF_UP)
+            finalizeExit(exit, "success", matched, fillAmount, "抢占撤单：按部分成交结算", periodStartUnix)
+        } else {
+            finalizeExit(exit, "cancelled", null, null, "抢占撤单：零成交", periodStartUnix)
+        }
+        syncTriggerAfterExitFinalized(trigger.id!!)
+        logger.info("急跌止损抢占撤单完成: exitId=${exit.id} triggerId=${trigger.id} orderId=$orderId matched=${matched.toPlainString()}")
+        return true
+    }
+
+    /**
      * 同步 trigger 的 remainingSize 与 exitStatus：
      *  - sumFilledSize >= 入场 filledSize（或残差 <= DUST_THRESHOLD） → FULLY_EXITED, remainingSize=0
      *  - 0 < sumFilledSize < 入场 filledSize 且残差 > DUST_THRESHOLD → PARTIAL_EXIT

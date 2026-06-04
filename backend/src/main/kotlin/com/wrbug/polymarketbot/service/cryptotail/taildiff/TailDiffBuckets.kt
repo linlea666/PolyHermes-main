@@ -62,21 +62,4 @@ object TailDiffBuckets {
         }
         return if (remainingSeconds < 0) "neg" else "300_INF"
     }
-
-    /** 价差百分比分桶（带符号），便于 UI 展示。 */
-    private val DIFF_PCT_EDGES = listOf(
-        BigDecimal("0") to BigDecimal("0.0010"),
-        BigDecimal("0.0010") to BigDecimal("0.0025"),
-        BigDecimal("0.0025") to BigDecimal("0.0050"),
-        BigDecimal("0.0050") to BigDecimal("0.0100"),
-        BigDecimal("0.0100") to BigDecimal("0.0200")
-    )
-
-    fun diffPctBucket(diffPct: BigDecimal): String {
-        val abs = diffPct.abs()
-        for ((lo, hi) in DIFF_PCT_EDGES) {
-            if (abs >= lo && abs < hi) return "${lo.toPlainString()}_${hi.toPlainString()}"
-        }
-        return "0.0200_INF"
-    }
 }

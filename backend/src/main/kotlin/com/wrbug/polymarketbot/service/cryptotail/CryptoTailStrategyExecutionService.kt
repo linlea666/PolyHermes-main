@@ -510,22 +510,6 @@ class CryptoTailStrategyExecutionService(
                             )
                             return@accountLock
                         }
-                        // SHADOW 模式：评估完成、记决策日志（已由 decisionService 记），不下单
-                        if (decision.shadowMode) {
-                            recordDecisionOncePerPeriod(
-                                strategy, periodStartUnix, "TAIL_DIFF_SHADOW", outcomeIndex,
-                                eventType = "TAIL_DIFF_SHADOW", gateName = decision.tier?.label, passed = true,
-                                reason = "SHADOW 通过评分但不下单: score=${decision.score}, tier=${decision.tier?.label}",
-                                payloadJson = mapOf(
-                                    "score" to decision.score,
-                                    "tier" to (decision.tier?.label ?: ""),
-                                    "amountUsdc" to (decision.amountUsdc?.toPlainString() ?: ""),
-                                    "diffSigma" to (decision.diffSigma?.toPlainString() ?: "")
-                                ).toJson(),
-                                triggerId = null, tokenId = tokenIdForOutcome
-                            )
-                            return@accountLock
-                        }
                         // 冻结快照供 saveTriggerRecord 写入 trigger 新列
                         val tier = decision.tier!!
                         tailDiffEntrySnapshotCache.put(
@@ -905,6 +889,118 @@ class CryptoTailStrategyExecutionService(
     }
 
     /**
+     * TAIL_DIFF 进场前安全复核闸（仅用于 FAK 救单/重签前的最后保底；完整入场决策由 CryptoTailTailDiffDecisionService 负责）。
+     *
+     * 复用 BARRIER 的价源/盘口质量校验与 σ/pWin 内核，但只套 TAIL_DIFF 专属阈值，绝不套 BARRIER 的
+     * entryProb(0.55)、entryEdge、barrierMinMarketProb、highPrice 保护、wick 入场闸（那些是 BARRIER 模式语义）。
+     * TAIL_DIFF 恒 FAK 进场：有效成本 = bestAsk(缺则 bestBid + tailDiffCostBuffer) + taker 费。
+     * 闸：方向一致 / 有效成本<=tailDiffHardMaxPrice / 扣费 edge>=tailDiffMinEdge / pWin>=tailDiffMinModelProb / safeRatio>=tailDiffMinDiffSigma。
+     */
+    private fun evaluateTailDiffEntryGates(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        bestBid: BigDecimal,
+        bestAsk: BigDecimal?,
+        orderbook: OrderbookQualitySnapshot?
+    ): BarrierEval {
+        checkEntryMarketQuality(strategy, periodStartUnix, orderbook)?.let { return it }
+        if (!periodPriceProvider.isAvailable(strategy.marketSlugPrefix)) {
+            val status = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
+            return BarrierEval(false, "PRICE_SOURCE", "价源未就绪: ${status.source}/${status.coin ?: ""}/${status.reason}", statusPayload(status).toJson())
+        }
+        val oc = periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix)
+            ?: run {
+                val status = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
+                return BarrierEval(false, "PRICE_SOURCE", "期初价未就绪: ${status.source}/${status.coin ?: ""}/${status.reason}", statusPayload(status).toJson())
+            }
+        val (openP, closeP) = oc
+        val priceStatus = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
+        val gap = closeP.subtract(openP)
+        val nowSeconds = System.currentTimeMillis() / 1000
+        val remaining = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toDouble()
+        val sigma = periodPriceProvider.getSigmaPerSqrtS(
+            strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix, outcomeIndex, strategy.sigmaScale,
+            strategy.sigmaMethod, strategy.ewmaLambda
+        ) ?: return BarrierEval(false, "PWIN", "σ基准不可用(价源历史样本不足)", null)
+        val r = BarrierProbability.winProbTerminal(gap, sigma, remaining)
+            ?: return BarrierEval(false, "PWIN", "无法计算pWin(剩余时间或σ无效)", null)
+
+        // TAIL_DIFF 恒 FAK 进场：有效成本 = bestAsk(缺则 bestBid + tailDiffCostBuffer) + taker 费
+        val rawPrice = bestAsk ?: bestBid.add(strategy.tailDiffCostBuffer)
+        val feePerShare = rawPrice.multiply(BigDecimal(strategy.takerFeeBps)).divide(BigDecimal(10000), 8, RoundingMode.HALF_UP)
+        val rawEffectiveCost = rawPrice.add(feePerShare)
+        val edge = r.pWin.subtract(rawEffectiveCost)
+        val metrics = BarrierMetrics(
+            gap = gap,
+            open = openP,
+            close = closeP,
+            sigma = sigma,
+            remaining = remaining,
+            pWin = r.pWin,
+            side = r.side,
+            safeRatio = r.safeRatio,
+            effectiveCost = rawEffectiveCost,
+            edge = edge,
+            coin = priceStatus.coin,
+            officialPriceSource = priceStatus.source,
+            officialPriceAgeMs = priceStatus.ageMs,
+            priceReadyReason = priceStatus.reason,
+            priceMode = priceStatus.priceMode,
+            lastSnapshotAt = priceStatus.lastSnapshotAt,
+            lastRealtimeUpdateAt = priceStatus.lastRealtimeUpdateAt,
+            latestPriceAgeMs = priceStatus.latestPriceAgeMs,
+            latestSampleTime = priceStatus.latestSampleTime
+        )
+        val payload = mutableMapOf<String, Any>(
+            "mode" to "TAIL_DIFF",
+            "gap" to gap.toPlainString(),
+            "open" to openP.toPlainString(),
+            "close" to closeP.toPlainString(),
+            "priceReadyReason" to priceStatus.reason,
+            "coin" to (priceStatus.coin ?: ""),
+            "sigmaPerSqrtS" to sigma.toPlainString(),
+            "remainingSeconds" to remaining,
+            "pWin" to r.pWin.toPlainString(),
+            "modelSide" to r.side,
+            "safeRatio" to r.safeRatio.toPlainString(),
+            "bestBid" to bestBid.toPlainString(),
+            "bestAsk" to (bestAsk?.toPlainString() ?: ""),
+            "rawPrice" to rawPrice.toPlainString(),
+            "takerFeeBps" to strategy.takerFeeBps,
+            "feePerShare" to feePerShare.toPlainString(),
+            "effectiveCost" to rawEffectiveCost.toPlainString(),
+            "edge" to edge.toPlainString(),
+            "tailDiffMinModelProb" to strategy.tailDiffMinModelProb.toPlainString(),
+            "tailDiffMinEdge" to strategy.tailDiffMinEdge.toPlainString(),
+            "tailDiffMinDiffSigma" to strategy.tailDiffMinDiffSigma.toPlainString(),
+            "tailDiffHardMaxPrice" to strategy.tailDiffHardMaxPrice.toPlainString(),
+            "maxOrderbookAgeMs" to strategy.maxOrderbookAgeMs,
+            "maxPriceAgeMs" to strategy.maxPriceAgeMs
+        )
+        payload.putAll(readinessDiagnostics(priceStatus))
+        payload.putAll(orderbookPayload(orderbook))
+        fun snapshot(): String = payload.toJson()
+
+        if (r.side != outcomeIndex) {
+            return BarrierEval(false, "DIRECTION", "模型方向=${r.side}与当前outcome=${outcomeIndex}不一致", snapshot(), metrics)
+        }
+        if (rawEffectiveCost > strategy.tailDiffHardMaxPrice) {
+            return BarrierEval(false, "MAX_ENTRY_PRICE", "有效成本=${rawEffectiveCost.toPlainString()}>tailDiffHardMaxPrice=${strategy.tailDiffHardMaxPrice.toPlainString()}", snapshot(), metrics)
+        }
+        if (r.pWin < strategy.tailDiffMinModelProb) {
+            return BarrierEval(false, "PWIN", "pWin=${r.pWin.toPlainString()}<tailDiffMinModelProb=${strategy.tailDiffMinModelProb.toPlainString()}", snapshot(), metrics)
+        }
+        if (r.safeRatio < strategy.tailDiffMinDiffSigma) {
+            return BarrierEval(false, "SAFE_RATIO", "diffSigma=${r.safeRatio.toPlainString()}<tailDiffMinDiffSigma=${strategy.tailDiffMinDiffSigma.toPlainString()}", snapshot(), metrics)
+        }
+        if (edge < strategy.tailDiffMinEdge) {
+            return BarrierEval(false, "EV", "扣费edge=${edge.toPlainString()}<tailDiffMinEdge=${strategy.tailDiffMinEdge.toPlainString()}", snapshot(), metrics)
+        }
+        return BarrierEval(true, "ALL", "通过 TAIL_DIFF 进场安全复核闸", snapshot(), metrics)
+    }
+
+    /**
      * 概率阶梯止盈模式入场闸（BRACKET_DYNAMIC）：与 BARRIER 共用 pWin/EV/方向计算，但闸阈值独立。
      * 决策：
      *  - 方向一致：模型 side == outcomeIndex
@@ -1130,9 +1226,9 @@ class CryptoTailStrategyExecutionService(
                 orderbook.bestAsk,
                 orderbook
             )
-            // TAIL_DIFF 复用 BARRIER 入场闸做 EV 安全限价复算（重新签 FAK 救单时），TailDiffDecisionService 已在分发时通过；
-            // 这里仅做盘口/价源闸的最低保底校验，避免 retryFak 时盘口已 stale 仍下单。
-            TradingMode.TAIL_DIFF -> evaluateBarrierGates(
+            // TAIL_DIFF 用专属安全复核闸（重新签 FAK 救单时），TailDiffDecisionService 已在分发时通过完整决策；
+            // 这里仅做价源/盘口保底 + TAIL_DIFF 专属阈值复核，绝不套 BARRIER 的 entryProb/entryEdge/wick 等阈值。
+            TradingMode.TAIL_DIFF -> evaluateTailDiffEntryGates(
                 strategy,
                 periodStartUnix,
                 outcomeIndex,

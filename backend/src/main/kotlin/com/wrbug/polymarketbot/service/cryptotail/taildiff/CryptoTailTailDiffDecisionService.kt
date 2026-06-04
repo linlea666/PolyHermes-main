@@ -89,7 +89,6 @@ class CryptoTailTailDiffDecisionService(
         val components: CryptoTailScoreEngine.Components? = null,
         val rawComponents: CryptoTailScoreEngine.ComponentScores? = null,
         val confirmTicks: Int = 0,
-        val shadowMode: Boolean = false,
         val candidateOutcomeIndex: Int? = null,
         val candidateOpen: BigDecimal? = null,
         val candidateClose: BigDecimal? = null,
@@ -179,11 +178,13 @@ class CryptoTailTailDiffDecisionService(
             TailReversalStatsLookup.Query(
                 coin = inferCoin(strategy),
                 intervalSeconds = strategy.intervalSeconds,
-                outcomeIndex = outcomeIndex,
+                // 桶以领先方向（leadOutcome）为键，必须用 modelSide 匹配回填语义，而非被评估 token 的 outcomeIndex
+                leadOutcome = modelSide,
                 diffSigma = diffSigma,
                 oddsBucket = TailDiffBuckets.oddsBucket(orderbook.bestBid),
                 remainingBucket = TailDiffBuckets.remainingBucket(remainingSeconds),
-                lookbackDays = strategy.tailDiffStatsLookbackDays
+                lookbackDays = strategy.tailDiffStatsLookbackDays,
+                dataSource = strategy.tailDiffStatsDataSource
             )
         )
         val source = strategy.tailDiffModelProbSource.uppercase()
@@ -199,6 +200,14 @@ class CryptoTailTailDiffDecisionService(
                 if (stats != null && statsResult.sampleCount >= strategy.tailDiffStatsMinSamples) stats to "HYBRID_STATS"
                 else barrierPWin to "HYBRID_FALLBACK"
             }
+        }
+        // 来源/回退可观测：完整快照已随 TAIL_DIFF_SCORE_COMPUTED 落库（modelProbSource/statsSampleCount），
+        // 此处 DEBUG 级补一条即时线索，避免高频 tick 下 INFO 刷屏。
+        if (logger.isDebugEnabled) {
+            logger.debug(
+                "TAIL_DIFF modelProb 来源: strategyId={}, leadOutcome={}, source={}, samples={}/{}, dataSource={}",
+                strategy.id, modelSide, modelProbSource, statsResult.sampleCount, strategy.tailDiffStatsMinSamples, strategy.tailDiffStatsDataSource
+            )
         }
 
         // 6) 有效成本 / edge / midImpliedProb
@@ -284,7 +293,6 @@ class CryptoTailTailDiffDecisionService(
                 modelProb = modelProb,
                 edge = edge,
                 midImpliedProb = midImpliedProb,
-                shadowMode = strategy.tailDiffShadowMode,
                 candidateOutcomeIndex = outcomeIndex,
                 candidateOpen = openP,
                 candidateClose = closeP,
@@ -312,7 +320,6 @@ class CryptoTailTailDiffDecisionService(
                 modelProb = modelProb,
                 edge = edge,
                 midImpliedProb = midImpliedProb,
-                shadowMode = strategy.tailDiffShadowMode,
                 candidateOutcomeIndex = outcomeIndex,
                 candidateOpen = openP,
                 candidateClose = closeP,
@@ -343,7 +350,6 @@ class CryptoTailTailDiffDecisionService(
                 edge = edge,
                 midImpliedProb = midImpliedProb,
                 confirmTicks = ticks,
-                shadowMode = strategy.tailDiffShadowMode,
                 candidateOutcomeIndex = outcomeIndex,
                 candidateOpen = openP,
                 candidateClose = closeP,
@@ -375,9 +381,7 @@ class CryptoTailTailDiffDecisionService(
             tier = tier, source = modelProbSource, statsResult = statsResult,
             remainingSeconds = remainingSeconds,
             amountUsdc = sizing.amountUsdc, tierMultiplier = sizing.effectiveMultiplier,
-            limitPriceCap = effStrategy.tailDiffHardMaxPrice,
-            shadowMode = strategy.tailDiffShadowMode,
-            nowMs = nowMs
+            limitPriceCap = effStrategy.tailDiffHardMaxPrice
         )
 
         return TailDiffDecision(
@@ -401,7 +405,6 @@ class CryptoTailTailDiffDecisionService(
             components = scoreOutput.component,
             rawComponents = scoreOutput.rawComponentScores,
             confirmTicks = ticks,
-            shadowMode = strategy.tailDiffShadowMode,
             candidateOutcomeIndex = outcomeIndex,
             candidateOpen = openP,
             candidateClose = closeP,
@@ -456,8 +459,7 @@ class CryptoTailTailDiffDecisionService(
                 "remainingSeconds" to remainingSeconds,
                 "bestBid" to orderbook.bestBid.toPlainString(),
                 "bestAsk" to (orderbook.bestAsk?.toPlainString() ?: ""),
-                "spread" to (orderbook.spread?.toPlainString() ?: ""),
-                "shadowMode" to strategy.tailDiffShadowMode
+                "spread" to (orderbook.spread?.toPlainString() ?: "")
             ).toJson()
             decisionRecorder.record(
                 CryptoTailDecisionEvent(
@@ -481,7 +483,6 @@ class CryptoTailTailDiffDecisionService(
             passed = false,
             vetoes = vetoes,
             reason = reason,
-            shadowMode = strategy.tailDiffShadowMode,
             candidateOutcomeIndex = outcomeIndex
         )
     }
@@ -531,15 +532,12 @@ class CryptoTailTailDiffDecisionService(
         remainingSeconds: Int,
         amountUsdc: BigDecimal,
         tierMultiplier: BigDecimal,
-        limitPriceCap: BigDecimal,
-        shadowMode: Boolean,
-        nowMs: Long
+        limitPriceCap: BigDecimal
     ) {
         val payload = buildScorePayload(scoreOutput, input, tier, source, statsResult, strategy, remainingSeconds)
             .copy(
                 amountUsdc = amountUsdc.toPlainString(),
                 tierMultiplier = tierMultiplier.toPlainString(),
-                shadowMode = shadowMode.toString(),
                 passed = "true"
             )
         decisionRecorder.record(
@@ -550,7 +548,7 @@ class CryptoTailTailDiffDecisionService(
                 eventType = "TAIL_DIFF_BUY",
                 gateName = tier.label,
                 passed = true,
-                reason = "tier=${tier.label} amount=${amountUsdc.toPlainString()} cap=${limitPriceCap.toPlainString()} shadow=$shadowMode",
+                reason = "tier=${tier.label} amount=${amountUsdc.toPlainString()} cap=${limitPriceCap.toPlainString()}",
                 payloadJson = payload.toJson(),
                 outcomeIndex = outcomeIndex,
                 triggerId = null
@@ -567,6 +565,8 @@ class CryptoTailTailDiffDecisionService(
         strategy: CryptoTailStrategy,
         remainingSeconds: Int
     ): TailDiffScorePayload = TailDiffScorePayload(
+        strategyId = strategy.id?.toString(),
+        marketSlug = strategy.marketSlugPrefix,
         rawDiff = input.rawDiff.toPlainString(),
         diffPct = input.diffPct.toPlainString(),
         diffSigma = input.diffSigma.toPlainString(),
@@ -606,8 +606,7 @@ class CryptoTailTailDiffDecisionService(
         minDiffSigma = strategy.tailDiffMinDiffSigma.toPlainString(),
         minScore = strategy.tailDiffMinEntryScore.toString(),
         statsSampleCount = statsResult.sampleCount.toString(),
-        statsReversalProb = statsResult.modelProb?.toPlainString(),
-        shadowMode = strategy.tailDiffShadowMode.toString()
+        statsReversalProb = statsResult.modelProb?.toPlainString()
     )
 
     private fun inferCoin(strategy: CryptoTailStrategy): String? {

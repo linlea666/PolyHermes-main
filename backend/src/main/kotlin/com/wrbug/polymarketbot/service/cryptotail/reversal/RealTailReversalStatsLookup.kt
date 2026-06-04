@@ -6,14 +6,15 @@ import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 
 /**
- * 历史反转统计的真实实现（数据源 BINANCE）。
+ * 历史反转统计的真实实现（数据源由 [TailReversalStatsLookup.Query.dataSource] 驱动：BINANCE / POLYMARKET）。
  *
  * 作为 [@Component] 注册后，凭借 [com.wrbug.polymarketbot.service.cryptotail.taildiff.TailReversalStatsLookupConfig]
  * 的 `@ConditionalOnMissingBean` 自动取代 Noop 实现，ScoreEngine 无需改动即可拿到历史 modelProb（完成 P3 接线）。
  *
  * 查询策略：
- *  - 精确命中 (coin, interval, outcome, diffSigmaBucket, oddsBucket, remainingBucket, lookbackDays)；
- *  - BINANCE 数据源 oddsBucket 恒为 ANY，故优先用 ANY 兜底匹配；
+ *  - 桶以"领先方向"（leadOutcome=modelSide）为键，故 [TailReversalStatsLookup.Query.leadOutcome] 必须传 modelSide；
+ *  - 精确命中 (coin, interval, leadOutcome, diffSigmaBucket, oddsBucket, remainingBucket, lookbackDays, dataSource)；
+ *  - oddsBucket 先按精确值再回退 ANY（BINANCE 源恒为 ANY）；
  *  - 样本数 < 调用方要求时，仍返回结果但由 ScoreEngine 决定是否回退（本类只负责给得出/给不出）。
  */
 @Component
@@ -23,6 +24,10 @@ class RealTailReversalStatsLookup(
 
     private val logger = LoggerFactory.getLogger(RealTailReversalStatsLookup::class.java)
 
+    private companion object {
+        const val BUCKET_ANY = "ANY"
+    }
+
     override fun queryReversalProb(query: TailReversalStatsLookup.Query): TailReversalStatsLookup.Result {
         val coin = query.coin?.trim()?.uppercase()
         if (coin.isNullOrBlank()) {
@@ -31,9 +36,12 @@ class RealTailReversalStatsLookup(
         // 计算 diffSigma 落入的分桶（与回填时一致）
         val diffSigmaBucket = com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffBuckets.diffSigmaBucket(query.diffSigma)
 
-        // BINANCE 源 oddsBucket=ANY；先按精确 oddsBucket，再回退 ANY
+        // 两种数据源的桶维度不同：BINANCE 按 diffSigma 细分而 oddsBucket=ANY；POLYMARKET 按 odds 细分而 diffSigmaBucket=ANY。
+        // 故按"最细 → 最粗"顺序在 (diffSigma, odds) 两轴上各自回退 ANY，覆盖两种回填口径，无需按 dataSource 分支。
         val row = findBucket(coin, query, diffSigmaBucket, query.oddsBucket)
-            ?: findBucket(coin, query, diffSigmaBucket, "ANY")
+            ?: findBucket(coin, query, diffSigmaBucket, BUCKET_ANY)
+            ?: findBucket(coin, query, BUCKET_ANY, query.oddsBucket)
+            ?: findBucket(coin, query, BUCKET_ANY, BUCKET_ANY)
 
         if (row == null) {
             return TailReversalStatsLookup.Result(null, 0, "FALLBACK", "REVERSAL_STATS_BUCKET_EMPTY")
@@ -55,11 +63,11 @@ class RealTailReversalStatsLookup(
         .findFirstByCoinAndIntervalSecondsAndOutcomeIndexAndDiffSigmaBucketAndOddsBucketAndRemainingBucketAndLookbackDaysAndDataSource(
             coin,
             query.intervalSeconds,
-            query.outcomeIndex,
+            query.leadOutcome,
             diffSigmaBucket,
             oddsBucket,
             query.remainingBucket,
             query.lookbackDays,
-            CryptoTailReversalHarvestService.DATA_SOURCE
+            query.dataSource
         )
 }

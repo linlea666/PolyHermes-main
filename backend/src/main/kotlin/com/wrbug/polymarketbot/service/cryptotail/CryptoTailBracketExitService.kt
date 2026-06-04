@@ -14,6 +14,8 @@ import com.wrbug.polymarketbot.service.copytrading.orders.OrderSigningService
 import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffExitPreset
 import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffExitPresetResolver
 import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffTier
+import com.wrbug.polymarketbot.service.cryptotail.taildiff.pick
+import com.wrbug.polymarketbot.service.cryptotail.taildiff.pickMap
 import com.wrbug.polymarketbot.util.fromJson
 import com.wrbug.polymarketbot.util.toJson
 import com.wrbug.polymarketbot.util.toSafeBigDecimal
@@ -62,7 +64,8 @@ class CryptoTailBracketExitService(
     private val decisionRecorder: CryptoTailDecisionRecorder,
     private val wickSignalService: CryptoTailWickSignalService,
     private val tailDiffExitPresetResolver: TailDiffExitPresetResolver,
-    private val reverseVelocityTracker: com.wrbug.polymarketbot.service.cryptotail.taildiff.CryptoTailReverseVelocityTracker
+    private val reverseVelocityTracker: com.wrbug.polymarketbot.service.cryptotail.taildiff.CryptoTailReverseVelocityTracker,
+    private val exitOrderReconciler: CryptoTailExitOrderReconciler
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailBracketExitService::class.java)
@@ -206,21 +209,40 @@ class CryptoTailBracketExitService(
                 return
             }
 
-            // 已有 pending exit 单：不再挂新单（先让 Reconciler 处理；MAKER 的撤改由 Reconciler 负责）
-            if (exitRepository.countByTriggerIdAndStatus(triggerId, "pending") > 0) {
-                logger.debug("阶梯退出跳过：已有 pending 出场单 triggerId=$triggerId")
-                return
+            // 已有 pending exit 单：
+            //  - 普通退出（TP/TRAILING 等）：不再挂新单，先让 Reconciler 处理（MAKER 的撤改由 Reconciler 负责）。
+            //  - 紧急退出（急跌硬止损/模型失效/方向反转）：抢占——先撤掉未成交退出单并按实际成交回写 remaining，
+            //    再以最新 remaining 直接发 FAK，避免止损被止盈挂单长时间阻塞而错过卖点。
+            val emergency = isEmergencyExit(decision.kind)
+            val pendingExits = exitRepository.findByTriggerIdAndStatus(triggerId, "pending")
+            var effectiveRemaining = freshRemaining
+            if (pendingExits.isNotEmpty()) {
+                if (!emergency) {
+                    logger.debug("阶梯退出跳过：已有 pending 出场单 triggerId=$triggerId")
+                    return
+                }
+                logger.info("急跌止损抢占：撤未成交退出单后再发 ${decision.kind} triggerId=$triggerId pendingCount=${pendingExits.size}")
+                for (pend in pendingExits) {
+                    exitOrderReconciler.cancelPendingExitForPreempt(pend)
+                }
+                // 抢占撤单后重读 remaining（防超卖）
+                val reRead = triggerRepository.findById(triggerId).orElse(null)
+                effectiveRemaining = reRead?.remainingSize ?: freshRemaining
+                if (effectiveRemaining <= DUST_THRESHOLD) {
+                    logger.info("急跌止损抢占：撤单后剩余 <= dust，已无需再卖 triggerId=$triggerId")
+                    return
+                }
             }
 
             // 计算本次目标 size（DOWN 取整避免超卖；至少 0.01；不超过 remainingSize）
-            val targetSize = freshRemaining.multiply(decision.ratio)
+            val targetSize = effectiveRemaining.multiply(decision.ratio)
                 .setScale(sizeDecimalScale, RoundingMode.DOWN)
-                .min(freshRemaining)
+                .min(effectiveRemaining)
             if (targetSize <= BigDecimal.ZERO) {
-                logger.warn("阶梯退出跳过：targetSize=0 triggerId=$triggerId remaining=${freshRemaining.toPlainString()} ratio=${decision.ratio}")
+                logger.warn("阶梯退出跳过：targetSize=0 triggerId=$triggerId remaining=${effectiveRemaining.toPlainString()} ratio=${decision.ratio}")
                 return
             }
-            val sizing = sizeExitForLiquidity(strategy, orderbook, bestBid, targetSize, decision.kind)
+            val sizing = sizeExitForLiquidity(strategy, orderbook, bestBid, targetSize, decision.kind, emergency)
             if (sizing.waitReason != null) {
                 recordEvent(
                     strategy,
@@ -557,6 +579,12 @@ class CryptoTailBracketExitService(
         dynamicExitDecision(preset, trigger, holding, bestBid, tier, hardOnly = false)?.let { return it }
         // 4) TpLimit
         if (preset.tpLimit.enabled && bestBid >= preset.tpLimit.price) {
+            // 去重守卫：部分止盈(ratio<1)时价格维持在止盈线上会反复命中本分支，
+            // 复用 hasExitOfKind(TP1) 确保 TP1 仅触发一次（与 BRACKET 同口径，避免重复挂卖单）。
+            val triggerId = trigger.id
+            if (triggerId != null && hasExitOfKind(triggerId, ExitKind.TP1)) {
+                return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "?"}] TP1_ALREADY_TRIGGERED，不重复止盈", clearTp1HoldStartedAt = true)
+            }
             val ratio = preset.tpLimit.ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
             return Decision(
                 ExitKind.TP1,
@@ -684,12 +712,12 @@ class CryptoTailBracketExitService(
             is String -> if (v.isBlank()) d else v.toSafeBigDecimal()
             else -> d
         }
-        val tpRaw = raw["tp_limit"] as? Map<String, Any?> ?: emptyMap()
-        val slRaw = raw["stop_loss"] as? Map<String, Any?> ?: emptyMap()
-        val dynRaw = raw["dynamic_exit"] as? Map<String, Any?> ?: emptyMap()
-        val execRaw = raw["execution"] as? Map<String, Any?> ?: emptyMap()
+        val tpRaw = raw.pickMap("tp_limit", "tpLimit")
+        val slRaw = raw.pickMap("stop_loss", "stopLoss")
+        val dynRaw = raw.pickMap("dynamic_exit", "dynamicExit")
+        val execRaw = raw.pickMap("execution", "execution")
         return TailDiffExitPreset(
-            holdToExpiry = anyBool(raw["hold_to_expiry"], default.holdToExpiry),
+            holdToExpiry = anyBool(raw.pick("hold_to_expiry", "holdToExpiry"), default.holdToExpiry),
             tpLimit = TailDiffExitPreset.TpLimit(
                 enabled = anyBool(tpRaw["enabled"], default.tpLimit.enabled),
                 price = anyBd(tpRaw["price"], default.tpLimit.price),
@@ -698,21 +726,21 @@ class CryptoTailBracketExitService(
             stopLoss = TailDiffExitPreset.StopLoss(
                 enabled = anyBool(slRaw["enabled"], default.stopLoss.enabled),
                 offset = anyBd(slRaw["offset"], default.stopLoss.offset),
-                minPrice = anyBd(slRaw["min_price"], default.stopLoss.minPrice),
+                minPrice = anyBd(slRaw.pick("min_price", "minPrice"), default.stopLoss.minPrice),
                 ratio = anyBd(slRaw["ratio"], default.stopLoss.ratio)
             ),
             dynamicExit = TailDiffExitPreset.DynamicExit(
                 enabled = anyBool(dynRaw["enabled"], default.dynamicExit.enabled),
-                minDiffSigmaAfterEntry = anyBd(dynRaw["min_diff_sigma_after_entry"], default.dynamicExit.minDiffSigmaAfterEntry),
-                maxDiffRetracePct = anyBd(dynRaw["max_diff_retrace_pct"], default.dynamicExit.maxDiffRetracePct),
-                minModelProbAfterEntry = anyBd(dynRaw["min_model_prob_after_entry"], default.dynamicExit.minModelProbAfterEntry),
-                minOddsAfterEntry = anyBd(dynRaw["min_odds_after_entry"], default.dynamicExit.minOddsAfterEntry),
-                maxReverseVelocitySigma = anyBd(dynRaw["max_reverse_velocity_sigma"], default.dynamicExit.maxReverseVelocitySigma)
+                minDiffSigmaAfterEntry = anyBd(dynRaw.pick("min_diff_sigma_after_entry", "minDiffSigmaAfterEntry"), default.dynamicExit.minDiffSigmaAfterEntry),
+                maxDiffRetracePct = anyBd(dynRaw.pick("max_diff_retrace_pct", "maxDiffRetracePct"), default.dynamicExit.maxDiffRetracePct),
+                minModelProbAfterEntry = anyBd(dynRaw.pick("min_model_prob_after_entry", "minModelProbAfterEntry"), default.dynamicExit.minModelProbAfterEntry),
+                minOddsAfterEntry = anyBd(dynRaw.pick("min_odds_after_entry", "minOddsAfterEntry"), default.dynamicExit.minOddsAfterEntry),
+                maxReverseVelocitySigma = anyBd(dynRaw.pick("max_reverse_velocity_sigma", "maxReverseVelocitySigma"), default.dynamicExit.maxReverseVelocitySigma)
             ),
             execution = TailDiffExitPreset.Execution(
-                tpSlippage = anyBdOrNull(execRaw["tp_slippage"]) ?: default.execution.tpSlippage,
-                stopSlippage = anyBdOrNull(execRaw["stop_slippage"]) ?: default.execution.stopSlippage,
-                worstPrice = anyBdOrNull(execRaw["worst_price"]) ?: default.execution.worstPrice
+                tpSlippage = anyBdOrNull(execRaw.pick("tp_slippage", "tpSlippage")) ?: default.execution.tpSlippage,
+                stopSlippage = anyBdOrNull(execRaw.pick("stop_slippage", "stopSlippage")) ?: default.execution.stopSlippage,
+                worstPrice = anyBdOrNull(execRaw.pick("worst_price", "worstPrice")) ?: default.execution.worstPrice
             )
         )
     }
@@ -768,9 +796,16 @@ class CryptoTailBracketExitService(
         orderbook: OrderbookQualitySnapshot?,
         bestBid: BigDecimal,
         targetSize: BigDecimal,
-        kind: ExitKind
+        kind: ExitKind,
+        emergency: Boolean = false
     ): ExitSizing {
         if (isDepthSplitExit(kind)) {
+            // 紧急退出（急跌硬止损等）：放宽深度门禁——盘口陈旧/深度不足时不再 waitReason 排队，
+            // 直接以 targetSize 全量发 FAK（限价由 placeExitOrder 用退出预设 worstPrice 兜底，避免贱卖）。
+            // 宁可承担一定滑点也要尽快止损，符合"急跌不卖"是更大风险的取舍。
+            if (emergency) {
+                return ExitSizing(targetSize, targetSize, targetSize)
+            }
             val snapshot = orderbook ?: return ExitSizing(
                 targetSize = BigDecimal.ZERO,
                 plannedSize = targetSize,
@@ -830,6 +865,18 @@ class CryptoTailBracketExitService(
         }
         return ExitSizing(targetSize, targetSize, null)
     }
+
+    /**
+     * 紧急退出判定：急跌硬止损 / 机械止损 / 模型失效 / 模型方向反转 / gap 反转。
+     * 这些场景"不卖"的风险远大于滑点，故允许抢占已有 pending 退出单并放宽深度门禁直发 FAK。
+     * 不含 FORCE（结算前强平已有独立兜底）、TP/TRAILING（止盈类无需抢占）。
+     */
+    private fun isEmergencyExit(kind: ExitKind?): Boolean =
+        kind == ExitKind.HARD_STOP ||
+                kind == ExitKind.STOP ||
+                kind == ExitKind.MODEL_INVALID ||
+                kind == ExitKind.MODEL_FLIP ||
+                kind == ExitKind.GAP_FLIP
 
     private fun isDepthSplitExit(kind: ExitKind): Boolean =
         kind == ExitKind.HARD_STOP ||

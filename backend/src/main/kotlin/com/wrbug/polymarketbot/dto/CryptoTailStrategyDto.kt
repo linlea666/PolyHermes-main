@@ -159,7 +159,6 @@ data class CryptoTailStrategyCreateRequest(
     val maxConsecutiveLosses: Int? = null,
     val pauseAfterLossMinutes: Int? = null,
     // ===== 尾盘价差模式（TAIL_DIFF, V62）；mode=3 时生效 =====
-    val tailDiffShadowMode: Boolean? = null,
     val tailDiffDirection: Int? = null,
     val tailDiffWindowStartSeconds: Int? = null,
     val tailDiffWindowEndSeconds: Int? = null,
@@ -175,6 +174,7 @@ data class CryptoTailStrategyCreateRequest(
     val tailDiffModelProbSource: String? = null,
     val tailDiffStatsMinSamples: Int? = null,
     val tailDiffStatsLookbackDays: Int? = null,
+    val tailDiffStatsDataSource: String? = null,
     val tailDiffMaxSpread: String? = null,
     val tailDiffDepthMultiplier: String? = null,
     val tailDiffMaxOrderbookAgeMs: Int? = null,
@@ -336,7 +336,6 @@ data class CryptoTailStrategyUpdateRequest(
     val maxConsecutiveLosses: Int? = null,
     val pauseAfterLossMinutes: Int? = null,
     // ===== 尾盘价差模式（TAIL_DIFF, V62）；mode=3 时生效 =====
-    val tailDiffShadowMode: Boolean? = null,
     val tailDiffDirection: Int? = null,
     val tailDiffWindowStartSeconds: Int? = null,
     val tailDiffWindowEndSeconds: Int? = null,
@@ -352,6 +351,7 @@ data class CryptoTailStrategyUpdateRequest(
     val tailDiffModelProbSource: String? = null,
     val tailDiffStatsMinSamples: Int? = null,
     val tailDiffStatsLookbackDays: Int? = null,
+    val tailDiffStatsDataSource: String? = null,
     val tailDiffMaxSpread: String? = null,
     val tailDiffDepthMultiplier: String? = null,
     val tailDiffMaxOrderbookAgeMs: Int? = null,
@@ -547,7 +547,6 @@ data class CryptoTailStrategyDto(
     /** 胜率 0~1（已结算时 = winCount/settledCount，无结算为 null） */
     val winRate: String? = null,
     // ===== 尾盘价差模式（TAIL_DIFF, V62）=====
-    val tailDiffShadowMode: Boolean = false,
     val tailDiffDirection: Int = 0,
     val tailDiffWindowStartSeconds: Int = 150,
     val tailDiffWindowEndSeconds: Int = 60,
@@ -563,6 +562,7 @@ data class CryptoTailStrategyDto(
     val tailDiffModelProbSource: String = "HYBRID",
     val tailDiffStatsMinSamples: Int = 50,
     val tailDiffStatsLookbackDays: Int = 180,
+    val tailDiffStatsDataSource: String = "BINANCE",
     val tailDiffMaxSpread: String = "0.02",
     val tailDiffDepthMultiplier: String = "3.0",
     val tailDiffMaxOrderbookAgeMs: Int = 2000,

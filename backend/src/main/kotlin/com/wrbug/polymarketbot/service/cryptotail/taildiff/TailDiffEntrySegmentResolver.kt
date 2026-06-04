@@ -19,7 +19,7 @@ import java.math.BigDecimal
  *  - segments 非空但 remaining 不落在任何段内 → [resolve] 返回 null，调用方记 WINDOW_NO_SEGMENT 并 SKIP（opt-in）。
  *
  * JSON 结构（数组，每段）：
- *  { "name", "remaining_hi", "remaining_lo", "min_score?", "min_diff_sigma?", "min_edge?", "max_ask?", "exit_tier_bias?" }
+ *  { "name", "remaining_hi", "remaining_lo", "min_score?", "min_diff_sigma?", "min_edge?", "min_model_prob?", "max_ask?", "exit_tier_bias?" }
  *  - remaining_hi >= remaining_lo；命中条件：remaining_lo <= remainingSeconds <= remaining_hi
  *  - 缺省的阈值字段回退策略全局值。
  */
@@ -37,6 +37,7 @@ class TailDiffEntrySegmentResolver {
         val minScore: Int? = null,
         val minDiffSigma: BigDecimal? = null,
         val minEdge: BigDecimal? = null,
+        val minModelProb: BigDecimal? = null,
         val maxAsk: BigDecimal? = null,
         val exitTierBias: TailDiffTier? = null,
         /** 是否为"无覆盖默认段"（segments 为空时合成，保持旧行为） */
@@ -65,6 +66,7 @@ class TailDiffEntrySegmentResolver {
             tailDiffMinEntryScore = segment.minScore ?: strategy.tailDiffMinEntryScore,
             tailDiffMinDiffSigma = segment.minDiffSigma ?: strategy.tailDiffMinDiffSigma,
             tailDiffMinEdge = segment.minEdge ?: strategy.tailDiffMinEdge,
+            tailDiffMinModelProb = segment.minModelProb ?: strategy.tailDiffMinModelProb,
             tailDiffHardMaxPrice = segment.maxAsk ?: strategy.tailDiffHardMaxPrice
         )
     }
@@ -111,6 +113,7 @@ class TailDiffEntrySegmentResolver {
             minScore = asInt(m["min_score"]),
             minDiffSigma = asBigDecimal(m["min_diff_sigma"]),
             minEdge = asBigDecimal(m["min_edge"]),
+            minModelProb = asBigDecimal(m["min_model_prob"]),
             maxAsk = asBigDecimal(m["max_ask"]),
             exitTierBias = TailDiffTier.fromLabel(m["exit_tier_bias"] as? String)
         )
@@ -147,6 +150,7 @@ class TailDiffEntrySegmentResolver {
             asInt(m["min_score"])?.let { if (it < 0 || it > 100) return false }
             asBigDecimal(m["min_diff_sigma"])?.let { if (it < BigDecimal.ZERO) return false }
             asBigDecimal(m["min_edge"])?.let { if (it < BigDecimal.ZERO || it >= BigDecimal.ONE) return false }
+            asBigDecimal(m["min_model_prob"])?.let { if (it <= BigDecimal.ZERO || it > BigDecimal.ONE) return false }
             asBigDecimal(m["max_ask"])?.let { if (it <= BigDecimal.ZERO || it > BigDecimal.ONE) return false }
             val biasRaw = m["exit_tier_bias"] as? String
             if (biasRaw != null && TailDiffTier.fromLabel(biasRaw) == null) return false

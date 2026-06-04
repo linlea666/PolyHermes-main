@@ -22,8 +22,11 @@ interface TailReversalStatsLookup {
         val coin: String?,
         /** 周期 300/900 */
         val intervalSeconds: Int,
-        /** 0=Up 1=Down */
-        val outcomeIndex: Int,
+        /**
+         * 领先方向 0=Up 1=Down。统计桶以"领先方向"（leadOutcome）为键，model_prob=领先方向维持到结算的历史概率。
+         * 调用方必须传 modelSide（BarrierProbability.side），而非被评估 token 的 outcomeIndex，否则评估非领先方向时查不到桶。
+         */
+        val leadOutcome: Int,
         /** 价差 σ 倍数（按计划书"§二"分桶） */
         val diffSigma: BigDecimal,
         /** 赔率分桶名："0.85_0.89"/"0.90_0.92"/"0.93_0.95" 等 */
@@ -31,7 +34,9 @@ interface TailReversalStatsLookup {
         /** 剩余秒数分桶名："60_120"/"30_60" 等 */
         val remainingBucket: String,
         /** 180 或 365 */
-        val lookbackDays: Int
+        val lookbackDays: Int,
+        /** 统计数据源：BINANCE / POLYMARKET（由策略 tailDiffStatsDataSource 驱动，默认 BINANCE） */
+        val dataSource: String = "BINANCE"
     )
 
     /** 单次查询结果 */

@@ -34,7 +34,8 @@ class CryptoTailStrategyService(
     private val calibrationService: CryptoTailCalibrationService,
     private val eventPublisher: ApplicationEventPublisher,
     private val exitRepository: CryptoTailStrategyExitRepository,
-    private val entrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver
+    private val entrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
+    private val exitPresetResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffExitPresetResolver
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailStrategyService::class.java)
@@ -360,7 +361,6 @@ class CryptoTailStrategyService(
                 maxOrdersPerDay = maxOrdersPerDay,
                 maxConsecutiveLosses = maxConsecutiveLosses,
                 pauseAfterLossMinutes = pauseAfterLossMinutes,
-                tailDiffShadowMode = td.shadowMode,
                 tailDiffDirection = td.direction,
                 tailDiffWindowStartSeconds = td.windowStartSeconds,
                 tailDiffWindowEndSeconds = td.windowEndSeconds,
@@ -376,6 +376,7 @@ class CryptoTailStrategyService(
                 tailDiffModelProbSource = td.modelProbSource,
                 tailDiffStatsMinSamples = td.statsMinSamples,
                 tailDiffStatsLookbackDays = td.statsLookbackDays,
+                tailDiffStatsDataSource = td.statsDataSource,
                 tailDiffMaxSpread = td.maxSpread,
                 tailDiffDepthMultiplier = td.depthMultiplier,
                 tailDiffMaxOrderbookAgeMs = td.maxOrderbookAgeMs,
@@ -724,7 +725,6 @@ class CryptoTailStrategyService(
                 maxOrdersPerDay = newMaxOrdersPerDay,
                 maxConsecutiveLosses = newMaxConsecutiveLosses,
                 pauseAfterLossMinutes = newPauseAfterLossMinutes,
-                tailDiffShadowMode = td.shadowMode,
                 tailDiffDirection = td.direction,
                 tailDiffWindowStartSeconds = td.windowStartSeconds,
                 tailDiffWindowEndSeconds = td.windowEndSeconds,
@@ -740,6 +740,7 @@ class CryptoTailStrategyService(
                 tailDiffModelProbSource = td.modelProbSource,
                 tailDiffStatsMinSamples = td.statsMinSamples,
                 tailDiffStatsLookbackDays = td.statsLookbackDays,
+                tailDiffStatsDataSource = td.statsDataSource,
                 tailDiffMaxSpread = td.maxSpread,
                 tailDiffDepthMultiplier = td.depthMultiplier,
                 tailDiffMaxOrderbookAgeMs = td.maxOrderbookAgeMs,
@@ -1442,7 +1443,6 @@ class CryptoTailStrategyService(
 
     /** 尾盘价差模式（TAIL_DIFF）解析后的字段集合，类型与实体一致 */
     private data class TailDiffResolved(
-        val shadowMode: Boolean,
         val direction: Int,
         val windowStartSeconds: Int,
         val windowEndSeconds: Int,
@@ -1458,6 +1458,7 @@ class CryptoTailStrategyService(
         val modelProbSource: String,
         val statsMinSamples: Int,
         val statsLookbackDays: Int,
+        val statsDataSource: String,
         val maxSpread: BigDecimal,
         val depthMultiplier: BigDecimal,
         val maxOrderbookAgeMs: Int,
@@ -1493,9 +1494,13 @@ class CryptoTailStrategyService(
         return if (v == "HYBRID" || v == "STATS" || v == "FALLBACK") v else "HYBRID"
     }
 
+    private fun normalizeTailDiffDataSource(raw: String?): String {
+        val v = (raw ?: "BINANCE").trim().uppercase()
+        return if (v == "BINANCE" || v == "POLYMARKET") v else "BINANCE"
+    }
+
     /** 创建场景：缺省走默认值（与 V62 SQL 默认一致） */
     private fun resolveTailDiffCreate(r: CryptoTailStrategyCreateRequest): TailDiffResolved = TailDiffResolved(
-        shadowMode = r.tailDiffShadowMode ?: false,
         direction = r.tailDiffDirection ?: 0,
         windowStartSeconds = r.tailDiffWindowStartSeconds ?: 150,
         windowEndSeconds = r.tailDiffWindowEndSeconds ?: 60,
@@ -1511,6 +1516,7 @@ class CryptoTailStrategyService(
         modelProbSource = normalizeTailDiffSource(r.tailDiffModelProbSource),
         statsMinSamples = r.tailDiffStatsMinSamples ?: 50,
         statsLookbackDays = r.tailDiffStatsLookbackDays ?: 180,
+        statsDataSource = normalizeTailDiffDataSource(r.tailDiffStatsDataSource),
         maxSpread = r.tailDiffMaxSpread?.toSafeBigDecimal() ?: BigDecimal("0.02"),
         depthMultiplier = r.tailDiffDepthMultiplier?.toSafeBigDecimal() ?: BigDecimal("3.0"),
         maxOrderbookAgeMs = r.tailDiffMaxOrderbookAgeMs ?: 2000,
@@ -1543,7 +1549,6 @@ class CryptoTailStrategyService(
 
     /** 更新场景：null 字段保留 existing */
     private fun resolveTailDiffUpdate(r: CryptoTailStrategyUpdateRequest, e: CryptoTailStrategy): TailDiffResolved = TailDiffResolved(
-        shadowMode = r.tailDiffShadowMode ?: e.tailDiffShadowMode,
         direction = r.tailDiffDirection ?: e.tailDiffDirection,
         windowStartSeconds = r.tailDiffWindowStartSeconds ?: e.tailDiffWindowStartSeconds,
         windowEndSeconds = r.tailDiffWindowEndSeconds ?: e.tailDiffWindowEndSeconds,
@@ -1559,6 +1564,7 @@ class CryptoTailStrategyService(
         modelProbSource = r.tailDiffModelProbSource?.let { normalizeTailDiffSource(it) } ?: e.tailDiffModelProbSource,
         statsMinSamples = r.tailDiffStatsMinSamples ?: e.tailDiffStatsMinSamples,
         statsLookbackDays = r.tailDiffStatsLookbackDays ?: e.tailDiffStatsLookbackDays,
+        statsDataSource = r.tailDiffStatsDataSource?.let { normalizeTailDiffDataSource(it) } ?: e.tailDiffStatsDataSource,
         maxSpread = r.tailDiffMaxSpread?.toSafeBigDecimal() ?: e.tailDiffMaxSpread,
         depthMultiplier = r.tailDiffDepthMultiplier?.toSafeBigDecimal() ?: e.tailDiffDepthMultiplier,
         maxOrderbookAgeMs = r.tailDiffMaxOrderbookAgeMs ?: e.tailDiffMaxOrderbookAgeMs,
@@ -1580,14 +1586,29 @@ class CryptoTailStrategyService(
         tierPremiumMult = r.tailDiffTierPremiumMult?.toSafeBigDecimal() ?: e.tailDiffTierPremiumMult,
         tierTopMult = r.tailDiffTierTopMult?.toSafeBigDecimal() ?: e.tailDiffTierTopMult,
         maxAmountPerOrder = r.tailDiffMaxAmountPerOrder?.toSafeBigDecimal() ?: e.tailDiffMaxAmountPerOrder,
-        exitPresetNormalJson = r.tailDiffExitPresetNormalJson?.let { it.takeIf { s -> s.isNotBlank() } } ?: e.tailDiffExitPresetNormalJson,
-        exitPresetPremiumJson = r.tailDiffExitPresetPremiumJson?.let { it.takeIf { s -> s.isNotBlank() } } ?: e.tailDiffExitPresetPremiumJson,
-        exitPresetTopJson = r.tailDiffExitPresetTopJson?.let { it.takeIf { s -> s.isNotBlank() } } ?: e.tailDiffExitPresetTopJson,
-        dailyLossLimitUsdc = r.tailDiffDailyLossLimitUsdc?.let { if (it.isBlank()) null else it.toSafeBigDecimal() } ?: e.tailDiffDailyLossLimitUsdc,
+        // 可空字段三态语义（与前端约定一致）：字段缺失(null)=保留旧值；空串=显式清空(置 NULL/默认)；非空=更新。
+        exitPresetNormalJson = resolveNullableStringUpdate(r.tailDiffExitPresetNormalJson, e.tailDiffExitPresetNormalJson),
+        exitPresetPremiumJson = resolveNullableStringUpdate(r.tailDiffExitPresetPremiumJson, e.tailDiffExitPresetPremiumJson),
+        exitPresetTopJson = resolveNullableStringUpdate(r.tailDiffExitPresetTopJson, e.tailDiffExitPresetTopJson),
+        dailyLossLimitUsdc = resolveNullableBigDecimalUpdate(r.tailDiffDailyLossLimitUsdc, e.tailDiffDailyLossLimitUsdc),
         consecLossPauseCount = r.tailDiffConsecLossPauseCount ?: e.tailDiffConsecLossPauseCount,
         consecLossStopCount = r.tailDiffConsecLossStopCount ?: e.tailDiffConsecLossStopCount,
-        entrySegmentsJson = r.tailDiffEntrySegmentsJson?.let { it.takeIf { s -> s.isNotBlank() } } ?: e.tailDiffEntrySegmentsJson
+        entrySegmentsJson = resolveNullableStringUpdate(r.tailDiffEntrySegmentsJson, e.tailDiffEntrySegmentsJson)
     )
+
+    /** 可空字符串字段三态：null=保留旧值；空串=清空(null)；非空=trim 后更新。 */
+    private fun resolveNullableStringUpdate(requestValue: String?, existing: String?): String? = when {
+        requestValue == null -> existing
+        requestValue.isBlank() -> null
+        else -> requestValue.trim()
+    }
+
+    /** 可空 BigDecimal 字段三态：null=保留旧值；空串=清空(null)；非空=解析更新。 */
+    private fun resolveNullableBigDecimalUpdate(requestValue: String?, existing: BigDecimal?): BigDecimal? = when {
+        requestValue == null -> existing
+        requestValue.isBlank() -> null
+        else -> requestValue.toSafeBigDecimal()
+    }
 
     /** TAIL_DIFF 参数校验：价格区间、概率/边际、权重总和、分层阈值递增、方向枚举等 */
     private fun isTailDiffParamsValid(td: TailDiffResolved): Boolean {
@@ -1623,6 +1644,10 @@ class CryptoTailStrategyService(
         td.dailyLossLimitUsdc?.let { if (it < zero) return false }
         if (td.consecLossPauseCount < 0 || td.consecLossStopCount < 0) return false
         if (!entrySegmentResolver.isValid(td.entrySegmentsJson)) return false
+        // 三档退出预设 JSON：结构 + 边界校验（非法直接判参数无效，不再静默回退默认档）
+        if (!exitPresetResolver.isValid(td.exitPresetNormalJson)) return false
+        if (!exitPresetResolver.isValid(td.exitPresetPremiumJson)) return false
+        if (!exitPresetResolver.isValid(td.exitPresetTopJson)) return false
         return true
     }
 
@@ -1761,7 +1786,6 @@ class CryptoTailStrategyService(
             settledCount = settledCount,
             winCount = winCount,
             winRate = winRateStr,
-            tailDiffShadowMode = e.tailDiffShadowMode,
             tailDiffDirection = e.tailDiffDirection,
             tailDiffWindowStartSeconds = e.tailDiffWindowStartSeconds,
             tailDiffWindowEndSeconds = e.tailDiffWindowEndSeconds,
@@ -1777,6 +1801,7 @@ class CryptoTailStrategyService(
             tailDiffModelProbSource = e.tailDiffModelProbSource,
             tailDiffStatsMinSamples = e.tailDiffStatsMinSamples,
             tailDiffStatsLookbackDays = e.tailDiffStatsLookbackDays,
+            tailDiffStatsDataSource = e.tailDiffStatsDataSource,
             tailDiffMaxSpread = e.tailDiffMaxSpread.toPlainString(),
             tailDiffDepthMultiplier = e.tailDiffDepthMultiplier.toPlainString(),
             tailDiffMaxOrderbookAgeMs = e.tailDiffMaxOrderbookAgeMs,

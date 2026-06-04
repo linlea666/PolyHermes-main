@@ -41,7 +41,6 @@ import type { CryptoTailTailDiffParams, CryptoTailTailDiffPreviewResponse } from
 
 /** 尾盘价差模式（TAIL_DIFF, V62）表单默认值，与后端 V62 SQL / 实体默认保持一致 */
 const TAIL_DIFF_DEFAULTS = {
-  tailDiffShadowMode: false,
   tailDiffDirection: 0,
   tailDiffWindowStartSeconds: 150,
   tailDiffWindowEndSeconds: 60,
@@ -57,6 +56,7 @@ const TAIL_DIFF_DEFAULTS = {
   tailDiffModelProbSource: 'HYBRID',
   tailDiffStatsMinSamples: 50,
   tailDiffStatsLookbackDays: 180,
+  tailDiffStatsDataSource: 'BINANCE',
   tailDiffMaxSpread: '0.02',
   tailDiffDepthMultiplier: '3.0',
   tailDiffMaxOrderbookAgeMs: 2000,
@@ -89,7 +89,6 @@ const TAIL_DIFF_DEFAULTS = {
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
 const buildTailDiffFormValues = (record: CryptoTailStrategyDto): typeof TAIL_DIFF_DEFAULTS => ({
-  tailDiffShadowMode: record.tailDiffShadowMode ?? TAIL_DIFF_DEFAULTS.tailDiffShadowMode,
   tailDiffDirection: record.tailDiffDirection ?? TAIL_DIFF_DEFAULTS.tailDiffDirection,
   tailDiffWindowStartSeconds: record.tailDiffWindowStartSeconds ?? TAIL_DIFF_DEFAULTS.tailDiffWindowStartSeconds,
   tailDiffWindowEndSeconds: record.tailDiffWindowEndSeconds ?? TAIL_DIFF_DEFAULTS.tailDiffWindowEndSeconds,
@@ -105,6 +104,7 @@ const buildTailDiffFormValues = (record: CryptoTailStrategyDto): typeof TAIL_DIF
   tailDiffModelProbSource: record.tailDiffModelProbSource ?? TAIL_DIFF_DEFAULTS.tailDiffModelProbSource,
   tailDiffStatsMinSamples: record.tailDiffStatsMinSamples ?? TAIL_DIFF_DEFAULTS.tailDiffStatsMinSamples,
   tailDiffStatsLookbackDays: record.tailDiffStatsLookbackDays ?? TAIL_DIFF_DEFAULTS.tailDiffStatsLookbackDays,
+  tailDiffStatsDataSource: record.tailDiffStatsDataSource ?? TAIL_DIFF_DEFAULTS.tailDiffStatsDataSource,
   tailDiffMaxSpread: record.tailDiffMaxSpread ?? TAIL_DIFF_DEFAULTS.tailDiffMaxSpread,
   tailDiffDepthMultiplier: record.tailDiffDepthMultiplier ?? TAIL_DIFF_DEFAULTS.tailDiffDepthMultiplier,
   tailDiffMaxOrderbookAgeMs: record.tailDiffMaxOrderbookAgeMs ?? TAIL_DIFF_DEFAULTS.tailDiffMaxOrderbookAgeMs,
@@ -137,10 +137,34 @@ const buildTailDiffFormValues = (record: CryptoTailStrategyDto): typeof TAIL_DIF
 
 const numOrUndef = (x: unknown): number | undefined => (x != null && x !== '' ? Number(x) : undefined)
 const strOrUndef = (x: unknown): string | undefined => (x != null && x !== '' ? String(x) : undefined)
+// 可空字段清空语义：非空发原值，空发 ''（后端三态：''=显式清空置 NULL，undefined=保留旧值）。
+const strOrEmpty = (x: unknown): string => (x != null && x !== '' ? String(x) : '')
+
+// 三档退出预设 JSON 的已知顶层段（snake_case 与 camelCase 别名，与后端 TailDiffExitPreset 解析一致）
+const EXIT_PRESET_SECTION_KEYS = new Set<string>([
+  'hold_to_expiry', 'holdToExpiry',
+  'tp_limit', 'tpLimit',
+  'stop_loss', 'stopLoss',
+  'dynamic_exit', 'dynamicExit',
+  'execution'
+])
+
+/** 校验退出预设 JSON：空=允许（用默认档）；否则须为对象且至少含一个已知段。返回 true=合法。 */
+const isExitPresetJsonValid = (value: unknown): boolean => {
+  const raw = value == null ? '' : String(value).trim()
+  if (!raw) return true
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return false
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false
+  return Object.keys(parsed as Record<string, unknown>).some((k) => EXIT_PRESET_SECTION_KEYS.has(k))
+}
 
 /** 提交态：把表单值转换为后端 create/update 接受的 TAIL_DIFF 参数 */
 const buildTailDiffPayload = (v: Record<string, unknown>): CryptoTailTailDiffParams => ({
-  tailDiffShadowMode: v.tailDiffShadowMode === true,
   tailDiffDirection: numOrUndef(v.tailDiffDirection),
   tailDiffWindowStartSeconds: numOrUndef(v.tailDiffWindowStartSeconds),
   tailDiffWindowEndSeconds: numOrUndef(v.tailDiffWindowEndSeconds),
@@ -156,6 +180,7 @@ const buildTailDiffPayload = (v: Record<string, unknown>): CryptoTailTailDiffPar
   tailDiffModelProbSource: strOrUndef(v.tailDiffModelProbSource),
   tailDiffStatsMinSamples: numOrUndef(v.tailDiffStatsMinSamples),
   tailDiffStatsLookbackDays: numOrUndef(v.tailDiffStatsLookbackDays),
+  tailDiffStatsDataSource: strOrUndef(v.tailDiffStatsDataSource),
   tailDiffMaxSpread: strOrUndef(v.tailDiffMaxSpread),
   tailDiffDepthMultiplier: strOrUndef(v.tailDiffDepthMultiplier),
   tailDiffMaxOrderbookAgeMs: numOrUndef(v.tailDiffMaxOrderbookAgeMs),
@@ -177,13 +202,13 @@ const buildTailDiffPayload = (v: Record<string, unknown>): CryptoTailTailDiffPar
   tailDiffTierPremiumMult: strOrUndef(v.tailDiffTierPremiumMult),
   tailDiffTierTopMult: strOrUndef(v.tailDiffTierTopMult),
   tailDiffMaxAmountPerOrder: strOrUndef(v.tailDiffMaxAmountPerOrder),
-  tailDiffExitPresetNormalJson: strOrUndef(v.tailDiffExitPresetNormalJson),
-  tailDiffExitPresetPremiumJson: strOrUndef(v.tailDiffExitPresetPremiumJson),
-  tailDiffExitPresetTopJson: strOrUndef(v.tailDiffExitPresetTopJson),
-  tailDiffDailyLossLimitUsdc: strOrUndef(v.tailDiffDailyLossLimitUsdc),
+  tailDiffExitPresetNormalJson: strOrEmpty(v.tailDiffExitPresetNormalJson),
+  tailDiffExitPresetPremiumJson: strOrEmpty(v.tailDiffExitPresetPremiumJson),
+  tailDiffExitPresetTopJson: strOrEmpty(v.tailDiffExitPresetTopJson),
+  tailDiffDailyLossLimitUsdc: strOrEmpty(v.tailDiffDailyLossLimitUsdc),
   tailDiffConsecLossPauseCount: numOrUndef(v.tailDiffConsecLossPauseCount),
   tailDiffConsecLossStopCount: numOrUndef(v.tailDiffConsecLossStopCount),
-  tailDiffEntrySegmentsJson: strOrUndef(v.tailDiffEntrySegmentsJson)
+  tailDiffEntrySegmentsJson: strOrEmpty(v.tailDiffEntrySegmentsJson)
 })
 
 const CryptoTailStrategyList: React.FC = () => {
@@ -608,41 +633,19 @@ const CryptoTailStrategyList: React.FC = () => {
     }
   }
 
-  // 尾盘价差评分预览：需先保存策略（依赖后端已存阈值），用一组模拟盘口/价源参数即时算分
+  // 尾盘价差评分预览：以实盘为准——后端用该策略当前实时盘口/余额/价源走与实盘一致的决策链算分。
+  // 需先保存策略（依赖后端已存阈值），且策略需已启用并处于订阅周期内（否则后端返回"实时盘口未就绪"）。
   const runTailDiffPreview = async () => {
     if (editingId == null) {
       message.info(t('cryptoTailStrategy.form.tailDiffPreviewNeedSaved'))
       return
     }
     const v = form.getFieldsValue()
-    const openPrice = String(v.tailDiffPreviewOpenPrice ?? '')
-    const closePrice = String(v.tailDiffPreviewClosePrice ?? '')
-    const sigmaPerSqrtS = String(v.tailDiffPreviewSigma ?? '')
-    const bestBid = String(v.tailDiffPreviewBestBid ?? '')
-    if (!openPrice || !closePrice || !sigmaPerSqrtS || !bestBid) {
-      message.error(t('cryptoTailStrategy.form.tailDiffPreviewParamRequired'))
-      return
-    }
     setTailDiffPreviewLoading(true)
     try {
       const res = await apiService.cryptoTailStrategy.tailDiffPreview({
         strategyId: editingId,
-        periodStartUnix: Math.floor(Date.now() / 1000),
-        outcomeIndex: Number(v.tailDiffPreviewOutcomeIndex ?? 0),
-        openPrice,
-        closePrice,
-        sigmaPerSqrtS,
-        remainingSeconds: Number(v.tailDiffPreviewRemaining ?? 60),
-        bestBid,
-        bestAsk: v.tailDiffPreviewBestAsk != null && v.tailDiffPreviewBestAsk !== '' ? String(v.tailDiffPreviewBestAsk) : undefined,
-        bidDepthUsd: String(v.tailDiffPreviewBidDepth ?? '0'),
-        askDepthUsd: String(v.tailDiffPreviewAskDepth ?? '0'),
-        orderbookAgeMs: Number(v.tailDiffPreviewOrderbookAge ?? 0),
-        priceAgeMs: Number(v.tailDiffPreviewPriceAge ?? 0),
-        reverseVelocitySigmaPerSec: String(v.tailDiffPreviewReverseVelocity ?? '0'),
-        statsSampleCount: Number(v.tailDiffPreviewStatsSamples ?? 0),
-        statsModelProb: v.tailDiffPreviewStatsProb != null && v.tailDiffPreviewStatsProb !== '' ? String(v.tailDiffPreviewStatsProb) : undefined,
-        candidateAmountUsdc: String(v.tailDiffPreviewCandidateAmount ?? '1')
+        outcomeIndex: Number(v.tailDiffPreviewOutcomeIndex ?? 0)
       })
       if (res.data.code !== 0 || !res.data.data) {
         message.error(res.data.msg || t('common.failed'))
@@ -2670,9 +2673,6 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Alert type="info" showIcon style={{ marginBottom: 16 }} message={t('cryptoTailStrategy.form.tailDiffInfo')} />
 
-              <Form.Item name="tailDiffShadowMode" valuePropName="checked" label={t('cryptoTailStrategy.form.tailDiffShadowMode')}>
-                <Switch />
-              </Form.Item>
               <Form.Item name="tailDiffDirection" label={t('cryptoTailStrategy.form.tailDiffDirection')}>
                 <Radio.Group>
                   <Radio value={0}>{t('cryptoTailStrategy.form.tailDiffDirectionAuto')}</Radio>
@@ -2768,6 +2768,14 @@ const CryptoTailStrategyList: React.FC = () => {
               <Form.Item name="tailDiffStatsLookbackDays" label={t('cryptoTailStrategy.form.tailDiffStatsLookbackDays')}>
                 <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} addonAfter="d" />
               </Form.Item>
+              <Form.Item name="tailDiffStatsDataSource" label={t('cryptoTailStrategy.form.tailDiffStatsDataSource')}>
+                <Select
+                  options={[
+                    { value: 'BINANCE', label: t('cryptoTailStrategy.form.tailDiffDataSourceBinance') },
+                    { value: 'POLYMARKET', label: t('cryptoTailStrategy.form.tailDiffDataSourcePolymarket') }
+                  ]}
+                />
+              </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.tailDiffBookSubsection')}</Typography.Text>
@@ -2849,13 +2857,25 @@ const CryptoTailStrategyList: React.FC = () => {
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.tailDiffExitSubsection')}</Typography.Text>
               </Form.Item>
               <Alert type="info" showIcon style={{ marginBottom: 12 }} message={t('cryptoTailStrategy.form.tailDiffExitInfo')} />
-              <Form.Item name="tailDiffExitPresetNormalJson" label={t('cryptoTailStrategy.form.tailDiffExitPresetNormalJson')}>
+              <Form.Item
+                name="tailDiffExitPresetNormalJson"
+                label={t('cryptoTailStrategy.form.tailDiffExitPresetNormalJson')}
+                rules={[{ validator: (_r, v) => (isExitPresetJsonValid(v) ? Promise.resolve() : Promise.reject(new Error(t('cryptoTailStrategy.form.tailDiffExitPresetInvalid')))) }]}
+              >
                 <Input.TextArea rows={3} placeholder={t('cryptoTailStrategy.form.tailDiffExitPresetPlaceholder')} />
               </Form.Item>
-              <Form.Item name="tailDiffExitPresetPremiumJson" label={t('cryptoTailStrategy.form.tailDiffExitPresetPremiumJson')}>
+              <Form.Item
+                name="tailDiffExitPresetPremiumJson"
+                label={t('cryptoTailStrategy.form.tailDiffExitPresetPremiumJson')}
+                rules={[{ validator: (_r, v) => (isExitPresetJsonValid(v) ? Promise.resolve() : Promise.reject(new Error(t('cryptoTailStrategy.form.tailDiffExitPresetInvalid')))) }]}
+              >
                 <Input.TextArea rows={3} placeholder={t('cryptoTailStrategy.form.tailDiffExitPresetPlaceholder')} />
               </Form.Item>
-              <Form.Item name="tailDiffExitPresetTopJson" label={t('cryptoTailStrategy.form.tailDiffExitPresetTopJson')}>
+              <Form.Item
+                name="tailDiffExitPresetTopJson"
+                label={t('cryptoTailStrategy.form.tailDiffExitPresetTopJson')}
+                rules={[{ validator: (_r, v) => (isExitPresetJsonValid(v) ? Promise.resolve() : Promise.reject(new Error(t('cryptoTailStrategy.form.tailDiffExitPresetInvalid')))) }]}
+              >
                 <Input.TextArea rows={3} placeholder={t('cryptoTailStrategy.form.tailDiffExitPresetPlaceholder')} />
               </Form.Item>
 
@@ -2882,42 +2902,6 @@ const CryptoTailStrategyList: React.FC = () => {
                   <Radio value={1}>{t('cryptoTailStrategy.form.tailDiffDirectionDown')}</Radio>
                 </Radio.Group>
               </Form.Item>
-              <Form.Item name="tailDiffPreviewOpenPrice" label={t('cryptoTailStrategy.form.tailDiffPreviewOpenPrice')}>
-                <InputNumber min={0} step={1} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewClosePrice" label={t('cryptoTailStrategy.form.tailDiffPreviewClosePrice')}>
-                <InputNumber min={0} step={1} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewSigma" label={t('cryptoTailStrategy.form.tailDiffPreviewSigma')}>
-                <InputNumber min={0} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewRemaining" label={t('cryptoTailStrategy.form.tailDiffPreviewRemaining')} initialValue={90}>
-                <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewBestBid" label={t('cryptoTailStrategy.form.tailDiffPreviewBestBid')}>
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewBestAsk" label={t('cryptoTailStrategy.form.tailDiffPreviewBestAsk')}>
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewBidDepth" label={t('cryptoTailStrategy.form.tailDiffPreviewBidDepth')} initialValue={'10'}>
-                <InputNumber min={0} step={1} style={{ width: '100%' }} addonBefore="$" stringMode />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewAskDepth" label={t('cryptoTailStrategy.form.tailDiffPreviewAskDepth')} initialValue={'10'}>
-                <InputNumber min={0} step={1} style={{ width: '100%' }} addonBefore="$" stringMode />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewReverseVelocity" label={t('cryptoTailStrategy.form.tailDiffPreviewReverseVelocity')} initialValue={'0'}>
-                <InputNumber step={0.05} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewStatsSamples" label={t('cryptoTailStrategy.form.tailDiffPreviewStatsSamples')} initialValue={0}>
-                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewStatsProb" label={t('cryptoTailStrategy.form.tailDiffPreviewStatsProb')}>
-                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
-              </Form.Item>
-              <Form.Item name="tailDiffPreviewCandidateAmount" label={t('cryptoTailStrategy.form.tailDiffPreviewCandidateAmount')} initialValue={'1'}>
-                <InputNumber min={0} step={1} style={{ width: '100%' }} addonBefore="$" stringMode />
-              </Form.Item>
               <Form.Item>
                 <Button onClick={runTailDiffPreview} loading={tailDiffPreviewLoading}>
                   {t('cryptoTailStrategy.form.tailDiffPreviewRun')}
@@ -2931,6 +2915,7 @@ const CryptoTailStrategyList: React.FC = () => {
                   message={t('cryptoTailStrategy.form.tailDiffPreviewResultTitle', { score: tailDiffPreview.score, tier: tailDiffPreview.tier ?? '-' })}
                   description={
                     <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                      <span>{t('cryptoTailStrategy.form.tailDiffPreviewOutcome')}: {tailDiffPreview.outcome}（{tailDiffPreview.reason}）</span>
                       <span>{t('cryptoTailStrategy.form.tailDiffPreviewDiffSigma')}: {tailDiffPreview.diffSigma}（{t('cryptoTailStrategy.form.tailDiffPreviewModelProb')}: {tailDiffPreview.modelProb} / {tailDiffPreview.modelProbSource}）</span>
                       <span>{t('cryptoTailStrategy.form.tailDiffPreviewEdge')}: {tailDiffPreview.edge}（{t('cryptoTailStrategy.form.tailDiffPreviewEffectiveCost')}: {tailDiffPreview.effectiveCost}）</span>
                       <span>{t('cryptoTailStrategy.form.tailDiffPreviewRecommendedAmount')}: ${tailDiffPreview.recommendedAmountUsdc}</span>

@@ -46,7 +46,8 @@ class CryptoTailOrderbookWsService(
     private val binanceKlineAutoSpreadService: BinanceKlineAutoSpreadService,
     private val binanceKlineService: BinanceKlineService,
     private val periodPriceProvider: PeriodPriceProvider,
-    private val bracketExitService: CryptoTailBracketExitService
+    private val bracketExitService: CryptoTailBracketExitService,
+    private val entrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailOrderbookWsService::class.java)
@@ -297,17 +298,46 @@ class CryptoTailOrderbookWsService(
 
     fun latestSnapshot(tokenId: String): OrderbookQualitySnapshot? = orderbookCache[tokenId]
 
+    /**
+     * TAIL_DIFF 评分预览的实时上下文：取该策略某 outcome 当前已订阅周期 + 最新盘口快照。
+     * 仅当策略已启用且 WS 已订阅该周期 token、且已收到至少一条盘口时返回；否则 null
+     * （preview 据此返回"实时数据未就绪"，与实盘 evaluate 的价源/盘口未就绪语义一致）。
+     */
+    data class LivePreviewContext(
+        val periodStartUnix: Long,
+        val tokenId: String,
+        val orderbook: OrderbookQualitySnapshot
+    )
+
+    fun livePreviewContext(strategyId: Long, outcomeIndex: Int): LivePreviewContext? {
+        val entry = tokenToEntries.get().values.asSequence().flatten()
+            .firstOrNull { it.strategy.id == strategyId && it.outcomeIndex == outcomeIndex }
+            ?: return null
+        val snapshot = orderbookCache[entry.tokenId] ?: return null
+        return LivePreviewContext(entry.periodStartUnix, entry.tokenId, snapshot)
+    }
+
     private fun onBestBid(tokenId: String, orderbook: OrderbookQualitySnapshot) {
         if (closedForNoStrategies.get()) return
         val entries = tokenToEntries.get()[tokenId]
         if (entries == null) return
         val nowSeconds = System.currentTimeMillis() / 1000
         for (e in entries) {
-            val windowStart = e.periodStartUnix + e.strategy.windowStartSeconds
-            val windowEnd = e.periodStartUnix + e.strategy.windowEndSeconds
-            val inEntryWindow = nowSeconds >= windowStart && nowSeconds < windowEnd
+            // 入场窗口预过滤：
+            //  - TAIL_DIFF 用分段包络（remaining 维度），覆盖早窗分段，避免被全局 elapsed 窗（windowStart/EndSeconds）误卡；
+            //    精确窗口/分段命中仍由 DecisionService 内的 segment resolve + WINDOW_* 否决把关，这里只做粗过滤减少协程启动。
+            //  - 其他模式保持原 elapsed 时间窗行为不变。
+            val inEntryWindow = if (e.strategy.mode == TradingMode.TAIL_DIFF) {
+                val (envLo, envHi) = entrySegmentResolver.windowEnvelope(e.strategy)
+                val remaining = (e.periodStartUnix + e.strategy.intervalSeconds) - nowSeconds
+                remaining in envLo.toLong()..envHi.toLong()
+            } else {
+                val windowStart = e.periodStartUnix + e.strategy.windowStartSeconds
+                val windowEnd = e.periodStartUnix + e.strategy.windowEndSeconds
+                nowSeconds >= windowStart && nowSeconds < windowEnd
+            }
 
-            // 入场分支：仅在时间窗内评估（旧行为不变）。
+            // 入场分支：仅在时间窗内评估。
             // per-subscriptionKey 在途守卫：同一订阅已有入场评估在跑则跳过本 tick，避免协程无界堆积；
             // 下一条盘口消息会用更新的快照重新评估，不会漏单。
             if (inEntryWindow) {

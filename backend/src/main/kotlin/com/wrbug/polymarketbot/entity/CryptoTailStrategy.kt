@@ -463,10 +463,6 @@ data class CryptoTailStrategy(
     // 仅在 mode==TAIL_DIFF 时生效，其他模式完全忽略，行为不变。
     // 默认值与计划书 §六 一致，BTC 5m 起步参数。
 
-    /** SHADOW 模式：true 只记决策日志不真正下单（上线初期空跑） */
-    @Column(name = "tail_diff_shadow_mode", nullable = false)
-    val tailDiffShadowMode: Boolean = false,
-
     /** 方向选择：0=自动（UP/DOWN 都做），1=只 Up，2=只 Down */
     @Column(name = "tail_diff_direction", nullable = false, columnDefinition = "TINYINT")
     val tailDiffDirection: Int = 0,
@@ -526,6 +522,10 @@ data class CryptoTailStrategy(
     /** 历史反转统计回看天数（180/365） */
     @Column(name = "tail_diff_stats_lookback_days", nullable = false)
     val tailDiffStatsLookbackDays: Int = 180,
+
+    /** 历史反转统计数据源：BINANCE / POLYMARKET */
+    @Column(name = "tail_diff_stats_data_source", nullable = false, length = 16)
+    val tailDiffStatsDataSource: String = "BINANCE",
 
     /** 入场最大盘口价差（bestAsk-bestBid） */
     @Column(name = "tail_diff_max_spread", nullable = false, precision = 20, scale = 8)

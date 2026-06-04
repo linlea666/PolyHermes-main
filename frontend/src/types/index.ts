@@ -1613,7 +1613,6 @@ export interface CryptoTailStrategyDto {
   /** 胜率 0~1 */
   winRate?: string
   // ===== 尾盘价差模式（TAIL_DIFF, V62）=====
-  tailDiffShadowMode?: boolean
   tailDiffDirection?: number
   tailDiffWindowStartSeconds?: number
   tailDiffWindowEndSeconds?: number
@@ -1629,6 +1628,7 @@ export interface CryptoTailStrategyDto {
   tailDiffModelProbSource?: string
   tailDiffStatsMinSamples?: number
   tailDiffStatsLookbackDays?: number
+  tailDiffStatsDataSource?: string
   tailDiffMaxSpread?: string
   tailDiffDepthMultiplier?: string
   tailDiffMaxOrderbookAgeMs?: number
@@ -1663,7 +1663,6 @@ export interface CryptoTailStrategyDto {
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */
 export interface CryptoTailTailDiffParams {
-  tailDiffShadowMode?: boolean
   tailDiffDirection?: number
   tailDiffWindowStartSeconds?: number
   tailDiffWindowEndSeconds?: number
@@ -1679,6 +1678,7 @@ export interface CryptoTailTailDiffParams {
   tailDiffModelProbSource?: string
   tailDiffStatsMinSamples?: number
   tailDiffStatsLookbackDays?: number
+  tailDiffStatsDataSource?: string
   tailDiffMaxSpread?: string
   tailDiffDepthMultiplier?: string
   tailDiffMaxOrderbookAgeMs?: number
@@ -1840,29 +1840,19 @@ export interface ReversalResearchCsvResponse {
   total: number
 }
 
-/** 尾盘价差评分预览请求 */
+/** 尾盘价差评分预览请求（以实盘为准：仅需策略 ID + 评估方向，其余取实时盘口/余额/价源） */
 export interface CryptoTailTailDiffPreviewRequest {
   strategyId: number
-  periodStartUnix?: number
+  /** 评估方向 0=Up 1=Down */
   outcomeIndex?: number
-  openPrice: string
-  closePrice: string
-  sigmaPerSqrtS: string
-  remainingSeconds: number
-  bestBid: string
-  bestAsk?: string
-  bidDepthUsd?: string
-  askDepthUsd?: string
-  orderbookAgeMs?: number
-  priceAgeMs?: number
-  reverseVelocitySigmaPerSec?: string
-  statsSampleCount?: number
-  statsModelProb?: string
-  candidateAmountUsdc?: string
 }
 
 /** 尾盘价差评分预览响应 */
 export interface CryptoTailTailDiffPreviewResponse {
+  /** 实盘决策结果：BUY/WATCH/SKIP */
+  outcome: string
+  /** 决策原因（解释为何未入场） */
+  reason: string
   score: number
   tier?: string | null
   passed: boolean

@@ -77,6 +77,8 @@ data class SettledPayload(
  *  - 阈值快照：minModelProb / minEdge / minDiffSigma / minScore
  */
 data class TailDiffScorePayload(
+    val strategyId: String? = null,
+    val marketSlug: String? = null,
     val rawDiff: String? = null,
     val diffPct: String? = null,
     val diffSigma: String? = null,
@@ -118,6 +120,5 @@ data class TailDiffScorePayload(
     val minDiffSigma: String? = null,
     val minScore: String? = null,
     val statsSampleCount: String? = null,
-    val statsReversalProb: String? = null,
-    val shadowMode: String? = null
+    val statsReversalProb: String? = null
 )

@@ -142,14 +142,13 @@ class TailDiffExitPresetResolver {
         return preset to preset.toMap().toJson()
     }
 
-    @Suppress("UNCHECKED_CAST")
     private fun parsePreset(raw: Map<String, Any?>, default: TailDiffExitPreset): TailDiffExitPreset {
-        val tpLimitRaw = raw["tp_limit"] as? Map<String, Any?> ?: emptyMap()
-        val stopLossRaw = raw["stop_loss"] as? Map<String, Any?> ?: emptyMap()
-        val dynamicRaw = raw["dynamic_exit"] as? Map<String, Any?> ?: emptyMap()
-        val executionRaw = raw["execution"] as? Map<String, Any?> ?: emptyMap()
+        val tpLimitRaw = raw.pickMap("tp_limit", "tpLimit")
+        val stopLossRaw = raw.pickMap("stop_loss", "stopLoss")
+        val dynamicRaw = raw.pickMap("dynamic_exit", "dynamicExit")
+        val executionRaw = raw.pickMap("execution", "execution")
         return TailDiffExitPreset(
-            holdToExpiry = raw["hold_to_expiry"].asBool(default.holdToExpiry),
+            holdToExpiry = raw.pick("hold_to_expiry", "holdToExpiry").asBool(default.holdToExpiry),
             tpLimit = TailDiffExitPreset.TpLimit(
                 enabled = tpLimitRaw["enabled"].asBool(default.tpLimit.enabled),
                 price = tpLimitRaw["price"].asBigDecimal(default.tpLimit.price),
@@ -158,21 +157,21 @@ class TailDiffExitPresetResolver {
             stopLoss = TailDiffExitPreset.StopLoss(
                 enabled = stopLossRaw["enabled"].asBool(default.stopLoss.enabled),
                 offset = stopLossRaw["offset"].asBigDecimal(default.stopLoss.offset),
-                minPrice = stopLossRaw["min_price"].asBigDecimal(default.stopLoss.minPrice),
+                minPrice = stopLossRaw.pick("min_price", "minPrice").asBigDecimal(default.stopLoss.minPrice),
                 ratio = stopLossRaw["ratio"].asBigDecimal(default.stopLoss.ratio)
             ),
             dynamicExit = TailDiffExitPreset.DynamicExit(
                 enabled = dynamicRaw["enabled"].asBool(default.dynamicExit.enabled),
-                minDiffSigmaAfterEntry = dynamicRaw["min_diff_sigma_after_entry"].asBigDecimal(default.dynamicExit.minDiffSigmaAfterEntry),
-                maxDiffRetracePct = dynamicRaw["max_diff_retrace_pct"].asBigDecimal(default.dynamicExit.maxDiffRetracePct),
-                minModelProbAfterEntry = dynamicRaw["min_model_prob_after_entry"].asBigDecimal(default.dynamicExit.minModelProbAfterEntry),
-                minOddsAfterEntry = dynamicRaw["min_odds_after_entry"].asBigDecimal(default.dynamicExit.minOddsAfterEntry),
-                maxReverseVelocitySigma = dynamicRaw["max_reverse_velocity_sigma"].asBigDecimal(default.dynamicExit.maxReverseVelocitySigma)
+                minDiffSigmaAfterEntry = dynamicRaw.pick("min_diff_sigma_after_entry", "minDiffSigmaAfterEntry").asBigDecimal(default.dynamicExit.minDiffSigmaAfterEntry),
+                maxDiffRetracePct = dynamicRaw.pick("max_diff_retrace_pct", "maxDiffRetracePct").asBigDecimal(default.dynamicExit.maxDiffRetracePct),
+                minModelProbAfterEntry = dynamicRaw.pick("min_model_prob_after_entry", "minModelProbAfterEntry").asBigDecimal(default.dynamicExit.minModelProbAfterEntry),
+                minOddsAfterEntry = dynamicRaw.pick("min_odds_after_entry", "minOddsAfterEntry").asBigDecimal(default.dynamicExit.minOddsAfterEntry),
+                maxReverseVelocitySigma = dynamicRaw.pick("max_reverse_velocity_sigma", "maxReverseVelocitySigma").asBigDecimal(default.dynamicExit.maxReverseVelocitySigma)
             ),
             execution = TailDiffExitPreset.Execution(
-                tpSlippage = executionRaw["tp_slippage"].asBigDecimalOrNull() ?: default.execution.tpSlippage,
-                stopSlippage = executionRaw["stop_slippage"].asBigDecimalOrNull() ?: default.execution.stopSlippage,
-                worstPrice = executionRaw["worst_price"].asBigDecimalOrNull() ?: default.execution.worstPrice
+                tpSlippage = executionRaw.pick("tp_slippage", "tpSlippage").asBigDecimalOrNull() ?: default.execution.tpSlippage,
+                stopSlippage = executionRaw.pick("stop_slippage", "stopSlippage").asBigDecimalOrNull() ?: default.execution.stopSlippage,
+                worstPrice = executionRaw.pick("worst_price", "worstPrice").asBigDecimalOrNull() ?: default.execution.worstPrice
             )
         )
     }
@@ -196,6 +195,49 @@ class TailDiffExitPresetResolver {
         is Number -> BigDecimal(this.toString())
         is String -> if (this.isBlank()) default else this.toSafeBigDecimal()
         else -> default
+    }
+
+    /**
+     * 校验单档退出预设 JSON 合法性（供 create/update 校验复用）：
+     *  - 空串/NULL 视为合法（走该档默认）。
+     *  - 非空：必须能解析为 JSON 对象；若提供子块（tp_limit/stop_loss/dynamic_exit/execution，兼容 camelCase）必须为对象；
+     *    提供的数值/比例需在合理范围（price/min_price/ratio/min_*_after_entry ∈ [0,1]，offset/retrace ∈ [0,1]，slippage>=0）。
+     * 仅做"结构 + 边界"校验，缺省字段走默认，不强制全部字段存在。
+     */
+    fun isValid(raw: String?): Boolean {
+        if (raw.isNullOrBlank()) return true
+        val map = try {
+            raw.fromJson<Map<String, Any?>>() ?: return false
+        } catch (e: Exception) {
+            return false
+        }
+        // 子块若存在必须为对象
+        for ((s, c) in listOf("tp_limit" to "tpLimit", "stop_loss" to "stopLoss", "dynamic_exit" to "dynamicExit", "execution" to "execution")) {
+            val v = map.pick(s, c)
+            if (v != null && v !is Map<*, *>) return false
+        }
+        val tp = map.pickMap("tp_limit", "tpLimit")
+        val sl = map.pickMap("stop_loss", "stopLoss")
+        val dyn = map.pickMap("dynamic_exit", "dynamicExit")
+        val exec = map.pickMap("execution", "execution")
+        fun unit(v: Any?): Boolean {
+            val bd = v.asBigDecimalOrNull() ?: return true
+            return bd >= BigDecimal.ZERO && bd <= BigDecimal.ONE
+        }
+        fun nonNeg(v: Any?): Boolean {
+            val bd = v.asBigDecimalOrNull() ?: return true
+            return bd >= BigDecimal.ZERO
+        }
+        if (!unit(tp["price"]) || !unit(tp["ratio"])) return false
+        if (!unit(sl["offset"]) || !unit(sl.pick("min_price", "minPrice")) || !unit(sl["ratio"])) return false
+        if (!unit(dyn.pick("max_diff_retrace_pct", "maxDiffRetracePct"))) return false
+        if (!unit(dyn.pick("min_model_prob_after_entry", "minModelProbAfterEntry"))) return false
+        if (!unit(dyn.pick("min_odds_after_entry", "minOddsAfterEntry"))) return false
+        if (!nonNeg(dyn.pick("min_diff_sigma_after_entry", "minDiffSigmaAfterEntry"))) return false
+        if (!nonNeg(dyn.pick("max_reverse_velocity_sigma", "maxReverseVelocitySigma"))) return false
+        if (!nonNeg(exec.pick("tp_slippage", "tpSlippage")) || !nonNeg(exec.pick("stop_slippage", "stopSlippage"))) return false
+        if (!unit(exec.pick("worst_price", "worstPrice"))) return false
+        return true
     }
 
     fun defaultForTier(tier: TailDiffTier): TailDiffExitPreset = when (tier) {
@@ -242,6 +284,18 @@ class TailDiffExitPresetResolver {
         )
     }
 }
+
+/**
+ * 从 Map 中按 snake_case 优先、camelCase 兜底取值（兼容前端 placeholder 与用户两种命名习惯）。
+ * 解析层统一别名，避免 camelCase 配置被静默忽略而回退默认档。
+ */
+internal fun Map<String, Any?>.pick(snake: String, camel: String): Any? =
+    if (this.containsKey(snake)) this[snake] else this[camel]
+
+/** 按 snake/camel 别名取嵌套 Map；缺失返回空 Map。 */
+@Suppress("UNCHECKED_CAST")
+internal fun Map<String, Any?>.pickMap(snake: String, camel: String): Map<String, Any?> =
+    (pick(snake, camel) as? Map<String, Any?>) ?: emptyMap()
 
 /** 入场分层标签（评分 → 分层 → 金额倍率 → 退出预设） */
 enum class TailDiffTier(val label: String) {

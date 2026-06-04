@@ -178,6 +178,7 @@ enum class ErrorCode(
     CRYPTO_TAIL_STRATEGY_AMOUNT_MODE_INVALID(4714, "投入方式仅支持 RATIO 或 FIXED", "error.crypto_tail_strategy_amount_mode_invalid"),
     CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID(4715, "障碍模式参数不合法", "error.crypto_tail_strategy_barrier_param_invalid"),
     CRYPTO_TAIL_STRATEGY_TAIL_DIFF_PARAM_INVALID(4716, "尾盘价差模式参数不合法", "error.crypto_tail_strategy_tail_diff_param_invalid"),
+    CRYPTO_TAIL_STRATEGY_TAIL_DIFF_PREVIEW_NOT_READY(4717, "实时盘口未就绪：请确认策略已启用并在订阅周期内", "error.crypto_tail_strategy_tail_diff_preview_not_ready"),
 
     // 反转率研究 (4730-4739)
     REVERSAL_RESEARCH_PARAM_INVALID(4730, "反转率研究参数不合法", "error.reversal_research_param_invalid"),

@@ -71,10 +71,10 @@ CryptoTailBracketExitService.decideExit
 
 | 分组 | 关键列（默认值） |
 |---|---|
-| 开关/方向 | `tail_diff_shadow_mode=FALSE`、`tail_diff_direction=0`（0 自动/1 只Up/2 只Down） |
+| 方向 | `tail_diff_direction=0`（0 自动/1 只Up/2 只Down） |
 | 入场窗口 | `tail_diff_window_start_seconds=150`、`tail_diff_window_end_seconds=60`、`tail_diff_min_remaining_seconds=50`、`tail_diff_confirm_ticks=2` |
 | 价格区间 | `tail_diff_min_price=0.88`、`tail_diff_max_price=0.93`、`tail_diff_hard_max_price=0.94` |
-| 模型/EV | `tail_diff_min_model_prob=0.95`、`tail_diff_min_edge=0.025`、`tail_diff_cost_buffer=0.01`、`tail_diff_min_diff_sigma=1.8`、`tail_diff_model_prob_source='HYBRID'`、`tail_diff_stats_min_samples=50`、`tail_diff_stats_lookback_days=180` |
+| 模型/EV | `tail_diff_min_model_prob=0.95`、`tail_diff_min_edge=0.025`、`tail_diff_cost_buffer=0.01`、`tail_diff_min_diff_sigma=1.8`、`tail_diff_model_prob_source='HYBRID'`、`tail_diff_stats_min_samples=50`、`tail_diff_stats_lookback_days=180`、`tail_diff_stats_data_source='BINANCE'`（V69，BINANCE/POLYMARKET） |
 | 盘口质量 | `tail_diff_max_spread=0.02`、`tail_diff_depth_multiplier=3.0`、`tail_diff_max_orderbook_age_ms=2000`、`tail_diff_max_price_age_ms=2000` |
 | 反抽 | `tail_diff_reverse_velocity_window_seconds=10`、`tail_diff_max_reverse_velocity_sigma=0.30` |
 | 评分权重（和=100） | diff=25、time=15、odds_underprice=20、odds_lag=10、history=15、book=10、data=5 |
@@ -329,7 +329,7 @@ HYBRID   : 样本足 → HYBRID_STATS（历史）；否则 HYBRID_FALLBACK（Bar
 
 | 计划书要求 | 落地证据 |
 |---|---|
-| 独立模式，开关可控 | `TradingMode.TAIL_DIFF` + `tailDiffShadowMode` |
+| 独立模式 | `TradingMode.TAIL_DIFF` |
 | 自动/手动领先方向 | `tailDiffDirection` 0/1/2 + 方向闸 |
 | diff_sigma 计算 | `BarrierProbability.safeRatio` 复用 |
 | 0–100 评分 + 硬否决 | `CryptoTailScoreEngine`（7 项加权 + 12 类 veto） |
@@ -350,7 +350,7 @@ HYBRID   : 样本足 → HYBRID_STATS（历史）；否则 HYBRID_FALLBACK（Bar
 2. **Polymarket PoC 规模受限**：5m 市场 180 天约 5 万周期，逐周期 Gamma+CLOB 请求不现实，故用 `maxPeriods`（默认 300）只取最近 N 个已结算周期；结论仅作方向性参考，非全量统计。
 3. **POLYMARKET 反转统计的结算判定**：用 Up 代币历史价末点 `≥0.5` 判定结算方向（已结算市场收敛到 1/0），极端薄盘/异常行情下可能有偏差。
 4. **diff_sigma 历史 σ 估计**：BINANCE 回填用最近 60 根 1m 绝对变动估 σ，窗口较短在剧烈行情下噪声偏大。
-5. **参数建议样本依赖**：阶段四建议质量强依赖 SHADOW/实盘积累的已结算样本量；冷启动阶段（< minSamples）只给分桶不出建议，符合预期但需用户知晓。
+5. **参数建议样本依赖**：阶段四建议质量强依赖实盘积累的已结算样本量；冷启动阶段（< minSamples）只给分桶不出建议，符合预期但需用户知晓。
 6. **modelProb 历史命中率**：HYBRID 在无对应分桶样本时回退 BarrierPWin（标 `HYBRID_FALLBACK`），需观察 STATS 命中率是否达预期，否则历史分项长期取中性 0.5。
 7. **窗口语义**：`windowStart(150) > windowEnd(60)` 表示"剩余时间"区间 `[60,150]`，评分 time 分项与否决窗口语义需保持一致（已在 ScoreEngine 注释明确）。
 
@@ -359,10 +359,10 @@ HYBRID   : 样本足 → HYBRID_STATS（历史）；否则 HYBRID_FALLBACK（Bar
 ## 14. 建议的上线步骤
 
 1. 测试库执行迁移 V62/V63/V64，确认应用启动正常（实体/列对齐）。
-2. 先 `tailDiffShadowMode=true` 空跑 1–3 天，积累决策日志与候选样本。
+2. 用 preview（以实盘 evaluate 为准）观察当前市场决策与评分，积累决策日志与候选样本。
 3. 跑 BINANCE 反转回填（180 天），可选跑 Polymarket PoC 做双源对比。
 4. 用参数建议器查看分桶与推荐，手动微调阈值后保存。
-5. 关闭 SHADOW、以最小金额实盘灰度，结合每日盈亏/连亏风控观察。
+5. 以最小金额实盘灰度，结合每日盈亏/连亏风控观察。
 
 ---
 
@@ -415,3 +415,39 @@ HYBRID   : 样本足 → HYBRID_STATS（历史）；否则 HYBRID_FALLBACK（Bar
 - 研究弹窗 [CryptoTailReversalResearchModal.tsx](frontend/src/pages/CryptoTailReversalResearchModal.tsx)：新增采样间隔选择（1m/1s）、MAE/MFE/虚拟胜率/TP%/STOP%/单位盈亏列、加权命中率汇总（加权维持概率、加权虚拟胜率、样本总数、低样本分桶数）、低样本分桶标记（橙色 Tag + 行淡化，阈值 30）、以及 POLYMARKET 数据源的 PoC 警示横幅。三语 i18n 已补齐。
 
 > 口径说明：BINANCE 的 MAE/MFE/虚拟退出基于 `winProbTerminal` 概率代理（非真实赔率）；POLYMARKET 基于真实赔率路径但为 PoC 样本。两者均作研究参考，不直接进入实盘下单决策（实盘 modelProb 仍由 ScoreEngine 的 STATS/HYBRID 策略消费 `model_prob`）。
+
+---
+
+## 17. 统一修复（实盘审查 P0/P1/P2）
+
+本轮修复严格按"根因优先 / 全局视角 / 复用决策 / 保守修改"推进，迁移 V68/V69 均为可加/删列，旧记录零影响。
+
+### 17.1 删除策略级影子模式 `tailDiffShadowMode`（V68）
+- 影子空跑能力已由 preview（统一走实盘 evaluate）与决策日志覆盖，移除字段/DTO/前端/执行拦截/payload/文档全链路噪声。
+- 迁移 [V68__crypto_tail_drop_shadow_mode.sql](backend/src/main/resources/db/migration/V68__crypto_tail_drop_shadow_mode.sql) `DROP COLUMN tail_diff_shadow_mode`（不回改 V62）。
+
+### 17.2 退出预设键名 camelCase/snake_case 兼容
+- [TailDiffExitPreset.kt](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/taildiff/TailDiffExitPreset.kt) 引入 `Map.pick(snake,camel)`/`pickMap` 别名取值；`parsePreset` 与 [CryptoTailBracketExitService](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/CryptoTailBracketExitService.kt) 的 `parseTailDiffPresetFromMap` 复用同一 helper。`toMap()` 仍恒产 snake_case 落库。
+- 校验：`TailDiffExitPresetResolver.isValid` 做"结构+边界"校验，`isTailDiffParamsValid` 对三档退出 JSON 严格校验（非法 4xx，不再静默回退默认档）。
+
+### 17.3 preview 以实盘为准
+- [控制器 preview](backend/src/main/kotlin/com/wrbug/polymarketbot/controller/cryptotail/CryptoTailTailDiffController.kt) 取该策略当前实时盘口（[CryptoTailOrderbookWsService.livePreviewContext](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/CryptoTailOrderbookWsService.kt)）+ 可支配余额，直接调 `CryptoTailTailDiffDecisionService.preview()`（复用 evaluate，无副作用）。删除控制器本地 modelSide/diffSigma 重复计算与模拟入参；价源未就绪时返回与实盘一致的 SKIP（`CRYPTO_TAIL_STRATEGY_TAIL_DIFF_PREVIEW_NOT_READY`）。
+
+### 17.4 急跌止损抢占
+- [CryptoTailBracketExitService](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/CryptoTailBracketExitService.kt)：`isEmergencyExit`（HARD_STOP/STOP/MODEL_INVALID/MODEL_FLIP/GAP_FLIP）触发时，先经 [CryptoTailExitOrderReconciler.cancelPendingExitForPreempt](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/CryptoTailExitOrderReconciler.kt) 撤未成交退出单并按实际成交重读 remaining（防超卖），再放宽深度门禁直发 FAK，并以退出预设 `execution.worstPrice` 兜底；保留 `failBackoff`。非紧急退出行为不变。
+
+### 17.5 清空语义（三态）与 TAIL_DIFF 专属发单前闸
+- 更新可空字段（exitPreset*Json/entrySegmentsJson/dailyLossLimit）采用三态：缺失/`null`=保留、空串=清空置 NULL、非空=更新；前端清空发空串。
+- 新增 `evaluateTailDiffEntryGates`：复用价源/盘口质量校验，仅套 TAIL_DIFF 阈值（hardMaxPrice/minEdge/minModelProb/minDiffSigma + 方向），不再误用 BARRIER 的 entryProb(0.55)/wick 等闸。
+
+### 17.6 统计桶语义与数据源（V69）
+- 桶以"领先方向"（leadOutcome=modelSide）为键：[TailReversalStatsLookup.Query](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/taildiff/TailReversalStatsLookup.kt) 字段更名 `leadOutcome`，DecisionService 传 `modelSide`；修复评估非领先方向时无谓 FALLBACK。
+- 数据源可配置：新增策略列 `tail_diff_stats_data_source`（V69，默认 BINANCE）→ `Query.dataSource`。[RealTailReversalStatsLookup](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/reversal/RealTailReversalStatsLookup.kt) 在 (diffSigma, odds) 两轴各自回退 ANY，统一覆盖 BINANCE（按 σ 细分、odds=ANY）与 POLYMARKET（按 odds 细分、σ=ANY）两种回填口径。
+
+### 17.7 分段 `min_model_prob` 与 WS 窗口统一
+- [TailDiffEntrySegmentResolver](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/taildiff/TailDiffEntrySegmentResolver.kt) `Segment`/`applyOverrides`/`parseSegment`/`isValid` 增 `min_model_prob`；三语 help/placeholder 示例补齐。
+- WS [onBestBid](backend/src/main/kotlin/com/wrbug/polymarketbot/service/cryptotail/CryptoTailOrderbookWsService.kt) 对 TAIL_DIFF 改用 `windowEnvelope`（remaining 维度）预过滤，避免早窗分段被全局 elapsed 窗误卡；其他模式保持原行为。
+
+### 17.8 清理与单测
+- 死代码移除：`TailDiffBuckets.diffPctBucket`、`CryptoTailPolymarketPriceHistoryRepository.existsByTokenId`；`buildScorePayload` 补 `strategyId/marketSlug`。
+- 新增单测：`TailDiffBucketsTest`、`TailDiffExitPresetTest`（snake+camel/toMap 往返/isValid）、`TailDiffEntrySegmentResolverTest`（含 min_model_prob/windowEnvelope）、`CryptoTailScoreEngineTest`（veto/tier/窗口）、`RealTailReversalStatsLookupTest`（leadOutcome 语义 + dataSource + ANY 回退矩阵）。

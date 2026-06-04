@@ -178,8 +178,6 @@ class CryptoTailScoreEngine {
             vetoes += "PRICE_RETRACING_FAST"
         }
 
-        // 7) SHADOW 不算否决：它是软开关；分发层根据 shadowMode 决定是否真正下单。
-
         return vetoes.distinct()
     }
 
