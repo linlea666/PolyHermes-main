@@ -1789,7 +1789,14 @@
       "compareLookbacks": "回溯天數",
       "compareBtn": "評測對比",
       "compareBest": "最優",
-      "compareEmpty": "所選組合均無資料，請先回填對應資料源/回溯天數"
+      "compareEmpty": "所選組合均無資料，請先回填對應資料源/回溯天數",
+      "compareReliabilityHint": "「最優」僅在樣本充足的組合中評選：樣本總數 ≥ {{minSamples}} 且低樣本分桶占比 ≤ {{maxRatio}}%；不達標的組合標灰，採納前會二次確認。",
+      "compareLowReliability": "樣本不足",
+      "adoptColumn": "採納",
+      "adoptBtn": "採納",
+      "adoptLowReliabilityConfirm": "該組合樣本不足、可靠性低，仍要採納嗎？",
+      "adoptConfirmOk": "仍然採納",
+      "adoptConfirmCancel": "取消"
     },
     "advisor": {
       "entryBtn": "參數建議",
@@ -2021,7 +2028,9 @@
         "coinUnsupported": "目前市場幣種暫無歷史反轉研究資料（僅支援 BTC/ETH），統計來源不會命中，modelProb 將走解析解。",
         "noDataTitle": "該回溯天數/資料源暫無回填資料",
         "noDataDesc": "{{coin}} / {{lookback}}天 / {{source}} 暫無反轉研究資料，HYBRID 將靜默退化為解析解。請先在「反轉率研究」中以相同回溯天數與資料源回填後再使用。",
-        "ok": "已偵測到 {{coin}} / {{lookback}}天 / {{source}} 的反轉研究資料，統計來源可正常命中。"
+        "ok": "已偵測到 {{coin}} / {{lookback}}天 / {{source}} 的反轉研究資料，統計來源可正常命中。",
+        "compareAndAdopt": "評測對比並採納",
+        "adoptSuccess": "已採納：資料源 {{source}}，回溯 {{lookback}} 天（已回填，儲存後生效）"
       },
       "tailDiffPreviewSubsection": "評分預覽（以實盤為準）",
       "tailDiffPreviewInfo": "預覽以實盤為準：後端用該策略當前即時盤口、可支配餘額與價源，走與實盤完全一致的決策鏈算分。請先儲存策略；策略需已啟用並處於訂閱週期內，否則會返回「即時盤口未就緒」。",

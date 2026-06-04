@@ -328,6 +328,8 @@ const CryptoTailStrategyList: React.FC = () => {
   const [tailDiffPreview, setTailDiffPreview] = useState<CryptoTailTailDiffPreviewResponse | null>(null)
   const [tailDiffPreviewLoading, setTailDiffPreviewLoading] = useState(false)
   const [reversalModalOpen, setReversalModalOpen] = useState(false)
+  // 研究弹窗是否处于「采纳」模式（从策略编辑打开，对比后可一键回填该策略的统计字段）
+  const [reversalAdoptMode, setReversalAdoptMode] = useState(false)
   const [advisorModalOpen, setAdvisorModalOpen] = useState(false)
   const [advisorStrategyId, setAdvisorStrategyId] = useState<number | null>(null)
   const [advisorStrategyName, setAdvisorStrategyName] = useState<string>('')
@@ -1547,7 +1549,7 @@ const CryptoTailStrategyList: React.FC = () => {
           <Button
             type="link"
             icon={<LineChartOutlined />}
-            onClick={() => setReversalModalOpen(true)}
+            onClick={() => { setReversalAdoptMode(false); setReversalModalOpen(true) }}
             style={{ padding: 0, height: 'auto', fontSize: isMobile ? 14 : 16 }}
           >
             {t('cryptoTailStrategy.reversal.entryBtn')}
@@ -1751,7 +1753,25 @@ const CryptoTailStrategyList: React.FC = () => {
         onRefresh={loadPnlCurve}
       />
 
-      <CryptoTailReversalResearchModal open={reversalModalOpen} onClose={() => setReversalModalOpen(false)} />
+      <CryptoTailReversalResearchModal
+        open={reversalModalOpen}
+        onClose={() => setReversalModalOpen(false)}
+        defaultCoin={reversalAdoptMode ? (inferCoinFromSlug(form.getFieldValue('marketSlugPrefix')) ?? undefined) : undefined}
+        defaultIntervalSeconds={reversalAdoptMode ? marketOptions.find((m) => m.slug === form.getFieldValue('marketSlugPrefix'))?.intervalSeconds : undefined}
+        onAdopt={reversalAdoptMode ? (ds, lb) => {
+          const patch: Record<string, unknown> = {
+            tailDiffStatsDataSource: ds,
+            tailDiffStatsLookbackDays: lb
+          }
+          // 采纳统计来源时，若当前为 FALLBACK（不查表）则提升为 HYBRID，否则采纳无效
+          if ((form.getFieldValue('tailDiffModelProbSource') ?? 'HYBRID') === 'FALLBACK') {
+            patch.tailDiffModelProbSource = 'HYBRID'
+          }
+          form.setFieldsValue(patch)
+          message.success(t('cryptoTailStrategy.form.statsCoverage.adoptSuccess', { source: ds, lookback: lb }))
+          setReversalModalOpen(false)
+        } : undefined}
+      />
 
       <CryptoTailTailDiffAdvisorModal
         open={advisorModalOpen}
@@ -2876,6 +2896,14 @@ const CryptoTailStrategyList: React.FC = () => {
                 />
               </Form.Item>
               <TailDiffStatsCoverageAlert form={form} marketOptions={marketOptions} />
+              <Form.Item>
+                <Button
+                  icon={<LineChartOutlined />}
+                  onClick={() => { setReversalAdoptMode(true); setReversalModalOpen(true) }}
+                >
+                  {t('cryptoTailStrategy.form.statsCoverage.compareAndAdopt')}
+                </Button>
+              </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.tailDiffBookSubsection')}</Typography.Text>

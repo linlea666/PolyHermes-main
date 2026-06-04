@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Modal, Form, Select, InputNumber, Button, Table, Space, message, Tag, Typography, Alert, Statistic, Row, Col } from 'antd'
+import { Modal, Form, Select, InputNumber, Button, Table, Space, message, Tag, Typography, Alert, Statistic, Row, Col, Popconfirm } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { useMediaQuery } from 'react-responsive'
 import { apiService } from '../services/api'
@@ -8,10 +8,25 @@ import type { ReversalStatDto, PolymarketReversalBackfillResponse } from '../typ
 interface Props {
   open: boolean
   onClose: () => void
+  /** 采纳回调：提供时对比表显示「采纳」按钮，点击后回填目标策略的数据源/回溯天数 */
+  onAdopt?: (dataSource: string, lookbackDays: number) => void
+  /** 从策略编辑打开时预填的币种/周期，便于直接对比该策略对应数据 */
+  defaultCoin?: string
+  defaultIntervalSeconds?: number
 }
 
 /** 样本不足阈值：低于此值的分桶统计可信度低，UI 标记提醒 */
 const LOW_SAMPLE_THRESHOLD = 30
+
+/** 评测对比可靠性门槛：样本总数过低或低样本分桶占比过高的组合不参与「最优」评选，避免误采纳噪声 */
+const COMPARE_MIN_TOTAL_SAMPLES = 1000
+const COMPARE_MAX_LOW_SAMPLE_RATIO = 0.34
+
+/** 组合是否样本充足、可作为「最优」候选 */
+const isReliable = (r: CompareRow): boolean =>
+  r.totalSample >= COMPARE_MIN_TOTAL_SAMPLES &&
+  r.buckets > 0 &&
+  r.lowSampleBuckets / r.buckets <= COMPARE_MAX_LOW_SAMPLE_RATIO
 
 interface ReversalSummary {
   totalSample: number
@@ -58,7 +73,7 @@ const COMPARE_LOOKBACK_OPTIONS = [30, 60, 90, 180, 365]
  * 历史反转率研究弹窗：一键回填（基于 Binance 1m K 线）、查看分桶反转率、导出 CSV。
  * 仅查询/回填聚合统计，不影响交易；结果用于 Tail Diff 模型概率来源（HYBRID/STATS）。
  */
-const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose }) => {
+const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose, onAdopt, defaultCoin, defaultIntervalSeconds }) => {
   const { t } = useTranslation()
   const isMobile = useMediaQuery({ maxWidth: 768 })
   const [form] = Form.useForm()
@@ -219,9 +234,9 @@ const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose }) => 
     }
   }
 
-  // 最优组合 key：仅在有样本的组合中比较，优先加权虚拟胜率，回退加权维持概率
+  // 最优组合 key：仅在「样本充足」的组合中比较，优先加权虚拟胜率，回退加权维持概率
   const bestCompareKey = useMemo(() => {
-    const valid = cmpRows.filter((r) => r.totalSample > 0)
+    const valid = cmpRows.filter(isReliable)
     if (valid.length === 0) return null
     const score = (r: CompareRow) => (r.avgVirtualWin != null ? r.avgVirtualWin : r.avgModelProb)
     return valid.reduce((best, r) => (score(r) > score(best) ? r : best)).key
@@ -294,7 +309,7 @@ const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose }) => 
           description={t('cryptoTailStrategy.reversal.pocBannerDesc')}
         />
       )}
-      <Form form={form} layout="inline" initialValues={{ coin: 'BTC', intervalSeconds: 300, lookbackDays: 180, dataSource: 'BINANCE', maxPeriods: 300, samplingSeconds: 60 }} style={{ marginBottom: 16, rowGap: 8, flexWrap: 'wrap' }}>
+      <Form form={form} layout="inline" initialValues={{ coin: defaultCoin ?? 'BTC', intervalSeconds: defaultIntervalSeconds ?? 300, lookbackDays: 180, dataSource: 'BINANCE', maxPeriods: 300, samplingSeconds: 60 }} style={{ marginBottom: 16, rowGap: 8, flexWrap: 'wrap' }}>
         <Form.Item name="coin" label={t('cryptoTailStrategy.reversal.coin')}>
           <Select style={{ width: 100 }} options={[{ value: 'BTC', label: 'BTC' }, { value: 'ETH', label: 'ETH' }]} />
         </Form.Item>
@@ -384,42 +399,78 @@ const CryptoTailReversalResearchModal: React.FC<Props> = ({ open, onClose }) => 
           </Button>
         </Space>
         {cmpRows.length > 0 && (
-          <Table<CompareRow>
-            style={{ marginTop: 12 }}
-            rowKey="key"
-            size="small"
-            pagination={false}
-            dataSource={cmpRows}
-            columns={[
-              {
-                title: t('cryptoTailStrategy.reversal.dataSource'),
-                dataIndex: 'dataSource',
-                render: (v: string, r: CompareRow) => (
-                  <Space size={4}>
-                    <Tag color={v === 'BINANCE' ? 'blue' : 'gold'}>{v}</Tag>
-                    {r.key === bestCompareKey && <Tag color="green">{t('cryptoTailStrategy.reversal.compareBest')}</Tag>}
-                  </Space>
-                )
-              },
-              { title: t('cryptoTailStrategy.reversal.lookbackDays'), dataIndex: 'lookbackDays', render: (v: number) => `${v}d` },
-              { title: t('cryptoTailStrategy.reversal.summaryAvgModelProb'), dataIndex: 'avgModelProb', render: (v: number) => pct(v) },
-              {
-                title: t('cryptoTailStrategy.reversal.summaryVirtualWin'),
-                dataIndex: 'avgVirtualWin',
-                render: (v: number | null) => (v == null ? '-' : pct(v))
-              },
-              { title: t('cryptoTailStrategy.reversal.summaryTotalSample'), dataIndex: 'totalSample' },
-              {
-                title: t('cryptoTailStrategy.reversal.summaryLowSample'),
-                key: 'lowSample',
-                render: (_: unknown, r: CompareRow) => (
-                  <span style={r.lowSampleBuckets > 0 ? { color: '#fa8c16' } : undefined}>
-                    {r.lowSampleBuckets} / {r.buckets}
-                  </span>
-                )
-              }
-            ]}
-          />
+          <>
+            <Typography.Text type="secondary" style={{ display: 'block', margin: '8px 0' }}>
+              {t('cryptoTailStrategy.reversal.compareReliabilityHint', {
+                minSamples: COMPARE_MIN_TOTAL_SAMPLES,
+                maxRatio: Math.round(COMPARE_MAX_LOW_SAMPLE_RATIO * 100)
+              })}
+            </Typography.Text>
+            <Table<CompareRow>
+              style={{ marginTop: 4 }}
+              rowKey="key"
+              size="small"
+              pagination={false}
+              dataSource={cmpRows}
+              onRow={(r) => (isReliable(r) ? {} : { style: { opacity: 0.55 } })}
+              columns={[
+                {
+                  title: t('cryptoTailStrategy.reversal.dataSource'),
+                  dataIndex: 'dataSource',
+                  render: (v: string, r: CompareRow) => (
+                    <Space size={4}>
+                      <Tag color={v === 'BINANCE' ? 'blue' : 'gold'}>{v}</Tag>
+                      {r.key === bestCompareKey && <Tag color="green">{t('cryptoTailStrategy.reversal.compareBest')}</Tag>}
+                      {r.totalSample > 0 && !isReliable(r) && <Tag color="orange">{t('cryptoTailStrategy.reversal.compareLowReliability')}</Tag>}
+                    </Space>
+                  )
+                },
+                { title: t('cryptoTailStrategy.reversal.lookbackDays'), dataIndex: 'lookbackDays', render: (v: number) => `${v}d` },
+                { title: t('cryptoTailStrategy.reversal.summaryAvgModelProb'), dataIndex: 'avgModelProb', render: (v: number) => pct(v) },
+                {
+                  title: t('cryptoTailStrategy.reversal.summaryVirtualWin'),
+                  dataIndex: 'avgVirtualWin',
+                  render: (v: number | null) => (v == null ? '-' : pct(v))
+                },
+                { title: t('cryptoTailStrategy.reversal.summaryTotalSample'), dataIndex: 'totalSample' },
+                {
+                  title: t('cryptoTailStrategy.reversal.summaryLowSample'),
+                  key: 'lowSample',
+                  render: (_: unknown, r: CompareRow) => (
+                    <span style={r.lowSampleBuckets > 0 ? { color: '#fa8c16' } : undefined}>
+                      {r.lowSampleBuckets} / {r.buckets}
+                    </span>
+                  )
+                },
+                ...(onAdopt
+                  ? [{
+                      title: t('cryptoTailStrategy.reversal.adoptColumn'),
+                      key: 'adopt',
+                      render: (_: unknown, r: CompareRow) => {
+                        if (r.totalSample === 0) {
+                          return <Typography.Text type="secondary">-</Typography.Text>
+                        }
+                        const btn = (
+                          <Button type="link" size="small" onClick={isReliable(r) ? () => onAdopt(r.dataSource, r.lookbackDays) : undefined}>
+                            {t('cryptoTailStrategy.reversal.adoptBtn')}
+                          </Button>
+                        )
+                        return isReliable(r) ? btn : (
+                          <Popconfirm
+                            title={t('cryptoTailStrategy.reversal.adoptLowReliabilityConfirm')}
+                            okText={t('cryptoTailStrategy.reversal.adoptConfirmOk')}
+                            cancelText={t('cryptoTailStrategy.reversal.adoptConfirmCancel')}
+                            onConfirm={() => onAdopt(r.dataSource, r.lookbackDays)}
+                          >
+                            {btn}
+                          </Popconfirm>
+                        )
+                      }
+                    }]
+                  : [])
+              ]}
+            />
+          </>
         )}
       </div>
       {rows.length > 0 && (

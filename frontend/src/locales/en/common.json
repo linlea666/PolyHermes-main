@@ -1789,7 +1789,14 @@
       "compareLookbacks": "Lookback days",
       "compareBtn": "Compare",
       "compareBest": "Best",
-      "compareEmpty": "No data for the selected combos. Backfill the matching data source / lookback first."
+      "compareEmpty": "No data for the selected combos. Backfill the matching data source / lookback first.",
+      "compareReliabilityHint": "\"Best\" is chosen only among combos with enough samples: total samples >= {{minSamples}} and low-sample bucket ratio <= {{maxRatio}}%. Combos below the bar are greyed out and require confirmation before adopting.",
+      "compareLowReliability": "Low samples",
+      "adoptColumn": "Adopt",
+      "adoptBtn": "Adopt",
+      "adoptLowReliabilityConfirm": "This combo has too few samples and low reliability. Adopt anyway?",
+      "adoptConfirmOk": "Adopt anyway",
+      "adoptConfirmCancel": "Cancel"
     },
     "advisor": {
       "entryBtn": "Param advisor",
@@ -2021,7 +2028,9 @@
         "coinUnsupported": "This market's coin has no historical reversal research data (only BTC/ETH supported); the stats source won't match and modelProb will use the analytic fallback.",
         "noDataTitle": "No backfilled data for this lookback / data source",
         "noDataDesc": "{{coin}} / {{lookback}}d / {{source}} has no reversal research data; HYBRID will silently degrade to the analytic solution. Please backfill in \"Reversal research\" with the same lookback and data source first.",
-        "ok": "Reversal research data found for {{coin}} / {{lookback}}d / {{source}}; the stats source will match normally."
+        "ok": "Reversal research data found for {{coin}} / {{lookback}}d / {{source}}; the stats source will match normally.",
+        "compareAndAdopt": "Compare & adopt",
+        "adoptSuccess": "Adopted: data source {{source}}, lookback {{lookback}}d (filled in; takes effect after saving)"
       },
       "tailDiffPreviewSubsection": "Score preview (matches live)",
       "tailDiffPreviewInfo": "Preview matches live: the backend scores this strategy using its current live order book, spendable balance and price source through the exact same decision chain as live trading. Save the strategy first; it must be enabled and within the subscribed period, otherwise it returns \"live order book not ready\".",
