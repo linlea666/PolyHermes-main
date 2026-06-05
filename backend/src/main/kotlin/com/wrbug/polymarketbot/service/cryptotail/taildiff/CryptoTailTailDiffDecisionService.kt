@@ -502,7 +502,8 @@ class CryptoTailTailDiffDecisionService(
                 // P0 可观测性：区分 realtime 断流 vs snapshot 兜底滞后，以及 RTDS 层(30s)与策略层就绪口径差异
                 "priceMode" to (readiness.priceMode ?: ""),
                 "priceRealtimeGapMs" to (readiness.lastRealtimeUpdateAt?.let { (now - it).coerceAtLeast(0L).toString() } ?: ""),
-                "rtdsReady" to readiness.ready.toString()
+                "rtdsReady" to readiness.ready.toString(),
+                "snapshotAgeMs" to (readiness.lastSnapshotAt?.let { (now - it).coerceAtLeast(0L).toString() } ?: "")
             ).toJson()
             decisionRecorder.record(
                 CryptoTailDecisionEvent(
@@ -661,20 +662,23 @@ class CryptoTailTailDiffDecisionService(
         priceRealtimeGapMs = priceDiag.realtimeGapMs?.toString(),
         rtdsReady = priceDiag.rtdsReady.toString(),
         strategyPriceFresh = (input.priceAgeMs != null && strategy.tailDiffMaxPriceAgeMs > 0 &&
-            input.priceAgeMs <= strategy.tailDiffMaxPriceAgeMs).toString()
+            input.priceAgeMs <= strategy.tailDiffMaxPriceAgeMs).toString(),
+        snapshotAgeMs = priceDiag.snapshotAgeMs?.toString()
     )
 
     /** 价源新鲜度诊断快照：把 RTDS readiness 折算成日志可读字段（P0 可观测性）。 */
     private data class PriceDiag(
         val priceMode: String?,
         val realtimeGapMs: Long?,
-        val rtdsReady: Boolean
+        val rtdsReady: Boolean,
+        val snapshotAgeMs: Long?
     )
 
     private fun priceDiagOf(strategy: CryptoTailStrategy, nowMs: Long): PriceDiag {
         val readiness = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
         val gap = readiness.lastRealtimeUpdateAt?.let { (nowMs - it).coerceAtLeast(0L) }
-        return PriceDiag(priceMode = readiness.priceMode, realtimeGapMs = gap, rtdsReady = readiness.ready)
+        val snapGap = readiness.lastSnapshotAt?.let { (nowMs - it).coerceAtLeast(0L) }
+        return PriceDiag(priceMode = readiness.priceMode, realtimeGapMs = gap, rtdsReady = readiness.ready, snapshotAgeMs = snapGap)
     }
 
     private fun inferCoin(strategy: CryptoTailStrategy): String? {

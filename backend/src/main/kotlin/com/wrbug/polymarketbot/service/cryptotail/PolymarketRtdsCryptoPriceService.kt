@@ -249,8 +249,10 @@ class PolymarketRtdsCryptoPriceService {
             val allowedAt = nextRefreshAllowedAt.computeIfAbsent(coin) { AtomicLong(0) }
             if (now < allowedAt.get()) return@filter false
             val latest = latestPrice[coin]
-            val noFreshRealtime = lastRealtimeUpdateAt[coin]?.let { now - it > freshnessMs } ?: true
-            latest == null || priceAgeMs(latest, now) > freshnessMs || noFreshRealtime
+            // 价已陈旧（含无数据）即补订阅；阈值用补订阅间隔(4s)而非 freshnessMs(30s)：
+            // realtime 断流多落在 6-29s(<30s) 区间，旧阈值在此区间不触发补订阅，snapshot 根本没被请求，
+            // 导致 priceAge 长期卡在 10-30s。改为按实际新鲜度触发，使新鲜 snapshot 及时被请求并救场。
+            latest == null || priceAgeMs(latest, now) > snapshotRefreshIntervalMs
         }
         if (due.isEmpty()) return
         due.forEach { nextRefreshAllowedAt.computeIfAbsent(it) { AtomicLong(0) }.set(now + snapshotRefreshIntervalMs) }
@@ -304,10 +306,10 @@ class PolymarketRtdsCryptoPriceService {
                     } else {
                         incoming
                     }
-                // 来的是 snapshot：若当前 latest 是仍新鲜的 realtime，绝不被 snapshot 覆盖
-                //（防止上游批处理/时钟偏移让旧 snapshot 的 sampleTime 偶然大于实时 tick 而倒灌污染新鲜度）。
-                old.priceMode == PRICE_MODE_REALTIME_UPDATE && (now - old.receivedAtMs) < freshnessMs -> old
-                // 其余（snapshot vs snapshot，或 realtime 已陈旧）：按样本时间单调覆盖。
+                // 来的是 snapshot：仅当样本时间确实更新才覆盖（含覆盖已陈旧的 realtime）。
+                // 单调比较(strict >)天然防止旧 snapshot 倒灌；与 realtime 同样本时间则保留 old（realtime 优先）。
+                // 历史 bug：此前用 (now - old.receivedAtMs) < freshnessMs(30s) 阻断 snapshot，导致 realtime
+                //   断流 6-29s 时，4s 补订阅拿回的新鲜 snapshot 被丢弃，priceAge 长期卡在 10-30s（实盘 0 成交根因之一）。
                 sampleTimeMs > old.sampleTimeMs -> incoming
                 else -> old
             }

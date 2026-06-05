@@ -138,5 +138,7 @@ data class TailDiffScorePayload(
     /** RTDS 层是否就绪（30s 口径），与 strategyPriceFresh 对照可解释「OK + priceAge 27s」 */
     val rtdsReady: String? = null,
     /** 策略层是否新鲜（priceAgeMs <= maxPriceAgeMs 口径） */
-    val strategyPriceFresh: String? = null
+    val strategyPriceFresh: String? = null,
+    /** 距上一次订阅快照的间隙(ms)；若长期为空/很大说明补订阅未拿回 snapshot（问题在订阅侧而非兜底护栏） */
+    val snapshotAgeMs: String? = null
 )
