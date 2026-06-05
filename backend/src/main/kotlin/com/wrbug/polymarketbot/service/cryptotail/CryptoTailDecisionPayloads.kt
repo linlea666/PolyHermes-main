@@ -120,5 +120,13 @@ data class TailDiffScorePayload(
     val minDiffSigma: String? = null,
     val minScore: String? = null,
     val statsSampleCount: String? = null,
-    val statsReversalProb: String? = null
+    val statsReversalProb: String? = null,
+    // 可观测性补充（用于诊断 PRICE_STALE/赔率/评分曲线问题）
+    val priceAgeMs: String? = null,
+    val orderbookAgeMs: String? = null,
+    val maxPriceAgeMs: String? = null,
+    val maxOrderbookAgeMs: String? = null,
+    val sigmaScoreMultiple: String? = null,
+    /** 买入实际成交价（bestAsk，无 ask 时为 bestBid+costBuffer 兜底价） */
+    val effectiveAsk: String? = null
 )

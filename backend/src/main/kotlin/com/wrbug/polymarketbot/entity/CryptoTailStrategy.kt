@@ -535,13 +535,13 @@ data class CryptoTailStrategy(
     @Column(name = "tail_diff_depth_multiplier", nullable = false, precision = 20, scale = 8)
     val tailDiffDepthMultiplier: BigDecimal = BigDecimal("3.0"),
 
-    /** 盘口快照最大年龄 ms */
+    /** 盘口快照最大年龄 ms（V73：默认 2000→5000，对齐盘口推送抖动） */
     @Column(name = "tail_diff_max_orderbook_age_ms", nullable = false)
-    val tailDiffMaxOrderbookAgeMs: Int = 2000,
+    val tailDiffMaxOrderbookAgeMs: Int = 5000,
 
-    /** 价源最大年龄 ms */
+    /** 价源最大年龄 ms（V73：默认 2000→6000，对齐 RTDS 约 1s 推送节奏与周期边界重连间隙） */
     @Column(name = "tail_diff_max_price_age_ms", nullable = false)
-    val tailDiffMaxPriceAgeMs: Int = 2000,
+    val tailDiffMaxPriceAgeMs: Int = 6000,
 
     /** 反抽速度估算窗口秒数 */
     @Column(name = "tail_diff_reverse_velocity_window_seconds", nullable = false)
@@ -678,9 +678,9 @@ data class CryptoTailStrategy(
     @Column(name = "tail_diff_history_prob_ceil", nullable = false, precision = 20, scale = 8)
     val tailDiffHistoryProbCeil: BigDecimal = BigDecimal("1.00"),
 
-    /** 价差优势分满分锚点倍数：满分 σ = minDiffSigma × 此倍数（原写死 3） */
+    /** 价差优势分满分锚点倍数：满分 σ = minDiffSigma × 此倍数（V73：默认 3.0→1.8，让 2~2.7σ 真实机会得分更合理） */
     @Column(name = "tail_diff_sigma_score_multiple", nullable = false, precision = 20, scale = 8)
-    val tailDiffSigmaScoreMultiple: BigDecimal = BigDecimal("3.0"),
+    val tailDiffSigmaScoreMultiple: BigDecimal = BigDecimal("1.8"),
 
     /** 是否启用分数 Kelly 下注上限（默认 false = 仅按 tier 倍率） */
     @Column(name = "tail_diff_enable_kelly_cap", nullable = false)

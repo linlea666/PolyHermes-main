@@ -796,6 +796,8 @@ export const apiService = {
       apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogListResponse>>('/crypto-tail-strategy/decision-log/list-all', data),
     decisionLogExport: (data: import('../types').CryptoTailDecisionLogExportRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogExportResponse>>('/crypto-tail-strategy/decision-log/export', data),
+    periodSummaryList: (data: import('../types').CryptoTailPeriodSummaryListRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailPeriodSummaryListResponse>>('/crypto-tail-strategy/period-summary/list', data),
     decisionLogBatchDelete: (data: import('../types').CryptoTailDecisionLogBatchDeleteRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailDecisionLogDeleteResponse>>('/crypto-tail-strategy/decision-log/batch-delete', data),
     decisionLogPurge: (data: import('../types').CryptoTailDecisionLogPurgeRequest) =>

@@ -202,7 +202,20 @@ data class CryptoTailStrategyCreateRequest(
     val tailDiffDailyLossLimitUsdc: String? = null,
     val tailDiffConsecLossPauseCount: Int? = null,
     val tailDiffConsecLossStopCount: Int? = null,
-    val tailDiffEntrySegmentsJson: String? = null
+    val tailDiffEntrySegmentsJson: String? = null,
+    // V72 评分锚点（请求侧可选，null 时走默认/保留原值）
+    val tailDiffOddsLagMode: String? = null,
+    val tailDiffOddsLagWindowSeconds: Int? = null,
+    val tailDiffLagPriceMoveFullScaleSigma: String? = null,
+    val tailDiffLagOddsMoveFullScale: String? = null,
+    val tailDiffEdgeFullScale: String? = null,
+    val tailDiffLagFullScale: String? = null,
+    val tailDiffHistoryProbFloor: String? = null,
+    val tailDiffHistoryProbCeil: String? = null,
+    val tailDiffSigmaScoreMultiple: String? = null,
+    val tailDiffEnableKellyCap: Boolean? = null,
+    val tailDiffKellyFraction: String? = null,
+    val tailDiffDepthFillRatio: String? = null
 )
 
 /**
@@ -379,7 +392,20 @@ data class CryptoTailStrategyUpdateRequest(
     val tailDiffDailyLossLimitUsdc: String? = null,
     val tailDiffConsecLossPauseCount: Int? = null,
     val tailDiffConsecLossStopCount: Int? = null,
-    val tailDiffEntrySegmentsJson: String? = null
+    val tailDiffEntrySegmentsJson: String? = null,
+    // V72 评分锚点（请求侧可选，null 时保留原值）
+    val tailDiffOddsLagMode: String? = null,
+    val tailDiffOddsLagWindowSeconds: Int? = null,
+    val tailDiffLagPriceMoveFullScaleSigma: String? = null,
+    val tailDiffLagOddsMoveFullScale: String? = null,
+    val tailDiffEdgeFullScale: String? = null,
+    val tailDiffLagFullScale: String? = null,
+    val tailDiffHistoryProbFloor: String? = null,
+    val tailDiffHistoryProbCeil: String? = null,
+    val tailDiffSigmaScoreMultiple: String? = null,
+    val tailDiffEnableKellyCap: Boolean? = null,
+    val tailDiffKellyFraction: String? = null,
+    val tailDiffDepthFillRatio: String? = null
 )
 
 /**
@@ -591,6 +617,19 @@ data class CryptoTailStrategyDto(
     val tailDiffConsecLossPauseCount: Int = 2,
     val tailDiffConsecLossStopCount: Int = 3,
     val tailDiffEntrySegmentsJson: String? = null,
+    // V72 评分锚点（响应回显，默认值 = 实体默认）
+    val tailDiffOddsLagMode: String = "STATIC",
+    val tailDiffOddsLagWindowSeconds: Int = 5,
+    val tailDiffLagPriceMoveFullScaleSigma: String = "0.5",
+    val tailDiffLagOddsMoveFullScale: String = "0.05",
+    val tailDiffEdgeFullScale: String = "0.10",
+    val tailDiffLagFullScale: String = "0.15",
+    val tailDiffHistoryProbFloor: String = "0.90",
+    val tailDiffHistoryProbCeil: String = "1.00",
+    val tailDiffSigmaScoreMultiple: String = "1.8",
+    val tailDiffEnableKellyCap: Boolean = false,
+    val tailDiffKellyFraction: String = "0.10",
+    val tailDiffDepthFillRatio: String = "0",
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )

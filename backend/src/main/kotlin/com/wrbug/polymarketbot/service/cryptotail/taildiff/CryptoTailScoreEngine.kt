@@ -142,12 +142,14 @@ class CryptoTailScoreEngine {
             vetoes += "MODEL_DIRECTION_MISMATCH"
         }
 
-        // 2) 价格区间硬上限：bestAsk > tailDiffHardMaxPrice
+        // 2) 价格区间：买入实际成交价为 bestAsk；无 ask 时用 bestBid+costBuffer 兜底（与 DecisionService.effectiveCost 同口径）。
+        //    历史 bug：此前用 bestBid 判断买入价区间会误杀 ask 在区间内、bid 偏低的可买机会（如 ask=0.86/bid=0.83）。
         val ask = input.bestAsk
-        if (ask != null && ask > strategy.tailDiffHardMaxPrice) vetoes += "ASK_TOO_HIGH"
-        // 入场价格区间下限/上限（候选价格区间，不到这里也直接否决）
-        if (input.bestBid < strategy.tailDiffMinPrice) vetoes += "BID_BELOW_MIN_PRICE"
-        if (input.bestBid > strategy.tailDiffMaxPrice) vetoes += "BID_ABOVE_MAX_PRICE"
+        val effectiveAsk = ask ?: input.bestBid.add(strategy.tailDiffCostBuffer)
+        if (effectiveAsk > strategy.tailDiffHardMaxPrice) vetoes += "ASK_TOO_HIGH"
+        // 入场价格区间下限/上限：统一按买入成交价 bestAsk 判断
+        if (effectiveAsk < strategy.tailDiffMinPrice) vetoes += "ASK_BELOW_MIN_PRICE"
+        if (effectiveAsk > strategy.tailDiffMaxPrice) vetoes += "ASK_ABOVE_MAX_PRICE"
 
         // 3) 模型概率 / EV / diff_sigma 三道门
         if (input.modelProb < strategy.tailDiffMinModelProb) vetoes += "MODEL_PROB_TOO_LOW"

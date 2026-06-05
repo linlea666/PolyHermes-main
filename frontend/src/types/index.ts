@@ -1963,6 +1963,55 @@ export interface CryptoTailDecisionLogExportResponse {
   exportedAt: number
 }
 
+/** 周期生命周期汇总查询请求（startDate/endDate 毫秒，strategyId<=0 表示全部策略） */
+export interface CryptoTailPeriodSummaryListRequest {
+  strategyId: number
+  page?: number
+  pageSize?: number
+  startDate?: number
+  endDate?: number
+}
+
+/** 周期生命周期汇总 DTO */
+export interface CryptoTailPeriodSummaryDto {
+  id: number
+  strategyId: number
+  strategyName?: string | null
+  periodStartUnix: number
+  periodEndUnix: number
+  marketSlug?: string | null
+  firstChosenOutcomeIndex?: number | null
+  lastChosenOutcomeIndex?: number | null
+  directionFlipCount: number
+  bestScore: number
+  dominantVeto?: string | null
+  scoreEventCount: number
+  skipEventCount: number
+  buyEventCount: number
+  traded: boolean
+  triggerId?: number | null
+  officialOpen?: string | null
+  officialClose?: string | null
+  officialGap?: string | null
+  settledWinnerOutcomeIndex?: number | null
+  directionCorrect?: boolean | null
+  realizedPnl?: string | null
+  status: string
+  settledAt?: number | null
+  createdAt: number
+  updatedAt: number
+}
+
+/** 周期汇总分页响应 + 方向准确率汇总 */
+export interface CryptoTailPeriodSummaryListResponse {
+  list: CryptoTailPeriodSummaryDto[]
+  total: number
+  settledCount: number
+  directionCorrectCount: number
+  tradedCount: number
+  directionAccuracy?: string | null
+}
+
 /** 决策日志批量删除请求（按 id 集合） */
 export interface CryptoTailDecisionLogBatchDeleteRequest {
   ids: number[]

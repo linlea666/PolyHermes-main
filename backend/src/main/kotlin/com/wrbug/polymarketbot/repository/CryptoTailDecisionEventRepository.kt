@@ -24,6 +24,12 @@ interface CryptoTailDecisionEventRepository : JpaRepository<CryptoTailDecisionEv
         periodStartUnix: Long
     ): List<CryptoTailDecisionEvent>
 
+    /** 最近窗口内出现过决策的不同 (strategyId, periodStartUnix)，供周期汇总聚合 */
+    @Query(
+        "SELECT DISTINCT e.strategyId, e.periodStartUnix FROM CryptoTailDecisionEvent e WHERE e.createdAt >= :since"
+    )
+    fun findDistinctStrategyPeriodsSince(@Param("since") since: Long): List<Array<Any>>
+
     // 跨策略汇总查询（决策日志独立页用）
     fun findAllByOrderByCreatedAtDesc(pageable: Pageable): Page<CryptoTailDecisionEvent>
 

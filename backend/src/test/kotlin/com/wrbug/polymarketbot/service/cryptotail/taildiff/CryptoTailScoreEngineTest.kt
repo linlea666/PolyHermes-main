@@ -40,7 +40,9 @@ class CryptoTailScoreEngineTest {
         tailDiffWeightOddsLag = 10,
         tailDiffWeightHistory = 15,
         tailDiffWeightBook = 10,
-        tailDiffWeightData = 5
+        tailDiffWeightData = 5,
+        // 锚点测试基于原 3× 默认；V73 起默认改为 1.8，这里显式钉住以保持既有断言语义
+        tailDiffSigmaScoreMultiple = BigDecimal("3.0")
     )
 
     private fun input(
@@ -119,6 +121,30 @@ class CryptoTailScoreEngineTest {
     @Test
     fun `fast reverse velocity is vetoed`() {
         assertTrue(engine.evaluate(input(reverseVelocity = "0.9"), strategy()).vetoes.contains("PRICE_RETRACING_FAST"))
+    }
+
+    @Test
+    fun `entry price gate uses bestAsk not bestBid (bug regression)`() {
+        // bug 复现：ask=0.86 可买、bid=0.83；minPrice=0.84。旧逻辑用 bid 会误杀，新逻辑用 ask 放行
+        val s = strategy().copy(tailDiffMinPrice = BigDecimal("0.84"), tailDiffMaxPrice = BigDecimal("0.94"))
+        val out = engine.evaluate(input(bestBid = "0.83", bestAsk = "0.86"), s)
+        assertFalse(out.vetoes.contains("ASK_BELOW_MIN_PRICE"), "ask=0.86 在区间内不应被价格下限否决, got ${out.vetoes}")
+        assertFalse(out.vetoes.contains("BID_BELOW_MIN_PRICE"), "旧 BID 否决名不应再出现")
+    }
+
+    @Test
+    fun `ask above max price is vetoed`() {
+        // maxPrice=0.93、hardMax=0.94：ask=0.935 越上限但未越硬上限 → 仅 ASK_ABOVE_MAX_PRICE
+        val out = engine.evaluate(input(bestBid = "0.93", bestAsk = "0.935"), strategy())
+        assertTrue(out.vetoes.contains("ASK_ABOVE_MAX_PRICE"), "got ${out.vetoes}")
+        assertFalse(out.vetoes.contains("ASK_TOO_HIGH"))
+    }
+
+    @Test
+    fun `ask below min price is vetoed`() {
+        // minPrice=0.88：ask=0.80 低于下限 → ASK_BELOW_MIN_PRICE
+        val out = engine.evaluate(input(bestBid = "0.78", bestAsk = "0.80"), strategy())
+        assertTrue(out.vetoes.contains("ASK_BELOW_MIN_PRICE"), "got ${out.vetoes}")
     }
 
     // ===== V72 增强：零回归 + 新功能 =====

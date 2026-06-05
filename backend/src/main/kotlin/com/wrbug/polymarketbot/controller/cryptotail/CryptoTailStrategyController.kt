@@ -30,6 +30,8 @@ import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogExportResponse
 import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogBatchDeleteRequest
 import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogPurgeRequest
 import com.wrbug.polymarketbot.dto.CryptoTailDecisionLogDeleteResponse
+import com.wrbug.polymarketbot.dto.CryptoTailPeriodSummaryListRequest
+import com.wrbug.polymarketbot.dto.CryptoTailPeriodSummaryListResponse
 import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotListRequest
 import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotListResponse
 import com.wrbug.polymarketbot.dto.CryptoTailTradeSnapshotExportRequest
@@ -287,6 +289,23 @@ class CryptoTailStrategyController(
             )
         } catch (e: Exception) {
             logger.error("查询全局决策日志异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
+    @PostMapping("/period-summary/list")
+    fun getPeriodSummaries(@RequestBody request: CryptoTailPeriodSummaryListRequest): ResponseEntity<ApiResponse<CryptoTailPeriodSummaryListResponse>> {
+        return try {
+            val result = cryptoTailStrategyService.getPeriodSummaries(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("查询周期汇总失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("查询周期汇总异常: ${e.message}", e)
             ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
         }
     }

@@ -21,6 +21,7 @@ import org.springframework.data.domain.PageRequest
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -30,6 +31,7 @@ class CryptoTailStrategyService(
     private val strategyRepository: CryptoTailStrategyRepository,
     private val triggerRepository: CryptoTailStrategyTriggerRepository,
     private val decisionEventRepository: CryptoTailDecisionEventRepository,
+    private val periodSummaryRepository: com.wrbug.polymarketbot.repository.CryptoTailPeriodSummaryRepository,
     private val tradeSnapshotRepository: CryptoTailTradeSnapshotRepository,
     private val calibrationService: CryptoTailCalibrationService,
     private val eventPublisher: ApplicationEventPublisher,
@@ -404,7 +406,19 @@ class CryptoTailStrategyService(
                 tailDiffDailyLossLimitUsdc = td.dailyLossLimitUsdc,
                 tailDiffConsecLossPauseCount = td.consecLossPauseCount,
                 tailDiffConsecLossStopCount = td.consecLossStopCount,
-                tailDiffEntrySegmentsJson = td.entrySegmentsJson
+                tailDiffEntrySegmentsJson = td.entrySegmentsJson,
+                tailDiffOddsLagMode = td.oddsLagMode,
+                tailDiffOddsLagWindowSeconds = td.oddsLagWindowSeconds,
+                tailDiffLagPriceMoveFullScaleSigma = td.lagPriceMoveFullScaleSigma,
+                tailDiffLagOddsMoveFullScale = td.lagOddsMoveFullScale,
+                tailDiffEdgeFullScale = td.edgeFullScale,
+                tailDiffLagFullScale = td.lagFullScale,
+                tailDiffHistoryProbFloor = td.historyProbFloor,
+                tailDiffHistoryProbCeil = td.historyProbCeil,
+                tailDiffSigmaScoreMultiple = td.sigmaScoreMultiple,
+                tailDiffEnableKellyCap = td.enableKellyCap,
+                tailDiffKellyFraction = td.kellyFraction,
+                tailDiffDepthFillRatio = td.depthFillRatio
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -769,6 +783,18 @@ class CryptoTailStrategyService(
                 tailDiffConsecLossPauseCount = td.consecLossPauseCount,
                 tailDiffConsecLossStopCount = td.consecLossStopCount,
                 tailDiffEntrySegmentsJson = td.entrySegmentsJson,
+                tailDiffOddsLagMode = td.oddsLagMode,
+                tailDiffOddsLagWindowSeconds = td.oddsLagWindowSeconds,
+                tailDiffLagPriceMoveFullScaleSigma = td.lagPriceMoveFullScaleSigma,
+                tailDiffLagOddsMoveFullScale = td.lagOddsMoveFullScale,
+                tailDiffEdgeFullScale = td.edgeFullScale,
+                tailDiffLagFullScale = td.lagFullScale,
+                tailDiffHistoryProbFloor = td.historyProbFloor,
+                tailDiffHistoryProbCeil = td.historyProbCeil,
+                tailDiffSigmaScoreMultiple = td.sigmaScoreMultiple,
+                tailDiffEnableKellyCap = td.enableKellyCap,
+                tailDiffKellyFraction = td.kellyFraction,
+                tailDiffDepthFillRatio = td.depthFillRatio,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -1012,6 +1038,83 @@ class CryptoTailStrategyService(
             Result.failure(e)
         }
     }
+
+    /** 周期生命周期汇总分页查询（strategyId<=0 = 全部），附方向准确率汇总 */
+    fun getPeriodSummaries(request: CryptoTailPeriodSummaryListRequest): Result<CryptoTailPeriodSummaryListResponse> {
+        return try {
+            val page = PageRequest.of((request.page - 1).coerceAtLeast(0), request.pageSize.coerceIn(1, 100))
+            val useTimeRange = request.startDate != null || request.endDate != null
+            // 决策日志区间是毫秒，本表区间是 periodStartUnix（秒），转换后查询
+            val startUnix = request.startDate?.let { it / 1000 }
+            val endUnix = request.endDate?.let { it / 1000 }
+            val pageResult = when {
+                request.strategyId > 0 && useTimeRange ->
+                    periodSummaryRepository.findAllByStrategyIdAndPeriodStartUnixBetweenOrderByPeriodStartUnixDesc(
+                        request.strategyId, startUnix ?: 0L, endUnix ?: Long.MAX_VALUE, page
+                    )
+                request.strategyId > 0 ->
+                    periodSummaryRepository.findAllByStrategyIdOrderByPeriodStartUnixDesc(request.strategyId, page)
+                useTimeRange ->
+                    periodSummaryRepository.findAllByPeriodStartUnixBetweenOrderByPeriodStartUnixDesc(
+                        startUnix ?: 0L, endUnix ?: Long.MAX_VALUE, page
+                    )
+                else ->
+                    periodSummaryRepository.findAllByOrderByPeriodStartUnixDesc(page)
+            }
+            val acc = periodSummaryRepository.summarizeAccuracy(request.strategyId, startUnix, endUnix)
+            val settledTotal = (acc.getOrNull(0) as? Number)?.toLong() ?: 0L
+            val correct = (acc.getOrNull(1) as? Number)?.toLong() ?: 0L
+            val tradedCount = (acc.getOrNull(2) as? Number)?.toLong() ?: 0L
+            val accuracy = if (settledTotal > 0) {
+                BigDecimal(correct).divide(BigDecimal(settledTotal), 4, RoundingMode.HALF_UP).toPlainString()
+            } else null
+            val nameById = strategyRepository.findAllById(pageResult.content.map { it.strategyId }.toSet())
+                .associate { (it.id ?: 0L) to it.name }
+            Result.success(
+                CryptoTailPeriodSummaryListResponse(
+                    list = pageResult.content.map { it.toPeriodSummaryDto(nameById[it.strategyId]) },
+                    total = pageResult.totalElements,
+                    settledCount = settledTotal,
+                    directionCorrectCount = correct,
+                    tradedCount = tradedCount,
+                    directionAccuracy = accuracy
+                )
+            )
+        } catch (e: Exception) {
+            logger.error("查询周期汇总失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    private fun com.wrbug.polymarketbot.entity.CryptoTailPeriodSummary.toPeriodSummaryDto(name: String?): CryptoTailPeriodSummaryDto =
+        CryptoTailPeriodSummaryDto(
+            id = id ?: 0L,
+            strategyId = strategyId,
+            strategyName = name,
+            periodStartUnix = periodStartUnix,
+            periodEndUnix = periodEndUnix,
+            marketSlug = marketSlug,
+            firstChosenOutcomeIndex = firstChosenOutcomeIndex,
+            lastChosenOutcomeIndex = lastChosenOutcomeIndex,
+            directionFlipCount = directionFlipCount,
+            bestScore = bestScore,
+            dominantVeto = dominantVeto,
+            scoreEventCount = scoreEventCount,
+            skipEventCount = skipEventCount,
+            buyEventCount = buyEventCount,
+            traded = traded,
+            triggerId = triggerId,
+            officialOpen = officialOpen?.toPlainString(),
+            officialClose = officialClose?.toPlainString(),
+            officialGap = officialGap?.toPlainString(),
+            settledWinnerOutcomeIndex = settledWinnerOutcomeIndex,
+            directionCorrect = directionCorrect,
+            realizedPnl = realizedPnl?.toPlainString(),
+            status = status,
+            settledAt = settledAt,
+            createdAt = createdAt,
+            updatedAt = updatedAt
+        )
 
     /** 决策日志整段导出（按时间区间，strategyId<=0 = 全部），上限保护避免一次拉取过多 */
     fun exportDecisionLog(request: CryptoTailDecisionLogExportRequest): Result<CryptoTailDecisionLogExportResponse> {
@@ -1524,7 +1627,19 @@ class CryptoTailStrategyService(
         val dailyLossLimitUsdc: BigDecimal?,
         val consecLossPauseCount: Int,
         val consecLossStopCount: Int,
-        val entrySegmentsJson: String?
+        val entrySegmentsJson: String?,
+        val oddsLagMode: String,
+        val oddsLagWindowSeconds: Int,
+        val lagPriceMoveFullScaleSigma: BigDecimal,
+        val lagOddsMoveFullScale: BigDecimal,
+        val edgeFullScale: BigDecimal,
+        val lagFullScale: BigDecimal,
+        val historyProbFloor: BigDecimal,
+        val historyProbCeil: BigDecimal,
+        val sigmaScoreMultiple: BigDecimal,
+        val enableKellyCap: Boolean,
+        val kellyFraction: BigDecimal,
+        val depthFillRatio: BigDecimal
     )
 
     private fun normalizeTailDiffSource(raw: String?): String {
@@ -1557,8 +1672,8 @@ class CryptoTailStrategyService(
         statsDataSource = normalizeTailDiffDataSource(r.tailDiffStatsDataSource),
         maxSpread = r.tailDiffMaxSpread?.toSafeBigDecimal() ?: BigDecimal("0.02"),
         depthMultiplier = r.tailDiffDepthMultiplier?.toSafeBigDecimal() ?: BigDecimal("3.0"),
-        maxOrderbookAgeMs = r.tailDiffMaxOrderbookAgeMs ?: 2000,
-        maxPriceAgeMs = r.tailDiffMaxPriceAgeMs ?: 2000,
+        maxOrderbookAgeMs = r.tailDiffMaxOrderbookAgeMs ?: 5000,
+        maxPriceAgeMs = r.tailDiffMaxPriceAgeMs ?: 6000,
         reverseVelocityWindowSeconds = r.tailDiffReverseVelocityWindowSeconds ?: 10,
         maxReverseVelocitySigma = r.tailDiffMaxReverseVelocitySigma?.toSafeBigDecimal() ?: BigDecimal("0.30"),
         weightDiff = r.tailDiffWeightDiff ?: 25,
@@ -1582,7 +1697,19 @@ class CryptoTailStrategyService(
         dailyLossLimitUsdc = r.tailDiffDailyLossLimitUsdc?.takeIf { it.isNotBlank() }?.toSafeBigDecimal(),
         consecLossPauseCount = r.tailDiffConsecLossPauseCount ?: 2,
         consecLossStopCount = r.tailDiffConsecLossStopCount ?: 3,
-        entrySegmentsJson = r.tailDiffEntrySegmentsJson?.takeIf { it.isNotBlank() }
+        entrySegmentsJson = r.tailDiffEntrySegmentsJson?.takeIf { it.isNotBlank() },
+        oddsLagMode = r.tailDiffOddsLagMode?.takeIf { it.isNotBlank() }?.uppercase() ?: "STATIC",
+        oddsLagWindowSeconds = r.tailDiffOddsLagWindowSeconds ?: 5,
+        lagPriceMoveFullScaleSigma = r.tailDiffLagPriceMoveFullScaleSigma?.toSafeBigDecimal() ?: BigDecimal("0.5"),
+        lagOddsMoveFullScale = r.tailDiffLagOddsMoveFullScale?.toSafeBigDecimal() ?: BigDecimal("0.05"),
+        edgeFullScale = r.tailDiffEdgeFullScale?.toSafeBigDecimal() ?: BigDecimal("0.10"),
+        lagFullScale = r.tailDiffLagFullScale?.toSafeBigDecimal() ?: BigDecimal("0.15"),
+        historyProbFloor = r.tailDiffHistoryProbFloor?.toSafeBigDecimal() ?: BigDecimal("0.90"),
+        historyProbCeil = r.tailDiffHistoryProbCeil?.toSafeBigDecimal() ?: BigDecimal("1.00"),
+        sigmaScoreMultiple = r.tailDiffSigmaScoreMultiple?.toSafeBigDecimal() ?: BigDecimal("1.8"),
+        enableKellyCap = r.tailDiffEnableKellyCap ?: false,
+        kellyFraction = r.tailDiffKellyFraction?.toSafeBigDecimal() ?: BigDecimal("0.10"),
+        depthFillRatio = r.tailDiffDepthFillRatio?.toSafeBigDecimal() ?: BigDecimal.ZERO
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -1631,7 +1758,19 @@ class CryptoTailStrategyService(
         dailyLossLimitUsdc = resolveNullableBigDecimalUpdate(r.tailDiffDailyLossLimitUsdc, e.tailDiffDailyLossLimitUsdc),
         consecLossPauseCount = r.tailDiffConsecLossPauseCount ?: e.tailDiffConsecLossPauseCount,
         consecLossStopCount = r.tailDiffConsecLossStopCount ?: e.tailDiffConsecLossStopCount,
-        entrySegmentsJson = resolveNullableStringUpdate(r.tailDiffEntrySegmentsJson, e.tailDiffEntrySegmentsJson)
+        entrySegmentsJson = resolveNullableStringUpdate(r.tailDiffEntrySegmentsJson, e.tailDiffEntrySegmentsJson),
+        oddsLagMode = r.tailDiffOddsLagMode?.takeIf { it.isNotBlank() }?.uppercase() ?: e.tailDiffOddsLagMode,
+        oddsLagWindowSeconds = r.tailDiffOddsLagWindowSeconds ?: e.tailDiffOddsLagWindowSeconds,
+        lagPriceMoveFullScaleSigma = r.tailDiffLagPriceMoveFullScaleSigma?.toSafeBigDecimal() ?: e.tailDiffLagPriceMoveFullScaleSigma,
+        lagOddsMoveFullScale = r.tailDiffLagOddsMoveFullScale?.toSafeBigDecimal() ?: e.tailDiffLagOddsMoveFullScale,
+        edgeFullScale = r.tailDiffEdgeFullScale?.toSafeBigDecimal() ?: e.tailDiffEdgeFullScale,
+        lagFullScale = r.tailDiffLagFullScale?.toSafeBigDecimal() ?: e.tailDiffLagFullScale,
+        historyProbFloor = r.tailDiffHistoryProbFloor?.toSafeBigDecimal() ?: e.tailDiffHistoryProbFloor,
+        historyProbCeil = r.tailDiffHistoryProbCeil?.toSafeBigDecimal() ?: e.tailDiffHistoryProbCeil,
+        sigmaScoreMultiple = r.tailDiffSigmaScoreMultiple?.toSafeBigDecimal() ?: e.tailDiffSigmaScoreMultiple,
+        enableKellyCap = r.tailDiffEnableKellyCap ?: e.tailDiffEnableKellyCap,
+        kellyFraction = r.tailDiffKellyFraction?.toSafeBigDecimal() ?: e.tailDiffKellyFraction,
+        depthFillRatio = r.tailDiffDepthFillRatio?.toSafeBigDecimal() ?: e.tailDiffDepthFillRatio
     )
 
     /** 可空字符串字段三态：null=保留旧值；空串=清空(null)；非空=trim 后更新。 */
@@ -1868,6 +2007,18 @@ class CryptoTailStrategyService(
             tailDiffConsecLossPauseCount = e.tailDiffConsecLossPauseCount,
             tailDiffConsecLossStopCount = e.tailDiffConsecLossStopCount,
             tailDiffEntrySegmentsJson = e.tailDiffEntrySegmentsJson,
+            tailDiffOddsLagMode = e.tailDiffOddsLagMode,
+            tailDiffOddsLagWindowSeconds = e.tailDiffOddsLagWindowSeconds,
+            tailDiffLagPriceMoveFullScaleSigma = e.tailDiffLagPriceMoveFullScaleSigma.toPlainString(),
+            tailDiffLagOddsMoveFullScale = e.tailDiffLagOddsMoveFullScale.toPlainString(),
+            tailDiffEdgeFullScale = e.tailDiffEdgeFullScale.toPlainString(),
+            tailDiffLagFullScale = e.tailDiffLagFullScale.toPlainString(),
+            tailDiffHistoryProbFloor = e.tailDiffHistoryProbFloor.toPlainString(),
+            tailDiffHistoryProbCeil = e.tailDiffHistoryProbCeil.toPlainString(),
+            tailDiffSigmaScoreMultiple = e.tailDiffSigmaScoreMultiple.toPlainString(),
+            tailDiffEnableKellyCap = e.tailDiffEnableKellyCap,
+            tailDiffKellyFraction = e.tailDiffKellyFraction.toPlainString(),
+            tailDiffDepthFillRatio = e.tailDiffDepthFillRatio.toPlainString(),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )

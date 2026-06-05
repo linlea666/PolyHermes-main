@@ -82,3 +82,59 @@ data class CryptoTailDecisionLogPurgeRequest(
 data class CryptoTailDecisionLogDeleteResponse(
     val deleted: Int = 0
 )
+
+/**
+ * 周期生命周期汇总查询请求（startDate/endDate 为毫秒，strategyId<=0 = 全部策略）
+ */
+data class CryptoTailPeriodSummaryListRequest(
+    val strategyId: Long = 0L,
+    val page: Int = 1,
+    val pageSize: Int = 20,
+    val startDate: Long? = null,
+    val endDate: Long? = null
+)
+
+/**
+ * 周期生命周期汇总 DTO（金额/价格用字符串避免精度丢失）
+ */
+data class CryptoTailPeriodSummaryDto(
+    val id: Long = 0L,
+    val strategyId: Long = 0L,
+    val strategyName: String? = null,
+    val periodStartUnix: Long = 0L,
+    val periodEndUnix: Long = 0L,
+    val marketSlug: String? = null,
+    val firstChosenOutcomeIndex: Int? = null,
+    val lastChosenOutcomeIndex: Int? = null,
+    val directionFlipCount: Int = 0,
+    val bestScore: Int = 0,
+    val dominantVeto: String? = null,
+    val scoreEventCount: Int = 0,
+    val skipEventCount: Int = 0,
+    val buyEventCount: Int = 0,
+    val traded: Boolean = false,
+    val triggerId: Long? = null,
+    val officialOpen: String? = null,
+    val officialClose: String? = null,
+    val officialGap: String? = null,
+    val settledWinnerOutcomeIndex: Int? = null,
+    val directionCorrect: Boolean? = null,
+    val realizedPnl: String? = null,
+    val status: String = "OPEN",
+    val settledAt: Long? = null,
+    val createdAt: Long = 0L,
+    val updatedAt: Long = 0L
+)
+
+/**
+ * 周期汇总分页响应 + 方向准确率汇总
+ * @param directionAccuracy 命中数/已结算且首选方向非空总数（0-1 字符串），无样本为 null
+ */
+data class CryptoTailPeriodSummaryListResponse(
+    val list: List<CryptoTailPeriodSummaryDto> = emptyList(),
+    val total: Long = 0L,
+    val settledCount: Long = 0L,
+    val directionCorrectCount: Long = 0L,
+    val tradedCount: Long = 0L,
+    val directionAccuracy: String? = null
+)

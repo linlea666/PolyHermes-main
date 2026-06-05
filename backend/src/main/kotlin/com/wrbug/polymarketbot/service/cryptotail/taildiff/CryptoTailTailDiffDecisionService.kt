@@ -487,12 +487,18 @@ class CryptoTailTailDiffDecisionService(
         val last = scoreLogCache.getIfPresent(key) ?: 0L
         if (now - last >= SCORE_LOG_INTERVAL_MS) {
             scoreLogCache.put(key, now)
+            val readiness = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
             val payload = mapOf(
                 "vetoes" to vetoes,
                 "remainingSeconds" to remainingSeconds,
                 "bestBid" to orderbook.bestBid.toPlainString(),
                 "bestAsk" to (orderbook.bestAsk?.toPlainString() ?: ""),
-                "spread" to (orderbook.spread?.toPlainString() ?: "")
+                "spread" to (orderbook.spread?.toPlainString() ?: ""),
+                // 价源诊断：定位 PRICE_SOURCE_NOT_READY/PRICE_STALE 是真实间隙还是阈值过严
+                "priceAgeMs" to (periodPriceProvider.getCurrentPriceAgeMs(strategy.marketSlugPrefix)?.toString() ?: ""),
+                "maxPriceAgeMs" to strategy.tailDiffMaxPriceAgeMs.toString(),
+                "readinessReason" to readiness.reason,
+                "priceSource" to readiness.source
             ).toJson()
             decisionRecorder.record(
                 CryptoTailDecisionEvent(
@@ -639,7 +645,13 @@ class CryptoTailTailDiffDecisionService(
         minDiffSigma = strategy.tailDiffMinDiffSigma.toPlainString(),
         minScore = strategy.tailDiffMinEntryScore.toString(),
         statsSampleCount = statsResult.sampleCount.toString(),
-        statsReversalProb = statsResult.modelProb?.toPlainString()
+        statsReversalProb = statsResult.modelProb?.toPlainString(),
+        priceAgeMs = input.priceAgeMs?.toString(),
+        orderbookAgeMs = input.orderbookAgeMs.toString(),
+        maxPriceAgeMs = strategy.tailDiffMaxPriceAgeMs.toString(),
+        maxOrderbookAgeMs = strategy.tailDiffMaxOrderbookAgeMs.toString(),
+        sigmaScoreMultiple = strategy.tailDiffSigmaScoreMultiple.toPlainString(),
+        effectiveAsk = (input.bestAsk ?: input.bestBid.add(strategy.tailDiffCostBuffer)).toPlainString()
     )
 
     private fun inferCoin(strategy: CryptoTailStrategy): String? {

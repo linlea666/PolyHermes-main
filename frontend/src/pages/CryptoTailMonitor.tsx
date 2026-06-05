@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import {
   Card,
   Select,
@@ -17,7 +17,8 @@ import {
   InputNumber,
   message,
   Table,
-  Tag
+  Tag,
+  Progress
 } from 'antd'
 import { Popup as AntdMobilePopup } from 'antd-mobile'
 import { ClockCircleOutlined, SyncOutlined, InfoCircleOutlined, ShoppingCartOutlined, DownloadOutlined } from '@ant-design/icons'
@@ -89,6 +90,9 @@ const CryptoTailMonitor: React.FC = () => {
     : (selectedStrategy?.barrierEnabled === true ? 1 : 0)
   // 障碍模式与阶梯模式共用 pWin/校准/决策日志等监控面板（barrierEnabled 字段保持兼容）
   const barrierEnabled = selectedMode === 1 || selectedMode === 2
+  // 尾盘价差（mode=3）也产出决策事件，需放开决策订阅/拉取以展示策略建议
+  const isTailDiff = selectedMode === 3
+  const decisionEnabled = barrierEnabled || isTailDiff
 
   // 导出单笔成交分析快照 CSV（用于离线回测/复盘）
   const handleExportSnapshots = async () => {
@@ -446,9 +450,9 @@ const CryptoTailMonitor: React.FC = () => {
   const channel = selectedStrategyId ? `crypto_tail_monitor_${selectedStrategyId}` : ''
   useWebSocketSubscription(channel, handlePushData)
 
-  // 决策时间线：切换策略时拉取最近历史（仅障碍模式）
+  // 决策时间线：切换策略时拉取最近历史（障碍/阶梯/尾盘价差模式均展示）
   useEffect(() => {
-    if (!selectedStrategyId || !barrierEnabled) {
+    if (!selectedStrategyId || !decisionEnabled) {
       setDecisionEvents([])
       return
     }
@@ -462,7 +466,7 @@ const CryptoTailMonitor: React.FC = () => {
       })
       .catch(() => { /* 决策日志拉取失败不影响监控 */ })
     return () => { cancelled = true }
-  }, [selectedStrategyId, barrierEnabled])
+  }, [selectedStrategyId, decisionEnabled])
 
   // 校准统计 + 放量闸状态：切换策略时拉取（仅障碍模式）；结算后随轮询刷新
   useEffect(() => {
@@ -498,8 +502,52 @@ const CryptoTailMonitor: React.FC = () => {
     })
   }, [selectedStrategyId])
 
-  const decisionChannel = selectedStrategyId && barrierEnabled ? `crypto_tail_decision_${selectedStrategyId}` : ''
+  const decisionChannel = selectedStrategyId && decisionEnabled ? `crypto_tail_decision_${selectedStrategyId}` : ''
   useWebSocketSubscription(decisionChannel, handleDecisionPush)
+
+  // 尾盘价差策略决策建议：取最新一条领先方向自身 token 的评分/买入事件，解析为小白可读建议
+  const tailDiffAdvice = useMemo(() => {
+    if (!isTailDiff) return null
+    for (const ev of decisionEvents) {
+      if (ev.eventType !== 'TAIL_DIFF_SCORE_COMPUTED' && ev.eventType !== 'TAIL_DIFF_BUY') continue
+      if (!ev.payloadJson) continue
+      let p: Record<string, unknown>
+      try {
+        p = JSON.parse(ev.payloadJson) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      const modelSide = p.modelSide != null && p.modelSide !== '' ? Number(p.modelSide) : null
+      if (modelSide == null || Number.isNaN(modelSide)) continue
+      // 仅取领先方向自身 token 的评估（outcomeIndex===modelSide）作为可操作建议
+      if (ev.outcomeIndex != null && ev.outcomeIndex !== modelSide) continue
+      const num = (k: string): number | null => (p[k] != null && p[k] !== '' ? Number(p[k]) : null)
+      const vetoStr = typeof p.vetoReasons === 'string' ? p.vetoReasons : ''
+      const vetoes = vetoStr.split(',').map((s) => s.trim()).filter(Boolean)
+      const score = num('score')
+      const minScore = num('minScore')
+      const scoreOk = minScore == null || score == null || score >= minScore
+      return {
+        direction: (modelSide === 0 ? 'UP' : 'DOWN') as 'UP' | 'DOWN',
+        score,
+        tier: typeof p.tier === 'string' ? p.tier : null,
+        minScore,
+        vetoes,
+        canEnter: vetoes.length === 0 && (p.passed === 'true' || p.passed === true) && scoreOk,
+        modelProb: num('modelProb'),
+        edge: num('edge'),
+        diffSigma: num('diffSigma'),
+        effectiveAsk: num('effectiveAsk'),
+        // amountUsdc 仅买入事件有值，评分事件回退展示 baseAmount 作为参考下注额
+        amountUsdc: num('amountUsdc') ?? num('baseAmount'),
+        remainingSeconds: num('remainingSeconds'),
+        priceAgeMs: num('priceAgeMs'),
+        createdAt: ev.createdAt,
+        periodStartUnix: ev.periodStartUnix
+      }
+    }
+    return null
+  }, [isTailDiff, decisionEvents])
 
   // 图表容器仅在 initData 存在时渲染，故在更新图表时懒初始化
   useEffect(() => {
@@ -1602,8 +1650,102 @@ const CryptoTailMonitor: React.FC = () => {
             </Card>
           )}
 
-          {/* 实时决策时间线（仅障碍模式） */}
-          {barrierEnabled && (
+          {/* 尾盘价差策略决策建议（mode=3 专属，小白友好） */}
+          {isTailDiff && (
+            <Card
+              title={t('cryptoTailMonitor.tailDiffAdvice.title')}
+              style={{ marginTop: 16 }}
+              extra={tailDiffAdvice && (
+                <Space size={4}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{new Date(tailDiffAdvice.createdAt).toLocaleTimeString()}</Text>
+                  {(() => {
+                    const cur = pushData?.periodStartUnix ?? initData?.periodStartUnix ?? null
+                    return tailDiffAdvice.periodStartUnix != null && cur != null && tailDiffAdvice.periodStartUnix !== cur
+                      ? <Tag color="orange">{t('cryptoTailMonitor.tailDiffAdvice.stale')}</Tag>
+                      : null
+                  })()}
+                </Space>
+              )}
+            >
+              {!tailDiffAdvice ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('cryptoTailMonitor.tailDiffAdvice.waiting')} />
+              ) : (
+                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                  <Alert
+                    type={tailDiffAdvice.canEnter ? 'success' : 'warning'}
+                    showIcon
+                    message={
+                      tailDiffAdvice.canEnter
+                        ? t('cryptoTailMonitor.tailDiffAdvice.conclusionBuy', {
+                            dir: t(`cryptoTailMonitor.tailDiffAdvice.dir_${tailDiffAdvice.direction}`),
+                            score: tailDiffAdvice.score ?? '-',
+                            price: tailDiffAdvice.effectiveAsk != null ? tailDiffAdvice.effectiveAsk.toFixed(3) : '-'
+                          })
+                        : t('cryptoTailMonitor.tailDiffAdvice.conclusionHold', {
+                            reason: tailDiffAdvice.vetoes.length > 0
+                              ? t(`cryptoTailMonitor.tailDiffAdvice.veto.${tailDiffAdvice.vetoes[0]}`, { defaultValue: tailDiffAdvice.vetoes[0] })
+                              : t('cryptoTailMonitor.tailDiffAdvice.scoreLow')
+                          })
+                    }
+                  />
+                  <Row gutter={[16, 16]} align="middle">
+                    <Col xs={24} sm={8}>
+                      <Space direction="vertical" size={4}>
+                        <Text type="secondary">{t('cryptoTailMonitor.tailDiffAdvice.suggestDirection')}</Text>
+                        <Tag
+                          color={tailDiffAdvice.direction === 'UP' ? 'green' : 'volcano'}
+                          style={{ fontSize: 20, padding: '6px 18px', fontWeight: 700 }}
+                        >
+                          {t(`cryptoTailMonitor.tailDiffAdvice.dir_${tailDiffAdvice.direction}`)}
+                        </Tag>
+                      </Space>
+                    </Col>
+                    <Col xs={24} sm={10}>
+                      <Text type="secondary">
+                        {t('cryptoTailMonitor.tailDiffAdvice.score')}
+                        {tailDiffAdvice.tier ? ` · ${tailDiffAdvice.tier}` : ''}
+                        {tailDiffAdvice.minScore != null ? ` · ${t('cryptoTailMonitor.tailDiffAdvice.minScore', { v: tailDiffAdvice.minScore })}` : ''}
+                      </Text>
+                      <Progress
+                        percent={Math.min(100, Math.max(0, tailDiffAdvice.score ?? 0))}
+                        status={tailDiffAdvice.canEnter ? 'success' : 'normal'}
+                        format={() => `${tailDiffAdvice.score ?? '-'}`}
+                      />
+                    </Col>
+                    <Col xs={24} sm={6}>
+                      <Button
+                        type="primary"
+                        block
+                        icon={<ShoppingCartOutlined />}
+                        onClick={() => handleOpenManualOrderModal(tailDiffAdvice.direction)}
+                      >
+                        {t('cryptoTailMonitor.tailDiffAdvice.manualOrder')}
+                      </Button>
+                    </Col>
+                  </Row>
+                  <Row gutter={[16, 8]}>
+                    <Col xs={12} sm={6}><Statistic title={t('cryptoTailMonitor.tailDiffAdvice.modelProb')} value={tailDiffAdvice.modelProb != null ? (tailDiffAdvice.modelProb * 100).toFixed(1) : '-'} suffix={tailDiffAdvice.modelProb != null ? '%' : ''} /></Col>
+                    <Col xs={12} sm={6}><Statistic title={t('cryptoTailMonitor.tailDiffAdvice.edge')} value={tailDiffAdvice.edge != null ? tailDiffAdvice.edge.toFixed(3) : '-'} /></Col>
+                    <Col xs={12} sm={6}><Statistic title={t('cryptoTailMonitor.tailDiffAdvice.diffSigma')} value={tailDiffAdvice.diffSigma != null ? tailDiffAdvice.diffSigma.toFixed(2) : '-'} suffix="σ" /></Col>
+                    <Col xs={12} sm={6}><Statistic title={t('cryptoTailMonitor.tailDiffAdvice.refPrice')} value={tailDiffAdvice.effectiveAsk != null ? tailDiffAdvice.effectiveAsk.toFixed(3) : '-'} /></Col>
+                    <Col xs={12} sm={6}><Statistic title={t('cryptoTailMonitor.tailDiffAdvice.amount')} value={tailDiffAdvice.amountUsdc != null ? tailDiffAdvice.amountUsdc.toFixed(2) : '-'} suffix="USDC" /></Col>
+                    <Col xs={12} sm={6}><Statistic title={t('cryptoTailMonitor.tailDiffAdvice.remaining')} value={tailDiffAdvice.remainingSeconds != null ? `${tailDiffAdvice.remainingSeconds}s` : '-'} /></Col>
+                  </Row>
+                  {tailDiffAdvice.vetoes.length > 0 && (
+                    <Space wrap size={[4, 4]}>
+                      <Text type="secondary">{t('cryptoTailMonitor.tailDiffAdvice.vetoesLabel')}:</Text>
+                      {tailDiffAdvice.vetoes.map((v) => (
+                        <Tag key={v} color="red">{t(`cryptoTailMonitor.tailDiffAdvice.veto.${v}`, { defaultValue: v })}</Tag>
+                      ))}
+                    </Space>
+                  )}
+                </Space>
+              )}
+            </Card>
+          )}
+
+          {/* 实时决策时间线（障碍/阶梯/尾盘价差模式） */}
+          {decisionEnabled && (
             <Card
               title={t('cryptoTailStrategy.decisionLog.title')}
               style={{ marginTop: 16 }}
