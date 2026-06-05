@@ -185,6 +185,16 @@ class CryptoTailScoreEngine {
             vetoes += "PRICE_RETRACING_FAST"
         }
 
+        // 7) 动态赔率滞后门控（P1，仅 DYNAMIC/HYBRID 生效；STATIC 不检查 → 默认零回归）
+        //    根因：modelProb≈Phi(diffSigma)，与按 Phi 定价的市场同构，静态概率无持续 edge；唯一 alpha 是
+        //    「标的已朝领先方向移动、Polymarket 赔率还没跟上」的时间差。该门控要求确有净滞后(lag>0)，
+        //    否则（赔率已跟上=已被定价，或纯便宜反转票，或动量数据不可用）一律否决，把滞后探测从评分项升级为必要条件。
+        //    注意：本门控依赖新鲜价（P0）与速度追踪器有数据，stale 价下 priceLeadMoveSigma 失真 → 应配合 P0 使用。
+        if (strategy.tailDiffOddsLagMode.uppercase() != "STATIC") {
+            val lag = dynamicLagScore(input, strategy)
+            if (lag == null || lag <= BigDecimal.ZERO) vetoes += "ODDS_LAG_INSUFFICIENT"
+        }
+
         return vetoes.distinct()
     }
 

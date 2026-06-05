@@ -498,7 +498,11 @@ class CryptoTailTailDiffDecisionService(
                 "priceAgeMs" to (periodPriceProvider.getCurrentPriceAgeMs(strategy.marketSlugPrefix)?.toString() ?: ""),
                 "maxPriceAgeMs" to strategy.tailDiffMaxPriceAgeMs.toString(),
                 "readinessReason" to readiness.reason,
-                "priceSource" to readiness.source
+                "priceSource" to readiness.source,
+                // P0 可观测性：区分 realtime 断流 vs snapshot 兜底滞后，以及 RTDS 层(30s)与策略层就绪口径差异
+                "priceMode" to (readiness.priceMode ?: ""),
+                "priceRealtimeGapMs" to (readiness.lastRealtimeUpdateAt?.let { (now - it).coerceAtLeast(0L).toString() } ?: ""),
+                "rtdsReady" to readiness.ready.toString()
             ).toJson()
             decisionRecorder.record(
                 CryptoTailDecisionEvent(
@@ -542,7 +546,7 @@ class CryptoTailTailDiffDecisionService(
         val last = scoreLogCache.getIfPresent(key) ?: 0L
         if (nowMs - last < SCORE_LOG_INTERVAL_MS) return
         scoreLogCache.put(key, nowMs)
-        val payload = buildScorePayload(scoreOutput, input, tier, source, statsResult, strategy, remainingSeconds)
+        val payload = buildScorePayload(scoreOutput, input, tier, source, statsResult, strategy, remainingSeconds, priceDiagOf(strategy, nowMs))
         decisionRecorder.record(
             CryptoTailDecisionEvent(
                 strategyId = strategy.id!!,
@@ -573,7 +577,7 @@ class CryptoTailTailDiffDecisionService(
         tierMultiplier: BigDecimal,
         limitPriceCap: BigDecimal
     ) {
-        val payload = buildScorePayload(scoreOutput, input, tier, source, statsResult, strategy, remainingSeconds)
+        val payload = buildScorePayload(scoreOutput, input, tier, source, statsResult, strategy, remainingSeconds, priceDiagOf(strategy, System.currentTimeMillis()))
             .copy(
                 amountUsdc = amountUsdc.toPlainString(),
                 tierMultiplier = tierMultiplier.toPlainString(),
@@ -602,7 +606,8 @@ class CryptoTailTailDiffDecisionService(
         source: String,
         statsResult: TailReversalStatsLookup.Result,
         strategy: CryptoTailStrategy,
-        remainingSeconds: Int
+        remainingSeconds: Int,
+        priceDiag: PriceDiag
     ): TailDiffScorePayload = TailDiffScorePayload(
         strategyId = strategy.id?.toString(),
         marketSlug = strategy.marketSlugPrefix,
@@ -651,8 +656,26 @@ class CryptoTailTailDiffDecisionService(
         maxPriceAgeMs = strategy.tailDiffMaxPriceAgeMs.toString(),
         maxOrderbookAgeMs = strategy.tailDiffMaxOrderbookAgeMs.toString(),
         sigmaScoreMultiple = strategy.tailDiffSigmaScoreMultiple.toPlainString(),
-        effectiveAsk = (input.bestAsk ?: input.bestBid.add(strategy.tailDiffCostBuffer)).toPlainString()
+        effectiveAsk = (input.bestAsk ?: input.bestBid.add(strategy.tailDiffCostBuffer)).toPlainString(),
+        priceMode = priceDiag.priceMode,
+        priceRealtimeGapMs = priceDiag.realtimeGapMs?.toString(),
+        rtdsReady = priceDiag.rtdsReady.toString(),
+        strategyPriceFresh = (input.priceAgeMs != null && strategy.tailDiffMaxPriceAgeMs > 0 &&
+            input.priceAgeMs <= strategy.tailDiffMaxPriceAgeMs).toString()
     )
+
+    /** 价源新鲜度诊断快照：把 RTDS readiness 折算成日志可读字段（P0 可观测性）。 */
+    private data class PriceDiag(
+        val priceMode: String?,
+        val realtimeGapMs: Long?,
+        val rtdsReady: Boolean
+    )
+
+    private fun priceDiagOf(strategy: CryptoTailStrategy, nowMs: Long): PriceDiag {
+        val readiness = periodPriceProvider.getReadiness(strategy.marketSlugPrefix)
+        val gap = readiness.lastRealtimeUpdateAt?.let { (nowMs - it).coerceAtLeast(0L) }
+        return PriceDiag(priceMode = readiness.priceMode, realtimeGapMs = gap, rtdsReady = readiness.ready)
+    }
 
     private fun inferCoin(strategy: CryptoTailStrategy): String? {
         val slug = strategy.marketSlugPrefix.lowercase()

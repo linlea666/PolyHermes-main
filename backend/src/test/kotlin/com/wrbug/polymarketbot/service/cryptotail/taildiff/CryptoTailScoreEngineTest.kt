@@ -201,6 +201,37 @@ class CryptoTailScoreEngineTest {
     }
 
     @Test
+    fun `STATIC mode never emits ODDS_LAG_INSUFFICIENT (zero regression)`() {
+        // 默认 STATIC：即使无动态动量数据，也绝不触发滞后门控否决
+        val out = engine.evaluate(input(), strategy())
+        assertFalse(out.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "got ${out.vetoes}")
+    }
+
+    @Test
+    fun `DYNAMIC mode vetoes when no net odds lag`() {
+        val dyn = strategy().copy(tailDiffOddsLagMode = "DYNAMIC")
+        // 动量数据不可用（null）→ 无滞后证据 → 否决
+        assertTrue(engine.evaluate(input(), dyn).vetoes.contains("ODDS_LAG_INSUFFICIENT"))
+        // 标的领先扩大但赔率已追上（lag=0）→ 否决
+        val caughtUp = engine.evaluate(
+            input().copy(priceLeadMoveSigma = BigDecimal("0.5"), oddsMoveOverWindow = BigDecimal("0.05")),
+            dyn
+        )
+        assertTrue(caughtUp.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "got ${caughtUp.vetoes}")
+    }
+
+    @Test
+    fun `DYNAMIC mode passes lag gate when odds genuinely lagging`() {
+        val dyn = strategy().copy(tailDiffOddsLagMode = "DYNAMIC")
+        // 标的扩大领先 0.5σ、赔率纹丝不动 → 净滞后>0 → 不被滞后门控否决
+        val lagging = engine.evaluate(
+            input().copy(priceLeadMoveSigma = BigDecimal("0.5"), oddsMoveOverWindow = BigDecimal.ZERO),
+            dyn
+        )
+        assertFalse(lagging.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "got ${lagging.vetoes}")
+    }
+
+    @Test
     fun `configurable edge full scale changes underprice score`() {
         // 把满分锚点从 0.10 收紧到 0.05 → edge=0.05 直接满分（原来只有 0.5）
         val tightStrategy = strategy().copy(tailDiffEdgeFullScale = BigDecimal("0.05"))

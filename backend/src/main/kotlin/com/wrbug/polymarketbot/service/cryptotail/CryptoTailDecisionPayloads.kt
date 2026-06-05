@@ -128,5 +128,15 @@ data class TailDiffScorePayload(
     val maxOrderbookAgeMs: String? = null,
     val sigmaScoreMultiple: String? = null,
     /** 买入实际成交价（bestAsk，无 ask 时为 bestBid+costBuffer 兜底价） */
-    val effectiveAsk: String? = null
+    val effectiveAsk: String? = null,
+    // 价源新鲜度诊断（P0 可观测性）：区分「RTDS 层就绪(30s 口径)」与「策略层新鲜(maxPriceAgeMs 口径)」，
+    // 并暴露当前价模式与 realtime 间隙，用于判定 PRICE_STALE 是 realtime 断流还是 snapshot 兜底滞后。
+    /** 当前价模式：REALTIME_UPDATE / SUBSCRIBE_SNAPSHOT（来自 RTDS readiness） */
+    val priceMode: String? = null,
+    /** 距上一次 realtime 单点更新的间隙(ms)；远大于 priceAgeMs 说明在靠 snapshot 兜底 */
+    val priceRealtimeGapMs: String? = null,
+    /** RTDS 层是否就绪（30s 口径），与 strategyPriceFresh 对照可解释「OK + priceAge 27s」 */
+    val rtdsReady: String? = null,
+    /** 策略层是否新鲜（priceAgeMs <= maxPriceAgeMs 口径） */
+    val strategyPriceFresh: String? = null
 )
