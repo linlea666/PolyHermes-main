@@ -1549,6 +1549,7 @@ const CryptoTailStrategyList: React.FC = () => {
   const calibrationGateEnabled = Form.useWatch('calibrationGateEnabled', form)
   const sigmaMethod = Form.useWatch('sigmaMethod', form)
   const kellyEnabled = Form.useWatch('kellyEnabled', form)
+  const exitManagerEnabled = Form.useWatch('enableExitManager', form)
   const intervalSeconds = marketOptions.find((m) => m.slug === selectedMarket)?.intervalSeconds ?? 300
   const maxMinutes = Math.floor(intervalSeconds / 60)
 
@@ -3068,6 +3069,25 @@ const CryptoTailStrategyList: React.FC = () => {
 
               <Form.Item style={{ marginBottom: 8 }}>
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.tailDiffExitSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item
+                name="enableExitManager"
+                label={t('cryptoTailStrategy.form.tailDiffEnableExitManager')}
+                valuePropName="checked"
+                extra={t('cryptoTailStrategy.form.tailDiffEnableExitManagerHint')}
+              >
+                <Switch />
+              </Form.Item>
+              {exitManagerEnabled === false && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message={t('cryptoTailStrategy.form.tailDiffEnableExitManagerOffWarning')}
+                />
+              )}
+              <Form.Item name="exitPollIntervalMs" label={t('cryptoTailStrategy.form.tailDiffExitPollIntervalMs')} extra={t('cryptoTailStrategy.form.tailDiffExitPollIntervalMsHint')}>
+                <InputNumber min={500} step={500} precision={0} style={{ width: '100%' }} />
               </Form.Item>
               <Alert type="info" showIcon style={{ marginBottom: 12 }} message={t('cryptoTailStrategy.form.tailDiffExitInfo')} />
               <Form.Item

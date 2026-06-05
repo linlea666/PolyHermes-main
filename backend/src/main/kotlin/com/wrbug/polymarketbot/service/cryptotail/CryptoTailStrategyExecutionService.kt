@@ -681,12 +681,18 @@ class CryptoTailStrategyExecutionService(
         if (orderbook == null) {
             return BarrierEval(false, "ORDERBOOK_STALE", "订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
         }
+        // TAIL_DIFF 用独立盘口/价龄阈值（tailDiffMax*），与尾盘打分门保持一致，避免下单守卫用更严的通用阈值二次卡门；
+        // 其他模式沿用通用 maxOrderbookAgeMs/maxEntrySpread/maxPriceAgeMs。
+        val isTailDiff = strategy.mode == TradingMode.TAIL_DIFF
+        val effMaxOrderbookAgeMs = if (isTailDiff) strategy.tailDiffMaxOrderbookAgeMs else strategy.maxOrderbookAgeMs
+        val effMaxSpread = if (isTailDiff) strategy.tailDiffMaxSpread else strategy.maxEntrySpread
+        val effMaxPriceAgeMs = if (isTailDiff) strategy.tailDiffMaxPriceAgeMs else strategy.maxPriceAgeMs
         val quoteAge = orderbook.quoteAgeMs(nowMs)
-        if (strategy.maxOrderbookAgeMs > 0 && quoteAge > strategy.maxOrderbookAgeMs) {
+        if (effMaxOrderbookAgeMs > 0 && quoteAge > effMaxOrderbookAgeMs) {
             return BarrierEval(
                 false,
                 "ORDERBOOK_STALE",
-                "订单簿过期: quoteAgeMs=$quoteAge>${strategy.maxOrderbookAgeMs}",
+                "订单簿过期: quoteAgeMs=$quoteAge>$effMaxOrderbookAgeMs",
                 orderbookPayload(orderbook, nowMs).toJson()
             )
         }
@@ -699,21 +705,21 @@ class CryptoTailStrategyExecutionService(
                 orderbookPayload(orderbook, nowMs).toJson()
             )
         }
-        if (strategy.maxEntrySpread > BigDecimal.ZERO && spread > strategy.maxEntrySpread) {
+        if (effMaxSpread > BigDecimal.ZERO && spread > effMaxSpread) {
             return BarrierEval(
                 false,
                 "SPREAD_TOO_WIDE",
-                "入场盘口价差=${spread.toPlainString()}>maxEntrySpread=${strategy.maxEntrySpread.toPlainString()}",
+                "入场盘口价差=${spread.toPlainString()}>maxEntrySpread=${effMaxSpread.toPlainString()}",
                 orderbookPayload(orderbook, nowMs).toJson()
             )
         }
         val priceAge = periodPriceProvider.getCurrentPriceAgeMs(strategy.marketSlugPrefix)
-        if (strategy.maxPriceAgeMs > 0 && priceAge != null && priceAge > strategy.maxPriceAgeMs) {
+        if (effMaxPriceAgeMs > 0 && priceAge != null && priceAge > effMaxPriceAgeMs) {
             val payload = orderbookPayload(orderbook, nowMs).plus("priceAgeMs" to priceAge).toJson()
             return BarrierEval(
                 false,
                 "PRICE_STALE",
-                "结算同源价源过期: priceAgeMs=$priceAge>${strategy.maxPriceAgeMs}",
+                "结算同源价源过期: priceAgeMs=$priceAge>$effMaxPriceAgeMs",
                 payload
             )
         }
