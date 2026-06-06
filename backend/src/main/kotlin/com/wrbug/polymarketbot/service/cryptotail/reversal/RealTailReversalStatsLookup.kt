@@ -13,8 +13,10 @@ import org.springframework.stereotype.Component
  *
  * 查询策略：
  *  - 桶以"领先方向"（leadOutcome=modelSide）为键，故 [TailReversalStatsLookup.Query.leadOutcome] 必须传 modelSide；
- *  - 精确命中 (coin, interval, leadOutcome, diffSigmaBucket, oddsBucket, remainingBucket, lookbackDays, dataSource)；
- *  - oddsBucket 先按精确值再回退 ANY（BINANCE 源恒为 ANY）；
+ *  - 命中 (coin, interval, leadOutcome, diffSigmaBucket, oddsBucket, remainingBucket, lookbackDays, dataSource)；
+ *  - 同一桶可能并存多种采样精度（1m@180d / 1s@14d / POLYMARKET sampling=0），按 sample_count 降序取最优：
+ *    深桶天然样本多→选 1m，1m 缺失的尾盘细桶→自动回退 1s，无需按 dataSource/采样精度分支；
+ *  - oddsBucket / diffSigmaBucket 先按精确值再回退 ANY（BINANCE 按 sigma 细分 odds=ANY，POLYMARKET 反之）；
  *  - 样本数 < 调用方要求时，仍返回结果但由 ScoreEngine 决定是否回退（本类只负责给得出/给不出）。
  */
 @Component
@@ -60,7 +62,7 @@ class RealTailReversalStatsLookup(
         diffSigmaBucket: String,
         oddsBucket: String
     ) = reversalStatRepository
-        .findFirstByCoinAndIntervalSecondsAndOutcomeIndexAndDiffSigmaBucketAndOddsBucketAndRemainingBucketAndLookbackDaysAndDataSource(
+        .findFirstByCoinAndIntervalSecondsAndOutcomeIndexAndDiffSigmaBucketAndOddsBucketAndRemainingBucketAndLookbackDaysAndDataSourceOrderBySampleCountDesc(
             coin,
             query.intervalSeconds,
             query.leadOutcome,

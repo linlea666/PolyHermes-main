@@ -21,7 +21,7 @@ class RealTailReversalStatsLookupTest {
         row: CryptoTailReversalStat?
     ) {
         Mockito.`when`(
-            repo.findFirstByCoinAndIntervalSecondsAndOutcomeIndexAndDiffSigmaBucketAndOddsBucketAndRemainingBucketAndLookbackDaysAndDataSource(
+            repo.findFirstByCoinAndIntervalSecondsAndOutcomeIndexAndDiffSigmaBucketAndOddsBucketAndRemainingBucketAndLookbackDaysAndDataSourceOrderBySampleCountDesc(
                 "BTC", 300, leadOutcome, diffSigmaBucket, oddsBucket, "60_120", 180, dataSource
             )
         ).thenReturn(row)
@@ -39,12 +39,19 @@ class RealTailReversalStatsLookupTest {
             dataSource = dataSource
         )
 
-    private fun row(dataSource: String, diffSigmaBucket: String, oddsBucket: String, lead: Int) =
+    private fun row(
+        dataSource: String,
+        diffSigmaBucket: String,
+        oddsBucket: String,
+        lead: Int,
+        sampleCount: Int = 120,
+        samplingSeconds: Int = 60
+    ) =
         CryptoTailReversalStat(
             coin = "BTC", intervalSeconds = 300, outcomeIndex = lead,
             diffSigmaBucket = diffSigmaBucket, oddsBucket = oddsBucket, remainingBucket = "60_120",
-            lookbackDays = 180, dataSource = dataSource, sampleCount = 120,
-            reversedCount = 12, modelProb = BigDecimal("0.90")
+            lookbackDays = 180, dataSource = dataSource, sampleCount = sampleCount,
+            samplingSeconds = samplingSeconds, reversedCount = 12, modelProb = BigDecimal("0.90")
         )
 
     @Test
@@ -84,6 +91,18 @@ class RealTailReversalStatsLookupTest {
         val result = lookup.queryReversalProb(query(leadOutcome = 0, oddsBucket = "0.90_0.93", dataSource = "BINANCE"))
 
         assertEquals("FALLBACK", result.source)
+    }
+
+    @Test
+    fun `fine 1s sampling row is returned when it is the richest for the bucket`() {
+        // 尾盘细桶仅有 1s 数据（1m 采不到）：repo 的 OrderBySampleCountDesc 会取到该 1s 行，lookup 据此给出 STATS
+        stub(0, "1.5_2.0", "ANY", "BINANCE", row("BINANCE", "1.5_2.0", "ANY", 0, sampleCount = 80, samplingSeconds = 1))
+
+        val result = lookup.queryReversalProb(query(leadOutcome = 0, oddsBucket = "0.90_0.93", dataSource = "BINANCE"))
+
+        assertEquals("STATS", result.source)
+        assertEquals(BigDecimal("0.90"), result.modelProb)
+        assertEquals(80, result.sampleCount)
     }
 
     @Test

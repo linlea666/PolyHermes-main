@@ -36,6 +36,8 @@ class CryptoTailPolymarketReversalHarvestService(
     companion object {
         const val DATA_SOURCE = "POLYMARKET"
         private const val DIFF_SIGMA_BUCKET_ANY = "ANY"
+        /** POLYMARKET 用 CLOB 价格历史的原生不规则采样点，无固定取样间隔 → 0 标记 */
+        private const val POLYMARKET_SAMPLING_SECONDS = 0
         private const val DEFAULT_MAX_PERIODS = 300
         private val coinToSlug = mapOf("BTC" to "btc", "ETH" to "eth")
         private val intervalToLabel = mapOf(300 to "5m", 900 to "15m")
@@ -240,8 +242,7 @@ class CryptoTailPolymarketReversalHarvestService(
                 sampleCount = b.sample,
                 reversedCount = b.reversed,
                 modelProb = modelProb,
-                // POLYMARKET 用 CLOB 价格历史的原生不规则采样点，无固定取样间隔 → 0 标记
-                samplingSeconds = 0,
+                samplingSeconds = POLYMARKET_SAMPLING_SECONDS,
                 distinctPeriodCount = b.sample,
                 maeAvg = avg(b.maeSum, b.sample),
                 mfeAvg = avg(b.mfeSum, b.sample),
@@ -256,8 +257,9 @@ class CryptoTailPolymarketReversalHarvestService(
         }
         // 聚合结果写库用短事务（网络采集已在事务外完成，避免长事务卡死）
         transactionTemplate.execute {
-            reversalStatRepository.deleteByCoinAndIntervalSecondsAndLookbackDaysAndDataSource(
-                coinUpper, intervalSeconds, lookbackDays, DATA_SOURCE
+            // POLYMARKET 源采样精度恒为 0（无固定取样间隔），删除按该精度维度，避免误删 BINANCE 行
+            reversalStatRepository.deleteByCoinAndIntervalSecondsAndLookbackDaysAndDataSourceAndSamplingSeconds(
+                coinUpper, intervalSeconds, lookbackDays, DATA_SOURCE, POLYMARKET_SAMPLING_SECONDS
             )
             reversalStatRepository.saveAll(rows)
         }

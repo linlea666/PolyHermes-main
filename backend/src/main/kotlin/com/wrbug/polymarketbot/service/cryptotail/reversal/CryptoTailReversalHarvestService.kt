@@ -196,9 +196,9 @@ class CryptoTailReversalHarvestService(
             }
         }
 
-        // 幂等：删旧写新（按 coin+interval+lookback+source 维度；samplingSeconds 不入唯一键，回填即覆盖）
-        reversalStatRepository.deleteByCoinAndIntervalSecondsAndLookbackDaysAndDataSource(
-            coinUpper, intervalSeconds, lookbackDays, DATA_SOURCE
+        // 幂等：删旧写新（按 coin+interval+lookback+source+sampling 维度；仅清同精度旧行，1m 与 1s 共存互不覆盖）
+        reversalStatRepository.deleteByCoinAndIntervalSecondsAndLookbackDaysAndDataSourceAndSamplingSeconds(
+            coinUpper, intervalSeconds, lookbackDays, DATA_SOURCE, step
         )
         val now = System.currentTimeMillis()
         val rows = buckets.map { (k, b) ->
