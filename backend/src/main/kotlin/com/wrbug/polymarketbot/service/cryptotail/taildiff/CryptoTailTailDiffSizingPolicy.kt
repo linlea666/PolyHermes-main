@@ -7,7 +7,7 @@ import java.math.RoundingMode
 
 /**
  * 尾盘价差模式分层下注策略：
- *   amount = baseAmount × tierMultiplier，clamp 到 [MIN_ORDER_USDC, maxAmountPerOrder, spendableBalance]
+ *   amount = baseAmount × tierMultiplier × stakeMultiplier，clamp 到 [MIN_ORDER_USDC, maxAmountPerOrder, spendableBalance]
  *   （V72 可选叠加）再取 min(分数 1/10 Kelly 上限, 盘口可成交深度上限)
  *
  * 规则：
@@ -44,6 +44,7 @@ class CryptoTailTailDiffSizingPolicy {
      * @param modelProb 模型胜率（启用 Kelly 上限时必填）
      * @param effectiveCost 含费有效成本（启用 Kelly 上限时必填）
      * @param availableDepthUsd 盘口可成交深度 min(bidDepth, askDepth)（启用深度上限时必填）
+     * @param stakeMultiplier 入场分段的下注倍率（按时间窗精准降仓/加仓，缺省 1.0），叠乘在 base×tier 上，再过统一钳制。
      */
     fun computeAmount(
         strategy: CryptoTailStrategy,
@@ -51,7 +52,8 @@ class CryptoTailTailDiffSizingPolicy {
         spendableBalance: BigDecimal,
         modelProb: BigDecimal? = null,
         effectiveCost: BigDecimal? = null,
-        availableDepthUsd: BigDecimal? = null
+        availableDepthUsd: BigDecimal? = null,
+        stakeMultiplier: BigDecimal = BigDecimal.ONE
     ): Result {
         val baseAmount = strategy.tailDiffBaseAmount.max(MIN_ORDER_USDC)
         val multiplier = when (tier) {
@@ -59,7 +61,9 @@ class CryptoTailTailDiffSizingPolicy {
             TailDiffTier.PREMIUM -> strategy.tailDiffTierPremiumMult
             TailDiffTier.TOP -> strategy.tailDiffTierTopMult
         }.max(BigDecimal.ZERO)
-        val raw = baseAmount.multiply(multiplier).setScale(8, RoundingMode.DOWN)
+        val raw = baseAmount.multiply(multiplier)
+            .multiply(stakeMultiplier.max(BigDecimal.ZERO))
+            .setScale(8, RoundingMode.DOWN)
         val maxCap = strategy.tailDiffMaxAmountPerOrder.max(MIN_ORDER_USDC)
         var capped = raw
         var cappedByMaxAmount = false

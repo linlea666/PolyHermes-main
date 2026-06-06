@@ -22,12 +22,13 @@ interface SegmentRow {
   min_model_prob?: string
   max_ask?: string
   exit_tier_bias?: string
+  stake_mult?: string
   _extra?: Record<string, unknown>
 }
 
 const KNOWN_KEYS = new Set([
   'name', 'remaining_hi', 'remaining_lo', 'min_score',
-  'min_diff_sigma', 'min_edge', 'min_model_prob', 'max_ask', 'exit_tier_bias'
+  'min_diff_sigma', 'min_edge', 'min_model_prob', 'max_ask', 'exit_tier_bias', 'stake_mult'
 ])
 
 const toStr = (v: unknown): string | undefined =>
@@ -60,6 +61,7 @@ const parseSegments = (raw?: string): SegmentRow[] | null => {
       min_model_prob: toStr(obj.min_model_prob),
       max_ask: toStr(obj.max_ask),
       exit_tier_bias: toStr(obj.exit_tier_bias),
+      stake_mult: toStr(obj.stake_mult),
       _extra: Object.keys(extra).length > 0 ? extra : undefined
     }
   })
@@ -85,6 +87,7 @@ const serializeSegments = (rows: SegmentRow[]): string => {
     numField(out, 'min_model_prob', r.min_model_prob)
     numField(out, 'max_ask', r.max_ask)
     if (r.exit_tier_bias) out.exit_tier_bias = r.exit_tier_bias
+    numField(out, 'stake_mult', r.stake_mult)
     return out
   })
   return JSON.stringify(arr)
@@ -273,6 +276,13 @@ const TailDiffEntrySegmentsField: React.FC<Props> = ({ value, onChange }) => {
                       ]}
                     />
                   </div>
+                  <LabeledNumber
+                    label={t('cryptoTailStrategy.form.segEditor.stakeMult')}
+                    value={row.stake_mult}
+                    onChange={(v) => updateRow(idx, { stake_mult: v })}
+                    min={0}
+                    step={0.1}
+                  />
                 </Space>
               </Space>
             </Card>

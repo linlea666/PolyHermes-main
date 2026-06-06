@@ -2008,7 +2008,7 @@
       "tailDiffConsecLossStopCount": "Consecutive losses to stop",
       "tailDiffEntrySegmentsJson": "Entry segments (JSON, optional)",
       "tailDiffEntrySegmentsPlaceholder": "[{\"name\":\"early\",\"remaining_hi\":300,\"remaining_lo\":150,\"min_score\":90,\"min_diff_sigma\":2.2,\"min_edge\":0.04,\"min_model_prob\":0.96,\"max_ask\":0.92,\"exit_tier_bias\":\"PREMIUM\"},{\"name\":\"normal\",\"remaining_hi\":150,\"remaining_lo\":60}]",
-      "tailDiffEntrySegmentsHelp": "Leave blank to use the single window above. Each segment defines a remaining-time window [remaining_lo, remaining_hi] with optional overrides (min_score / min_diff_sigma / min_edge / min_model_prob / max_ask) and exit_tier_bias (NORMAL/PREMIUM/TOP). When segments are set, a tick whose remaining time matches no segment is skipped.",
+      "tailDiffEntrySegmentsHelp": "Leave blank to use the single window above. Each segment defines a remaining-time window [remaining_lo, remaining_hi] with optional overrides (min_score / min_diff_sigma / min_edge / min_model_prob / max_ask), exit_tier_bias (NORMAL/PREMIUM/TOP), and stake_mult (per-segment stake multiplier for precise window-based sizing, default 1.0; final amount = base x tier x stake_mult, still clamped by the $1 minimum and max order size). When segments are set, a tick whose remaining time matches no segment is skipped.",
       "tailDiffEntrySegmentsInvalid": "Must be a JSON array; each item needs remaining_hi >= remaining_lo >= 0",
       "tailDiffExitPresetInvalid": "Must be valid JSON containing at least one of: hold_to_expiry / tp_limit / stop_loss / dynamic_exit / execution",
       "segEditor": {
@@ -2025,7 +2025,8 @@
         "minModelProb": "Min modelProb",
         "maxAsk": "Max ask",
         "exitTierBias": "Exit tier bias",
-        "exitTierBiasNone": "None"
+        "exitTierBiasNone": "None",
+        "stakeMult": "Stake multiplier (stake_mult)"
       },
       "exitEditor": {
         "visualMode": "Visual",

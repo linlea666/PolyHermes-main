@@ -393,7 +393,8 @@ class CryptoTailTailDiffDecisionService(
             spendableBalance = spendableBalance,
             modelProb = modelProb,
             effectiveCost = effectiveCost,
-            availableDepthUsd = availableDepthUsd
+            availableDepthUsd = availableDepthUsd,
+            stakeMultiplier = segment.stakeMult ?: BigDecimal.ONE
         )
         if (sizing.amountUsdc <= BigDecimal.ZERO) {
             return skip(

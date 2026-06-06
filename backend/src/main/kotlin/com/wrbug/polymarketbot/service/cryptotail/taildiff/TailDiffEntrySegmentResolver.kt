@@ -19,9 +19,10 @@ import java.math.BigDecimal
  *  - segments 非空但 remaining 不落在任何段内 → [resolve] 返回 null，调用方记 WINDOW_NO_SEGMENT 并 SKIP（opt-in）。
  *
  * JSON 结构（数组，每段）：
- *  { "name", "remaining_hi", "remaining_lo", "min_score?", "min_diff_sigma?", "min_edge?", "min_model_prob?", "max_ask?", "exit_tier_bias?" }
+ *  { "name", "remaining_hi", "remaining_lo", "min_score?", "min_diff_sigma?", "min_edge?", "min_model_prob?", "max_ask?", "exit_tier_bias?", "stake_mult?" }
  *  - remaining_hi >= remaining_lo；命中条件：remaining_lo <= remainingSeconds <= remaining_hi
  *  - 缺省的阈值字段回退策略全局值。
+ *  - stake_mult：该段下注倍率（按时间窗精准降仓/加仓，缺省=1.0），最终金额=base×tier×stake_mult 再过 [MIN_ORDER_USDC, maxAmount, 余额] 钳制。
  */
 @Component
 class TailDiffEntrySegmentResolver {
@@ -40,6 +41,8 @@ class TailDiffEntrySegmentResolver {
         val minModelProb: BigDecimal? = null,
         val maxAsk: BigDecimal? = null,
         val exitTierBias: TailDiffTier? = null,
+        /** 该段下注倍率（按时间窗精准降仓/加仓），缺省=null 表示用全局 1.0。 */
+        val stakeMult: BigDecimal? = null,
         /** 是否为"无覆盖默认段"（segments 为空时合成，保持旧行为） */
         val isDefault: Boolean = false
     )
@@ -115,7 +118,8 @@ class TailDiffEntrySegmentResolver {
             minEdge = asBigDecimal(m["min_edge"]),
             minModelProb = asBigDecimal(m["min_model_prob"]),
             maxAsk = asBigDecimal(m["max_ask"]),
-            exitTierBias = TailDiffTier.fromLabel(m["exit_tier_bias"] as? String)
+            exitTierBias = TailDiffTier.fromLabel(m["exit_tier_bias"] as? String),
+            stakeMult = asBigDecimal(m["stake_mult"])
         )
     }
 
@@ -152,6 +156,7 @@ class TailDiffEntrySegmentResolver {
             asBigDecimal(m["min_edge"])?.let { if (it < BigDecimal.ZERO || it >= BigDecimal.ONE) return false }
             asBigDecimal(m["min_model_prob"])?.let { if (it <= BigDecimal.ZERO || it > BigDecimal.ONE) return false }
             asBigDecimal(m["max_ask"])?.let { if (it <= BigDecimal.ZERO || it > BigDecimal.ONE) return false }
+            asBigDecimal(m["stake_mult"])?.let { if (it <= BigDecimal.ZERO) return false }
             val biasRaw = m["exit_tier_bias"] as? String
             if (biasRaw != null && TailDiffTier.fromLabel(biasRaw) == null) return false
         }

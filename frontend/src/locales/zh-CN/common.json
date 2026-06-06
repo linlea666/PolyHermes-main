@@ -2008,7 +2008,7 @@
       "tailDiffConsecLossStopCount": "连续亏损停止笔数",
       "tailDiffEntrySegmentsJson": "入场分段（JSON，选填）",
       "tailDiffEntrySegmentsPlaceholder": "[{\"name\":\"early\",\"remaining_hi\":300,\"remaining_lo\":150,\"min_score\":90,\"min_diff_sigma\":2.2,\"min_edge\":0.04,\"min_model_prob\":0.96,\"max_ask\":0.92,\"exit_tier_bias\":\"PREMIUM\"},{\"name\":\"normal\",\"remaining_hi\":150,\"remaining_lo\":60}]",
-      "tailDiffEntrySegmentsHelp": "留空则使用上方单窗口。每段定义剩余时间窗口 [remaining_lo, remaining_hi]，可选覆盖 min_score / min_diff_sigma / min_edge / min_model_prob / max_ask 与 exit_tier_bias（NORMAL/PREMIUM/TOP）。配置后，剩余时间不落在任何段内的 tick 将被跳过。",
+      "tailDiffEntrySegmentsHelp": "留空则使用上方单窗口。每段定义剩余时间窗口 [remaining_lo, remaining_hi]，可选覆盖 min_score / min_diff_sigma / min_edge / min_model_prob / max_ask 与 exit_tier_bias（NORMAL/PREMIUM/TOP），以及 stake_mult（该段下注倍率，按时间窗精准降仓/加仓，缺省 1.0；最终金额=base×tier×stake_mult，仍受 $1 最小单与最大单额钳制）。配置后，剩余时间不落在任何段内的 tick 将被跳过。",
       "tailDiffEntrySegmentsInvalid": "必须是 JSON 数组；每段需满足 remaining_hi >= remaining_lo >= 0",
       "tailDiffExitPresetInvalid": "必须是合法 JSON，且至少包含 hold_to_expiry / tp_limit / stop_loss / dynamic_exit / execution 之一",
       "segEditor": {
@@ -2025,7 +2025,8 @@
         "minModelProb": "最低 modelProb",
         "maxAsk": "最高买价",
         "exitTierBias": "退出档位偏置",
-        "exitTierBiasNone": "不指定"
+        "exitTierBiasNone": "不指定",
+        "stakeMult": "下注倍率(stake_mult)"
       },
       "exitEditor": {
         "visualMode": "可视化",

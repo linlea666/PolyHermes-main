@@ -2008,7 +2008,7 @@
       "tailDiffConsecLossStopCount": "連續虧損停止筆數",
       "tailDiffEntrySegmentsJson": "入場分段（JSON，選填）",
       "tailDiffEntrySegmentsPlaceholder": "[{\"name\":\"early\",\"remaining_hi\":300,\"remaining_lo\":150,\"min_score\":90,\"min_diff_sigma\":2.2,\"min_edge\":0.04,\"min_model_prob\":0.96,\"max_ask\":0.92,\"exit_tier_bias\":\"PREMIUM\"},{\"name\":\"normal\",\"remaining_hi\":150,\"remaining_lo\":60}]",
-      "tailDiffEntrySegmentsHelp": "留空則使用上方單窗口。每段定義剩餘時間窗口 [remaining_lo, remaining_hi]，可選覆蓋 min_score / min_diff_sigma / min_edge / min_model_prob / max_ask 與 exit_tier_bias（NORMAL/PREMIUM/TOP）。配置後，剩餘時間不落在任何段內的 tick 將被跳過。",
+      "tailDiffEntrySegmentsHelp": "留空則使用上方單窗口。每段定義剩餘時間窗口 [remaining_lo, remaining_hi]，可選覆蓋 min_score / min_diff_sigma / min_edge / min_model_prob / max_ask 與 exit_tier_bias（NORMAL/PREMIUM/TOP），以及 stake_mult（該段下注倍率，按時間窗精準降倉/加倉，缺省 1.0；最終金額=base×tier×stake_mult，仍受 $1 最小單與最大單額鉗制）。配置後，剩餘時間不落在任何段內的 tick 將被跳過。",
       "tailDiffEntrySegmentsInvalid": "必須是 JSON 陣列；每段需滿足 remaining_hi >= remaining_lo >= 0",
       "tailDiffExitPresetInvalid": "必須是合法 JSON，且至少包含 hold_to_expiry / tp_limit / stop_loss / dynamic_exit / execution 之一",
       "segEditor": {
@@ -2025,7 +2025,8 @@
         "minModelProb": "最低 modelProb",
         "maxAsk": "最高買價",
         "exitTierBias": "退出檔位偏置",
-        "exitTierBiasNone": "不指定"
+        "exitTierBiasNone": "不指定",
+        "stakeMult": "下注倍率(stake_mult)"
       },
       "exitEditor": {
         "visualMode": "視覺化",
