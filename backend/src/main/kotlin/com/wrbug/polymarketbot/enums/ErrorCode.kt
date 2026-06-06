@@ -184,6 +184,7 @@ enum class ErrorCode(
     REVERSAL_RESEARCH_PARAM_INVALID(4730, "反转率研究参数不合法", "error.reversal_research_param_invalid"),
     REVERSAL_RESEARCH_BACKFILL_FAILED(4731, "历史反转数据回填失败", "error.reversal_research_backfill_failed"),
     REVERSAL_RESEARCH_NO_DATA(4732, "反转率研究无可用数据", "error.reversal_research_no_data"),
+    REVERSAL_RESEARCH_BUSY(4733, "反转回填正在进行中，请稍候再试", "error.reversal_research_busy"),
 
     // 统计相关 (4801-4899)
     STATISTICS_FETCH_FAILED(4801, "获取统计信息失败", "error.statistics_fetch_failed"),

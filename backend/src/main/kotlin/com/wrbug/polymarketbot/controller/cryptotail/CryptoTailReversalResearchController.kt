@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 历史反转率研究接口：
@@ -40,6 +41,14 @@ class CryptoTailReversalResearchController(
 ) {
     private val logger = LoggerFactory.getLogger(CryptoTailReversalResearchController::class.java)
 
+    /**
+     * 正在执行回填的 key 集合（coin-interval-lookback-source）。
+     * 回填是"先删后插"且事务粒度按 key，并发触发会让两个事务交错插入同一桶导致唯一键冲突
+     * （uk_ct_reversal_bucket）。在控制器层（非事务）做按 key 串行守卫：服务方法返回（事务已提交）后才释放，
+     * 避免释放窗口落在事务提交之前再次产生竞态。
+     */
+    private val backfillInProgress = ConcurrentHashMap.newKeySet<String>()
+
     private fun validCoin(coin: String): String? {
         val c = coin.trim().uppercase()
         return if (c == "BTC" || c == "ETH") c else null
@@ -50,6 +59,10 @@ class CryptoTailReversalResearchController(
         val coin = validCoin(request.coin)
         if (coin == null || (request.intervalSeconds != 300 && request.intervalSeconds != 900) || request.lookbackDays <= 0) {
             return ResponseEntity.ok(ApiResponse.error(ErrorCode.REVERSAL_RESEARCH_PARAM_INVALID, messageSource = messageSource))
+        }
+        val lockKey = "$coin-${request.intervalSeconds}-${request.lookbackDays}-${CryptoTailReversalHarvestService.DATA_SOURCE}"
+        if (!backfillInProgress.add(lockKey)) {
+            return ResponseEntity.ok(ApiResponse.error(ErrorCode.REVERSAL_RESEARCH_BUSY, messageSource = messageSource))
         }
         return try {
             val summary = harvestService.backfill(coin, request.intervalSeconds, request.lookbackDays, request.samplingSeconds)
@@ -70,6 +83,8 @@ class CryptoTailReversalResearchController(
         } catch (e: Exception) {
             logger.error("反转回填失败: ${e.message}", e)
             ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_REVERSAL_RESEARCH_BACKFILL_FAILED, messageSource = messageSource))
+        } finally {
+            backfillInProgress.remove(lockKey)
         }
     }
 
