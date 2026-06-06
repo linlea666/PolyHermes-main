@@ -12,14 +12,14 @@ import java.math.BigDecimal
  *
  * 设计（copy-overlay）：
  *  - 不改 ScoreEngine 签名与内部读取；命中段后产出 strategy.copy(...) 覆盖
- *    {minEntryScore, minDiffSigma, minEdge, hardMaxPrice, windowStart, windowEnd} 六个字段，
+ *    {minEntryScore, minDiffSigma, minEdge, minModelProb, minPrice(min_ask), hardMaxPrice(max_ask), windowStart, windowEnd} 字段，
  *    ScoreEngine 照常读取这些字段即得到分段后的有效阈值，零回归风险。
  *  - segments 为空/NULL 时 [resolve] 始终返回"无覆盖默认段"，effStrategy == strategy，行为完全不变；
  *    窗口仍由 ScoreEngine 的 WINDOW_TOO_EARLY/LATE 否决把关（与旧逻辑一致）。
  *  - segments 非空但 remaining 不落在任何段内 → [resolve] 返回 null，调用方记 WINDOW_NO_SEGMENT 并 SKIP（opt-in）。
  *
  * JSON 结构（数组，每段）：
- *  { "name", "remaining_hi", "remaining_lo", "min_score?", "min_diff_sigma?", "min_edge?", "min_model_prob?", "max_ask?", "exit_tier_bias?", "stake_mult?" }
+ *  { "name", "remaining_hi", "remaining_lo", "min_score?", "min_diff_sigma?", "min_edge?", "min_model_prob?", "min_ask?", "max_ask?", "exit_tier_bias?", "stake_mult?" }
  *  - remaining_hi >= remaining_lo；命中条件：remaining_lo <= remainingSeconds <= remaining_hi
  *  - 缺省的阈值字段回退策略全局值。
  *  - stake_mult：该段下注倍率（按时间窗精准降仓/加仓，缺省=1.0），最终金额=base×tier×stake_mult 再过 [MIN_ORDER_USDC, maxAmount, 余额] 钳制。
@@ -39,6 +39,8 @@ class TailDiffEntrySegmentResolver {
         val minDiffSigma: BigDecimal? = null,
         val minEdge: BigDecimal? = null,
         val minModelProb: BigDecimal? = null,
+        /** 该段入场价格下限（bestAsk 下限），覆盖全局 tailDiffMinPrice；缺省回退全局值。 */
+        val minAsk: BigDecimal? = null,
         val maxAsk: BigDecimal? = null,
         val exitTierBias: TailDiffTier? = null,
         /** 该段下注倍率（按时间窗精准降仓/加仓），缺省=null 表示用全局 1.0。 */
@@ -70,6 +72,7 @@ class TailDiffEntrySegmentResolver {
             tailDiffMinDiffSigma = segment.minDiffSigma ?: strategy.tailDiffMinDiffSigma,
             tailDiffMinEdge = segment.minEdge ?: strategy.tailDiffMinEdge,
             tailDiffMinModelProb = segment.minModelProb ?: strategy.tailDiffMinModelProb,
+            tailDiffMinPrice = segment.minAsk ?: strategy.tailDiffMinPrice,
             tailDiffHardMaxPrice = segment.maxAsk ?: strategy.tailDiffHardMaxPrice
         )
     }
@@ -117,6 +120,7 @@ class TailDiffEntrySegmentResolver {
             minDiffSigma = asBigDecimal(m["min_diff_sigma"]),
             minEdge = asBigDecimal(m["min_edge"]),
             minModelProb = asBigDecimal(m["min_model_prob"]),
+            minAsk = asBigDecimal(m["min_ask"]),
             maxAsk = asBigDecimal(m["max_ask"]),
             exitTierBias = TailDiffTier.fromLabel(m["exit_tier_bias"] as? String),
             stakeMult = asBigDecimal(m["stake_mult"])
@@ -155,7 +159,12 @@ class TailDiffEntrySegmentResolver {
             asBigDecimal(m["min_diff_sigma"])?.let { if (it < BigDecimal.ZERO) return false }
             asBigDecimal(m["min_edge"])?.let { if (it < BigDecimal.ZERO || it >= BigDecimal.ONE) return false }
             asBigDecimal(m["min_model_prob"])?.let { if (it <= BigDecimal.ZERO || it > BigDecimal.ONE) return false }
+            asBigDecimal(m["min_ask"])?.let { if (it <= BigDecimal.ZERO || it > BigDecimal.ONE) return false }
             asBigDecimal(m["max_ask"])?.let { if (it <= BigDecimal.ZERO || it > BigDecimal.ONE) return false }
+            // min_ask 与 max_ask 同时提供时，下界不得高于上界（否则该段恒不可入场）
+            val minAskV = asBigDecimal(m["min_ask"])
+            val maxAskV = asBigDecimal(m["max_ask"])
+            if (minAskV != null && maxAskV != null && minAskV > maxAskV) return false
             asBigDecimal(m["stake_mult"])?.let { if (it <= BigDecimal.ZERO) return false }
             val biasRaw = m["exit_tier_bias"] as? String
             if (biasRaw != null && TailDiffTier.fromLabel(biasRaw) == null) return false

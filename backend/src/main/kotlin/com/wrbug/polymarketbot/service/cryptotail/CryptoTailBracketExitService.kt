@@ -197,7 +197,8 @@ class CryptoTailBracketExitService(
             recordExitCheck(checked, strategy, holding, bestBid, remainingSeconds, decision, orderbook, triggerSource)
 
             if (decision.kind == null || decision.ratio <= BigDecimal.ZERO) {
-                persistTp1HoldStateIfNeeded(checked, decision)
+                val afterTp1 = persistTp1HoldStateIfNeeded(checked, decision)
+                resetExitConfirmIfNeeded(afterTp1)
                 return
             }
             persistTp1HoldStateIfNeeded(checked, decision)
@@ -269,7 +270,8 @@ class CryptoTailBracketExitService(
                 bestBid = bestBid,
                 remainingSeconds = remainingSeconds,
                 reason = decision.reason,
-                orderbook = orderbook
+                orderbook = orderbook,
+                applyWorstPriceFloor = decision.softPriceExit
             )
         } catch (e: Exception) {
             logger.error("阶梯退出评估异常 triggerId=$triggerId, ${e.message}", e)
@@ -352,7 +354,14 @@ class CryptoTailBracketExitService(
         val tp1HoldStartedAt: Long? = null,
         val clearTp1HoldStartedAt: Boolean = false,
         /** true = 本次 HARD_STOP 被 Smart Hard Stop 复核豁免、改为持有到结算（kind 为 null）。仅用于审计日志。 */
-        val bypassedHardStop: Boolean = false
+        val bypassedHardStop: Boolean = false,
+        /**
+         * true = 本退出仅由"裸盘口 bestBid 跌破 minOdds"这类纯价格噪声触发（最易被瞬时插针/假报价误伤）。
+         * 用于两处差异化处理：
+         *  1) [applyExitConfirmation] 不再视为 immediate，必须连续 exitConfirmTicks 次确认才放行；
+         *  2) [placeExitOrder] 仅对此类退出套用退出预设 worstPrice 地板（防贱卖），真模型恶化/反转则照常市价割肉。
+         */
+        val softPriceExit: Boolean = false
     )
 
     private fun decideExit(
@@ -554,6 +563,9 @@ class CryptoTailBracketExitService(
             // TOP 不再"无脑持有到结算"：即便 holdToExpiry，仍保留硬危险兜底（minOdds/反抽/价差坍缩/方向翻转），
             // 仅跳过 modelProb/diffSigma 这类较软的模型衰减退出，避免最大仓位在剧烈反转下零保护。
             dynamicExitDecision(preset, trigger, holding, bestBid, tier, hardOnly = true)?.let { return it }
+            // 高信念单上行封顶：升到 tp_limit（如 0.99）即落袋，避免为贪最后 1 分而承担尾盘反转风险。
+            // tp_limit.enabled=false（TOP 默认）时返回 null → 行为不变，仍持有到结算。
+            tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
             return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "TOP"}] holdToExpiry=true，持有到结算（已通过硬危险兜底）remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
         }
         val entryFillPrice = trigger.entryFillPrice ?: run {
@@ -578,22 +590,36 @@ class CryptoTailBracketExitService(
         // 3) DynamicExit：modelProb / diffSigma / bestBid / 价差坍缩 / 反抽 / 方向翻转 任一触发即退出
         dynamicExitDecision(preset, trigger, holding, bestBid, tier, hardOnly = false)?.let { return it }
         // 4) TpLimit
-        if (preset.tpLimit.enabled && bestBid >= preset.tpLimit.price) {
-            // 去重守卫：部分止盈(ratio<1)时价格维持在止盈线上会反复命中本分支，
-            // 复用 hasExitOfKind(TP1) 确保 TP1 仅触发一次（与 BRACKET 同口径，避免重复挂卖单）。
-            val triggerId = trigger.id
-            if (triggerId != null && hasExitOfKind(triggerId, ExitKind.TP1)) {
-                return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "?"}] TP1_ALREADY_TRIGGERED，不重复止盈", clearTp1HoldStartedAt = true)
-            }
-            val ratio = preset.tpLimit.ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
-            return Decision(
-                ExitKind.TP1,
-                ratio,
-                "TAIL_DIFF[${tier?.label ?: "?"}] TP: bestBid=${bestBid.toPlainString()}>=${preset.tpLimit.price.toPlainString()}",
-                clearTp1HoldStartedAt = true
-            )
-        }
+        tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
         return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "?"}] 继续持有 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
+    }
+
+    /**
+     * TAIL_DIFF 固定止盈（tp_limit）评估：bestBid >= tp_limit.price 时按 ratio 触发 TP1。
+     * 从 decideTailDiffExit 提取，供常规流程与 holdToExpiry（高信念封顶）分支共用，确保两路口径一致。
+     *
+     * @return 命中止盈线返回 TP1 Decision；已触发过 TP1 返回持有 Decision（去重）；tp_limit 关闭或未达线返回 null。
+     */
+    private fun tpLimitDecision(
+        preset: TailDiffExitPreset,
+        trigger: CryptoTailStrategyTrigger,
+        bestBid: BigDecimal,
+        tier: TailDiffTier?
+    ): Decision? {
+        if (!preset.tpLimit.enabled || bestBid < preset.tpLimit.price) return null
+        // 去重守卫：部分止盈(ratio<1)时价格维持在止盈线上会反复命中本分支，
+        // 复用 hasExitOfKind(TP1) 确保 TP1 仅触发一次（与 BRACKET 同口径，避免重复挂卖单）。
+        val triggerId = trigger.id
+        if (triggerId != null && hasExitOfKind(triggerId, ExitKind.TP1)) {
+            return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "?"}] TP1_ALREADY_TRIGGERED，不重复止盈", clearTp1HoldStartedAt = true)
+        }
+        val ratio = preset.tpLimit.ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+        return Decision(
+            ExitKind.TP1,
+            ratio,
+            "TAIL_DIFF[${tier?.label ?: "?"}] TP: bestBid=${bestBid.toPlainString()}>=${preset.tpLimit.price.toPlainString()}",
+            clearTp1HoldStartedAt = true
+        )
     }
 
     /**
@@ -631,13 +657,15 @@ class CryptoTailBracketExitService(
                 clearTp1HoldStartedAt = true
             )
         }
-        // 硬危险：bestBid 跌破 minOdds
+        // 硬危险：bestBid 跌破 minOdds（纯盘口价格触发，最易被瞬时插针误伤）
+        // → 标记 softPriceExit：需连续 exitConfirmTicks 次确认 + 退出时套 worstPrice 地板防贱卖。
         if (bestBid < preset.dynamicExit.minOddsAfterEntry) {
             return Decision(
                 ExitKind.STOP,
                 BigDecimal.ONE,
                 "TAIL_DIFF[$label] DynamicExit: bestBid=${bestBid.toPlainString()}<${preset.dynamicExit.minOddsAfterEntry.toPlainString()}",
-                clearTp1HoldStartedAt = true
+                clearTp1HoldStartedAt = true,
+                softPriceExit = true
             )
         }
         // 价差坍缩：相对入场 diffSigma 回撤比例超过 maxDiffRetracePct（入场快照 trigger.diffSigma 为 ground truth）
@@ -913,15 +941,26 @@ class CryptoTailBracketExitService(
         )
     }
 
-    private fun persistTp1HoldStateIfNeeded(trigger: CryptoTailStrategyTrigger, decision: Decision) {
-        val triggerId = trigger.id ?: return
+    private fun persistTp1HoldStateIfNeeded(trigger: CryptoTailStrategyTrigger, decision: Decision): CryptoTailStrategyTrigger {
+        val triggerId = trigger.id ?: return trigger
         val next = when {
             decision.clearTp1HoldStartedAt -> null
             decision.tp1HoldStartedAt != null -> decision.tp1HoldStartedAt
             else -> trigger.tp1HoldStartedAt
         }
-        if (next == trigger.tp1HoldStartedAt) return
-        triggerRepository.save(trigger.copy(id = triggerId, tp1HoldStartedAt = next))
+        if (next == trigger.tp1HoldStartedAt) return trigger
+        return triggerRepository.save(trigger.copy(id = triggerId, tp1HoldStartedAt = next))
+    }
+
+    /**
+     * 本 tick 判定为继续持有（kind=null）时复位退出确认计数，确保 softPriceExit 要求的是
+     * "连续 N tick 跌破"而非"累计 N tick"——否则插针→恢复→再插针会提前满足确认。
+     * 仅在计数/原因非空时写库，避免持有热路径产生无谓 UPDATE。
+     */
+    private fun resetExitConfirmIfNeeded(trigger: CryptoTailStrategyTrigger) {
+        if (trigger.exitConfirmCount == 0 && trigger.exitConfirmReason == null) return
+        val triggerId = trigger.id ?: return
+        triggerRepository.save(trigger.copy(id = triggerId, exitConfirmCount = 0, exitConfirmReason = null))
     }
 
     private fun applyExitConfirmation(
@@ -931,7 +970,9 @@ class CryptoTailBracketExitService(
         nowMs: Long
     ): Boolean {
         val kind = decision.kind ?: return false
-        val immediate = isDepthSplitExit(kind) || kind == ExitKind.TP1 || kind == ExitKind.TP2
+        // softPriceExit（裸盘口跌破 minOdds）不享受 immediate 直通，必须连续 exitConfirmTicks 次确认，
+        // 过滤瞬时插针/假报价；其余急退（HARD_STOP/模型反转/坍缩/止盈）保持即时。
+        val immediate = (isDepthSplitExit(kind) || kind == ExitKind.TP1 || kind == ExitKind.TP2) && !decision.softPriceExit
         val nextCount = if (trigger.exitConfirmReason == kind.name) trigger.exitConfirmCount + 1 else 1
         triggerRepository.save(
             trigger.copy(
@@ -1157,7 +1198,12 @@ class CryptoTailBracketExitService(
         bestBid: BigDecimal,
         remainingSeconds: Int,
         reason: String,
-        orderbook: OrderbookQualitySnapshot? = null
+        orderbook: OrderbookQualitySnapshot? = null,
+        /**
+         * true = 仅由裸盘口跌破 minOdds 这类价格噪声触发的退出（softPriceExit），套用退出预设 worstPrice 地板防贱卖；
+         * false（默认）= 真模型恶化/反转/止损/止盈等，照常按 slippage 市价成交，不被地板挡住（避免该卖却卖不出而骑到归零）。
+         */
+        applyWorstPriceFloor: Boolean = false
     ) {
         val triggerId = trigger.id ?: return
         val tokenId = trigger.tokenId ?: return
@@ -1188,8 +1234,10 @@ class CryptoTailBracketExitService(
             strategy.exitFakSlippage to null
         }
         var exitPrice = computeExitPrice(orderType, bestBid, effExitSlippage)
-        // worstPrice：FAK 卖出限价不得低于该底线（限价被抬高 → 低于底线时不成交，避免滑点把仓位贱卖）
-        if (orderType.uppercase() == "FAK" && worstPriceFloor != null && worstPriceFloor > BigDecimal.ZERO) {
+        // worstPrice：FAK 卖出限价不得低于该底线（限价被抬高 → 低于底线时不成交，避免滑点把仓位贱卖）。
+        // 仅对 softPriceExit（裸盘口跌破 minOdds）套用——假报价/插针时宁可不成交＝继续持有赢家；
+        // 真模型恶化/反转/止损不套地板，确保该割肉时能在市价附近成交，不被地板挡住而骑到归零。
+        if (applyWorstPriceFloor && orderType.uppercase() == "FAK" && worstPriceFloor != null && worstPriceFloor > BigDecimal.ZERO) {
             exitPrice = exitPrice.max(worstPriceFloor.setScale(PRICE_SCALE, RoundingMode.DOWN))
         }
         val sizeStr = targetSize.toPlainString()

@@ -2023,6 +2023,7 @@
         "minDiffSigma": "Min diff_sigma",
         "minEdge": "Min edge",
         "minModelProb": "Min modelProb",
+        "minAsk": "Min ask",
         "maxAsk": "Max ask",
         "exitTierBias": "Exit tier bias",
         "exitTierBiasNone": "None",

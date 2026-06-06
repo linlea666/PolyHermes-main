@@ -21,7 +21,8 @@ class TailDiffEntrySegmentResolverTest {
         tailDiffMinDiffSigma = BigDecimal("1.8"),
         tailDiffMinEntryScore = 70,
         tailDiffMinRemainingSeconds = 50,
-        tailDiffWindowStartSeconds = 150
+        tailDiffWindowStartSeconds = 150,
+        tailDiffMinPrice = BigDecimal("0.86")
     )
 
     @Test
@@ -35,7 +36,7 @@ class TailDiffEntrySegmentResolverTest {
 
     @Test
     fun `applyOverrides applies min_model_prob and other overrides`() {
-        val json = """[{"name":"early","remaining_hi":300,"remaining_lo":150,"min_score":90,"min_diff_sigma":2.2,"min_edge":0.04,"min_model_prob":0.97,"max_ask":0.92}]"""
+        val json = """[{"name":"early","remaining_hi":300,"remaining_lo":150,"min_score":90,"min_diff_sigma":2.2,"min_edge":0.04,"min_model_prob":0.97,"min_ask":0.91,"max_ask":0.92}]"""
         val s = strategy(json)
         val seg = resolver.resolve(s, 200)
         assertNotNull(seg)
@@ -44,10 +45,20 @@ class TailDiffEntrySegmentResolverTest {
         assertEquals(BigDecimal("0.97"), eff.tailDiffMinModelProb)
         assertEquals(BigDecimal("2.2"), eff.tailDiffMinDiffSigma)
         assertEquals(BigDecimal("0.04"), eff.tailDiffMinEdge)
+        assertEquals(BigDecimal("0.91"), eff.tailDiffMinPrice)
         assertEquals(BigDecimal("0.92"), eff.tailDiffHardMaxPrice)
         assertEquals(90, eff.tailDiffMinEntryScore)
         assertEquals(300, eff.tailDiffWindowStartSeconds)
         assertEquals(150, eff.tailDiffWindowEndSeconds)
+    }
+
+    @Test
+    fun `omitted min_ask falls back to strategy global min price`() {
+        val json = """[{"name":"late","remaining_hi":150,"remaining_lo":60}]"""
+        val s = strategy(json)
+        val seg = resolver.resolve(s, 100)!!
+        val eff = resolver.applyOverrides(s, seg)
+        assertEquals(s.tailDiffMinPrice, eff.tailDiffMinPrice)
     }
 
     @Test
@@ -90,5 +101,11 @@ class TailDiffEntrySegmentResolverTest {
         assertFalse(resolver.isValid("""[{"remaining_hi":100,"remaining_lo":150}]"""))
         // empty array
         assertFalse(resolver.isValid("[]"))
+        // min_ask within unit range OK
+        assertTrue(resolver.isValid("""[{"remaining_hi":300,"remaining_lo":150,"min_ask":0.90}]"""))
+        // min_ask out of unit range
+        assertFalse(resolver.isValid("""[{"remaining_hi":300,"remaining_lo":150,"min_ask":1.5}]"""))
+        // min_ask > max_ask → 该段恒不可入场，非法
+        assertFalse(resolver.isValid("""[{"remaining_hi":300,"remaining_lo":150,"min_ask":0.95,"max_ask":0.90}]"""))
     }
 }

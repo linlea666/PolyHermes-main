@@ -20,6 +20,7 @@ interface SegmentRow {
   min_diff_sigma?: string
   min_edge?: string
   min_model_prob?: string
+  min_ask?: string
   max_ask?: string
   exit_tier_bias?: string
   stake_mult?: string
@@ -28,7 +29,7 @@ interface SegmentRow {
 
 const KNOWN_KEYS = new Set([
   'name', 'remaining_hi', 'remaining_lo', 'min_score',
-  'min_diff_sigma', 'min_edge', 'min_model_prob', 'max_ask', 'exit_tier_bias', 'stake_mult'
+  'min_diff_sigma', 'min_edge', 'min_model_prob', 'min_ask', 'max_ask', 'exit_tier_bias', 'stake_mult'
 ])
 
 const toStr = (v: unknown): string | undefined =>
@@ -59,6 +60,7 @@ const parseSegments = (raw?: string): SegmentRow[] | null => {
       min_diff_sigma: toStr(obj.min_diff_sigma),
       min_edge: toStr(obj.min_edge),
       min_model_prob: toStr(obj.min_model_prob),
+      min_ask: toStr(obj.min_ask),
       max_ask: toStr(obj.max_ask),
       exit_tier_bias: toStr(obj.exit_tier_bias),
       stake_mult: toStr(obj.stake_mult),
@@ -85,6 +87,7 @@ const serializeSegments = (rows: SegmentRow[]): string => {
     numField(out, 'min_diff_sigma', r.min_diff_sigma)
     numField(out, 'min_edge', r.min_edge)
     numField(out, 'min_model_prob', r.min_model_prob)
+    numField(out, 'min_ask', r.min_ask)
     numField(out, 'max_ask', r.max_ask)
     if (r.exit_tier_bias) out.exit_tier_bias = r.exit_tier_bias
     numField(out, 'stake_mult', r.stake_mult)
@@ -247,6 +250,14 @@ const TailDiffEntrySegmentsField: React.FC<Props> = ({ value, onChange }) => {
                     label={t('cryptoTailStrategy.form.segEditor.minModelProb')}
                     value={row.min_model_prob}
                     onChange={(v) => updateRow(idx, { min_model_prob: v })}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                  />
+                  <LabeledNumber
+                    label={t('cryptoTailStrategy.form.segEditor.minAsk')}
+                    value={row.min_ask}
+                    onChange={(v) => updateRow(idx, { min_ask: v })}
                     min={0}
                     max={1}
                     step={0.01}

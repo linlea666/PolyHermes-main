@@ -2023,6 +2023,7 @@
         "minDiffSigma": "最低 diff_sigma",
         "minEdge": "最低 edge",
         "minModelProb": "最低 modelProb",
+        "minAsk": "最低買價",
         "maxAsk": "最高買價",
         "exitTierBias": "退出檔位偏置",
         "exitTierBiasNone": "不指定",
