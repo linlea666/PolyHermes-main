@@ -448,6 +448,105 @@ const TailDiffStatsCoverageAlert: React.FC<{ form: FormInstance; marketOptions: 
   return null
 }
 
+/**
+ * 反转研究数据覆盖提示（SCALP_FLIP）：开启反转门槛时，按当前 coin/周期/回溯天数/数据源查询是否已有回填数据。
+ * scalpStatsSource=HYBRID 时依次探测 POLYMARKET→BINANCE（与后端 HYBRID 查表顺序一致）；命中即提示可用，否则警示。
+ * 反转数据为全局共享池，与 TAIL_DIFF 同源，复用 reversal/list，不新建后端管线。
+ */
+const ScalpStatsCoverageAlert: React.FC<{ form: FormInstance; marketOptions: CryptoTailMarketOptionDto[] }> = ({ form, marketOptions }) => {
+  const { t } = useTranslation()
+  const mode = Form.useWatch('mode', form)
+  const gateEnabled = Form.useWatch('scalpReversalGateEnabled', form) as boolean | undefined
+  const marketSlugPrefix = Form.useWatch('marketSlugPrefix', form) as string | undefined
+  const lookbackDays = Form.useWatch('scalpStatsLookbackDays', form) as number | undefined
+  const statsSource = Form.useWatch('scalpStatsSource', form) as string | undefined
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ok' | 'empty'>('idle')
+  const [hitSource, setHitSource] = useState<string>('BINANCE')
+
+  const coin = inferCoinFromSlug(marketSlugPrefix)
+  const intervalSeconds = marketOptions.find((m) => m.slug === marketSlugPrefix)?.intervalSeconds
+  const active = mode === 4 && gateEnabled !== false
+
+  useEffect(() => {
+    if (!active || coin == null || !intervalSeconds || !lookbackDays) {
+      setStatus('idle')
+      return
+    }
+    let cancelled = false
+    setStatus('loading')
+    const timer = setTimeout(async () => {
+      // HYBRID 解析为依次探测 POLYMARKET→BINANCE，任一命中即可用（reversal/list 仅接受具体源）
+      const candidates = (statsSource ?? 'HYBRID') === 'HYBRID' ? ['POLYMARKET', 'BINANCE'] : [statsSource ?? 'BINANCE']
+      try {
+        for (const ds of candidates) {
+          const res = await apiService.cryptoTailStrategy.reversalList({
+            coin,
+            intervalSeconds,
+            lookbackDays: Number(lookbackDays),
+            dataSource: ds
+          })
+          if (cancelled) return
+          const list = res.data.code === 0 && res.data.data ? res.data.data.list : []
+          if (list.length > 0) {
+            setHitSource(ds)
+            setStatus('ok')
+            return
+          }
+        }
+        if (!cancelled) setStatus('empty')
+      } catch {
+        if (!cancelled) setStatus('idle')
+      }
+    }, 400)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [active, coin, intervalSeconds, lookbackDays, statsSource])
+
+  if (!active) return null
+  if (coin == null) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={t('cryptoTailStrategy.form.statsCoverage.coinUnsupported')}
+      />
+    )
+  }
+  if (status === 'empty') {
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={t('cryptoTailStrategy.form.statsCoverage.noDataTitle')}
+        description={t('cryptoTailStrategy.form.statsCoverage.noDataDescScalp', {
+          coin,
+          lookback: lookbackDays,
+          source: statsSource ?? 'HYBRID'
+        })}
+      />
+    )
+  }
+  if (status === 'ok') {
+    return (
+      <Alert
+        type="success"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={t('cryptoTailStrategy.form.statsCoverage.ok', {
+          coin,
+          lookback: lookbackDays,
+          source: hitSource
+        })}
+      />
+    )
+  }
+  return null
+}
+
 const CryptoTailStrategyList: React.FC = () => {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
@@ -1907,15 +2006,24 @@ const CryptoTailStrategyList: React.FC = () => {
         defaultCoin={reversalAdoptMode ? (inferCoinFromSlug(form.getFieldValue('marketSlugPrefix')) ?? undefined) : undefined}
         defaultIntervalSeconds={reversalAdoptMode ? marketOptions.find((m) => m.slug === form.getFieldValue('marketSlugPrefix'))?.intervalSeconds : undefined}
         onAdopt={reversalAdoptMode ? (ds, lb) => {
-          const patch: Record<string, unknown> = {
-            tailDiffStatsDataSource: ds,
-            tailDiffStatsLookbackDays: lb
+          // 采纳按当前模式写回对应字段：SCALP_FLIP(mode=4)→scalp* 字段并确保反转门槛开启；其余→tailDiff* 字段
+          if (form.getFieldValue('mode') === 4) {
+            form.setFieldsValue({
+              scalpStatsSource: ds,
+              scalpStatsLookbackDays: lb,
+              scalpReversalGateEnabled: true
+            })
+          } else {
+            const patch: Record<string, unknown> = {
+              tailDiffStatsDataSource: ds,
+              tailDiffStatsLookbackDays: lb
+            }
+            // 采纳统计来源时，若当前为 FALLBACK（不查表）则提升为 HYBRID，否则采纳无效
+            if ((form.getFieldValue('tailDiffModelProbSource') ?? 'HYBRID') === 'FALLBACK') {
+              patch.tailDiffModelProbSource = 'HYBRID'
+            }
+            form.setFieldsValue(patch)
           }
-          // 采纳统计来源时，若当前为 FALLBACK（不查表）则提升为 HYBRID，否则采纳无效
-          if ((form.getFieldValue('tailDiffModelProbSource') ?? 'HYBRID') === 'FALLBACK') {
-            patch.tailDiffModelProbSource = 'HYBRID'
-          }
-          form.setFieldsValue(patch)
           message.success(t('cryptoTailStrategy.form.statsCoverage.adoptSuccess', { source: ds, lookback: lb }))
           setReversalModalOpen(false)
         } : undefined}
@@ -3346,6 +3454,15 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpRequireStats" label={t('cryptoTailStrategy.form.scalpRequireStats')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpRequireStatsHint')}>
                 <Switch />
+              </Form.Item>
+              <ScalpStatsCoverageAlert form={form} marketOptions={marketOptions} />
+              <Form.Item>
+                <Button
+                  icon={<LineChartOutlined />}
+                  onClick={() => { setReversalAdoptMode(true); setReversalModalOpen(true) }}
+                >
+                  {t('cryptoTailStrategy.form.statsCoverage.compareAndAdopt')}
+                </Button>
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>

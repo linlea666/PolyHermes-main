@@ -2119,6 +2119,7 @@
         "coinUnsupported": "当前市场币种暂无历史反转研究数据（仅支持 BTC/ETH），统计来源不会命中，modelProb 将走解析解。",
         "noDataTitle": "该回溯天数/数据源暂无回填数据",
         "noDataDesc": "{{coin}} / {{lookback}}天 / {{source}} 暂无反转研究数据，HYBRID 将静默退化为解析解。请先在「反转率研究」中以相同回溯天数与数据源回填后再使用。",
+        "noDataDescScalp": "{{coin}} / {{lookback}}天 / {{source}} 暂无反转研究数据。开启反转门槛时：若关闭「统计不可用时拦截进场」将降级为纯价格区间进场，开启则会拦截全部进场。请先在「反转率研究」中以相同回溯天数/数据源回填，或关闭反转门槛。",
         "ok": "已检测到 {{coin}} / {{lookback}}天 / {{source}} 的反转研究数据，统计来源可正常命中。",
         "compareAndAdopt": "评测对比并采纳",
         "adoptSuccess": "已采纳：数据源 {{source}}，回溯 {{lookback}} 天（已回填，保存后生效）"

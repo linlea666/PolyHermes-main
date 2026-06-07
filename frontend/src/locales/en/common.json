@@ -2119,6 +2119,7 @@
         "coinUnsupported": "This market's coin has no historical reversal research data (only BTC/ETH supported); the stats source won't match and modelProb will use the analytic fallback.",
         "noDataTitle": "No backfilled data for this lookback / data source",
         "noDataDesc": "{{coin}} / {{lookback}}d / {{source}} has no reversal research data; HYBRID will silently degrade to the analytic solution. Please backfill in \"Reversal research\" with the same lookback and data source first.",
+        "noDataDescScalp": "{{coin}} / {{lookback}}d / {{source}} has no reversal research data. With the reversal gate enabled: if \"block entry when stats unavailable\" is off it degrades to pure price-range entry, if on it blocks all entries. Please backfill in \"Reversal research\" with the same lookback/source first, or disable the reversal gate.",
         "ok": "Reversal research data found for {{coin}} / {{lookback}}d / {{source}}; the stats source will match normally.",
         "compareAndAdopt": "Compare & adopt",
         "adoptSuccess": "Adopted: data source {{source}}, lookback {{lookback}}d (filled in; takes effect after saving)"
