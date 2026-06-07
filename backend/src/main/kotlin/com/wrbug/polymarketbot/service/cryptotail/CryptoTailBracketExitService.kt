@@ -361,7 +361,13 @@ class CryptoTailBracketExitService(
          *  1) [applyExitConfirmation] 不再视为 immediate，必须连续 exitConfirmTicks 次确认才放行；
          *  2) [placeExitOrder] 仅对此类退出套用退出预设 worstPrice 地板（防贱卖），真模型恶化/反转则照常市价割肉。
          */
-        val softPriceExit: Boolean = false
+        val softPriceExit: Boolean = false,
+        /**
+         * true = 强制即时放行（跳过 exitConfirmTicks 确认）。仅供"真熔断即时"使用：
+         * 灾难线/回撤触发时若开启 catastrophe_immediate，则不等确认直接砍仓，换取最快止血（牺牲防插针）。
+         * 默认 false → 与现有 HARD_STOP 一致，仍走确认。
+         */
+        val forceImmediate: Boolean = false
     )
 
     private fun decideExit(
@@ -568,11 +574,7 @@ class CryptoTailBracketExitService(
             tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
             return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "TOP"}] holdToExpiry=true，持有到结算（已通过硬危险兜底）remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
         }
-        val entryFillPrice = trigger.entryFillPrice ?: run {
-            val fs = trigger.filledSize
-            val fa = trigger.filledAmount
-            if (fs != null && fa != null && fs > BigDecimal.ZERO) fa.divide(fs, 8, RoundingMode.HALF_UP) else null
-        }
+        val entryFillPrice = resolveEntryFillPrice(trigger)
         // 2) StopLoss
         if (preset.stopLoss.enabled && entryFillPrice != null) {
             val stopLine = entryFillPrice.multiply(BigDecimal.ONE.subtract(preset.stopLoss.offset))
@@ -630,6 +632,55 @@ class CryptoTailBracketExitService(
      *                 false=评估全部动态退出条件（NORMAL/PREMIUM 常规流程）。
      * @return 命中则返回对应 Decision；未命中或 dynamicExit 关闭/holding 不可用时返回 null。
      */
+    /**
+     * 入场成交价解析：优先 trigger.entryFillPrice；缺失时用 filledAmount/filledSize 推导；都不可用返回 null。
+     * 从 decideTailDiffExit 提取，供止损线与真熔断回撤计算共用，确保两路口径一致。
+     */
+    private fun resolveEntryFillPrice(trigger: CryptoTailStrategyTrigger): BigDecimal? {
+        trigger.entryFillPrice?.let { return it }
+        val fs = trigger.filledSize
+        val fa = trigger.filledAmount
+        return if (fs != null && fa != null && fs > BigDecimal.ZERO) fa.divide(fs, 8, RoundingMode.HALF_UP) else null
+    }
+
+    /**
+     * 真熔断评估：灾难绝对线（bestBid<=catastropheBidFloor）或相对回撤（>=maxDrawdownPct）任一触发，
+     * 返回全清 HARD_STOP（softPriceExit=false → 无 worstPrice 地板 + 经 exitConfirmTicks 确认）。
+     * 两个阈值默认 0=关闭 → 旧配置零回归。仅做"价格/回撤"硬危险判定，与模型信念无关，专封尾部风险。
+     */
+    private fun catastropheExitDecision(
+        cfg: TailDiffExitPreset.DynamicExit,
+        trigger: CryptoTailStrategyTrigger,
+        bestBid: BigDecimal,
+        label: String
+    ): Decision? {
+        if (cfg.catastropheBidFloor > BigDecimal.ZERO && bestBid <= cfg.catastropheBidFloor) {
+            return Decision(
+                ExitKind.HARD_STOP,
+                BigDecimal.ONE,
+                "TAIL_DIFF[$label] Catastrophe: bestBid=${bestBid.toPlainString()}<=catastropheBidFloor=${cfg.catastropheBidFloor.toPlainString()} → 无地板市价止损${if (cfg.catastropheImmediate) "(即时)" else ""}",
+                clearTp1HoldStartedAt = true,
+                forceImmediate = cfg.catastropheImmediate
+            )
+        }
+        if (cfg.maxDrawdownPct > BigDecimal.ZERO) {
+            val entry = resolveEntryFillPrice(trigger)
+            if (entry != null && entry > BigDecimal.ZERO) {
+                val drawdown = entry.subtract(bestBid).divide(entry, 8, RoundingMode.HALF_UP)
+                if (drawdown >= cfg.maxDrawdownPct) {
+                    return Decision(
+                        ExitKind.HARD_STOP,
+                        BigDecimal.ONE,
+                        "TAIL_DIFF[$label] Catastrophe: drawdown=${drawdown.toPlainString()}>=maxDrawdownPct=${cfg.maxDrawdownPct.toPlainString()} (entry=${entry.toPlainString()}, bid=${bestBid.toPlainString()}) → 无地板市价止损${if (cfg.catastropheImmediate) "(即时)" else ""}",
+                        clearTp1HoldStartedAt = true,
+                        forceImmediate = cfg.catastropheImmediate
+                    )
+                }
+            }
+        }
+        return null
+    }
+
     private fun dynamicExitDecision(
         preset: TailDiffExitPreset,
         trigger: CryptoTailStrategyTrigger,
@@ -640,6 +691,11 @@ class CryptoTailBracketExitService(
     ): Decision? {
         if (!preset.dynamicExit.enabled || holding == null) return null
         val label = tier?.label ?: "?"
+        // 真熔断（最高优先级，先于 minOdds 评估）：minOdds 分支是 softPriceExit（套 worstPrice 地板），
+        // 崩盘 bestBid<worstPrice 时那条卖单根本成交不了且会短路后续检查；holdToExpiry 又跳过 stop_loss 块，
+        // 形成"模型仍自信 + 价格崩破地板"下大仓位零有效止损的裸奔缺口。此处灾难线/回撤任一触发即发
+        // 无地板 HARD_STOP（softPriceExit=false → 经 exitConfirmTicks 确认防插针后以 FAK 市价扫单真实止损）。
+        catastropheExitDecision(preset.dynamicExit, trigger, bestBid, label)?.let { return it }
         // 软退出（模型衰减）：仅在非 hardOnly 时评估
         if (!hardOnly && holding.pWinHolding < preset.dynamicExit.minModelProbAfterEntry) {
             return Decision(
@@ -763,7 +819,10 @@ class CryptoTailBracketExitService(
                 maxDiffRetracePct = anyBd(dynRaw.pick("max_diff_retrace_pct", "maxDiffRetracePct"), default.dynamicExit.maxDiffRetracePct),
                 minModelProbAfterEntry = anyBd(dynRaw.pick("min_model_prob_after_entry", "minModelProbAfterEntry"), default.dynamicExit.minModelProbAfterEntry),
                 minOddsAfterEntry = anyBd(dynRaw.pick("min_odds_after_entry", "minOddsAfterEntry"), default.dynamicExit.minOddsAfterEntry),
-                maxReverseVelocitySigma = anyBd(dynRaw.pick("max_reverse_velocity_sigma", "maxReverseVelocitySigma"), default.dynamicExit.maxReverseVelocitySigma)
+                maxReverseVelocitySigma = anyBd(dynRaw.pick("max_reverse_velocity_sigma", "maxReverseVelocitySigma"), default.dynamicExit.maxReverseVelocitySigma),
+                catastropheBidFloor = anyBd(dynRaw.pick("catastrophe_bid_floor", "catastropheBidFloor"), default.dynamicExit.catastropheBidFloor),
+                maxDrawdownPct = anyBd(dynRaw.pick("max_drawdown_pct", "maxDrawdownPct"), default.dynamicExit.maxDrawdownPct),
+                catastropheImmediate = anyBool(dynRaw.pick("catastrophe_immediate", "catastropheImmediate"), default.dynamicExit.catastropheImmediate)
             ),
             execution = TailDiffExitPreset.Execution(
                 tpSlippage = anyBdOrNull(execRaw.pick("tp_slippage", "tpSlippage")) ?: default.execution.tpSlippage,
@@ -972,7 +1031,8 @@ class CryptoTailBracketExitService(
         val kind = decision.kind ?: return false
         // softPriceExit（裸盘口跌破 minOdds）不享受 immediate 直通，必须连续 exitConfirmTicks 次确认，
         // 过滤瞬时插针/假报价；其余急退（HARD_STOP/模型反转/坍缩/止盈）保持即时。
-        val immediate = (isDepthSplitExit(kind) || kind == ExitKind.TP1 || kind == ExitKind.TP2) && !decision.softPriceExit
+        val immediate = ((isDepthSplitExit(kind) || kind == ExitKind.TP1 || kind == ExitKind.TP2) && !decision.softPriceExit) ||
+            decision.forceImmediate
         val nextCount = if (trigger.exitConfirmReason == kind.name) trigger.exitConfirmCount + 1 else 1
         triggerRepository.save(
             trigger.copy(

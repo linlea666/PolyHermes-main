@@ -206,6 +206,7 @@ data class CryptoTailStrategyCreateRequest(
     // V72 评分锚点（请求侧可选，null 时走默认/保留原值）
     val tailDiffOddsLagMode: String? = null,
     val tailDiffOddsLagWindowSeconds: Int? = null,
+    val tailDiffOddsLagStrongEdgeBypass: Boolean? = null,
     val tailDiffLagPriceMoveFullScaleSigma: String? = null,
     val tailDiffLagOddsMoveFullScale: String? = null,
     val tailDiffEdgeFullScale: String? = null,
@@ -396,6 +397,7 @@ data class CryptoTailStrategyUpdateRequest(
     // V72 评分锚点（请求侧可选，null 时保留原值）
     val tailDiffOddsLagMode: String? = null,
     val tailDiffOddsLagWindowSeconds: Int? = null,
+    val tailDiffOddsLagStrongEdgeBypass: Boolean? = null,
     val tailDiffLagPriceMoveFullScaleSigma: String? = null,
     val tailDiffLagOddsMoveFullScale: String? = null,
     val tailDiffEdgeFullScale: String? = null,
@@ -620,6 +622,7 @@ data class CryptoTailStrategyDto(
     // V72 评分锚点（响应回显，默认值 = 实体默认）
     val tailDiffOddsLagMode: String = "STATIC",
     val tailDiffOddsLagWindowSeconds: Int = 5,
+    val tailDiffOddsLagStrongEdgeBypass: Boolean = false,
     val tailDiffLagPriceMoveFullScaleSigma: String = "0.5",
     val tailDiffLagOddsMoveFullScale: String = "0.05",
     val tailDiffEdgeFullScale: String = "0.10",

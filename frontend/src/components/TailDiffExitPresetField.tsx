@@ -25,9 +25,14 @@ interface PresetState {
     min_model_prob_after_entry: string
     min_odds_after_entry: string
     max_reverse_velocity_sigma: string
+    catastrophe_bid_floor: string
+    max_drawdown_pct: string
+    catastrophe_immediate: boolean
   }
   execution: { tp_slippage: string; stop_slippage: string; worst_price: string }
   _extra: Record<string, unknown>
+  // dynamic_exit 内未被可视化字段识别的嵌套键（除催熔断外的扩展），序列化时原样回填，零丢失
+  _dynExtra: Record<string, unknown>
 }
 
 // 与后端 TailDiffExitPresetResolver.defaultForTier 对齐，空值时按档位预填
@@ -36,25 +41,28 @@ const TIER_DEFAULTS: Record<Tier, PresetState> = {
     hold_to_expiry: false,
     tp_limit: { enabled: true, price: '0.98', ratio: '1' },
     stop_loss: { enabled: true, offset: '0.20', min_price: '0.70', ratio: '1' },
-    dynamic_exit: { enabled: true, min_diff_sigma_after_entry: '1.3', max_diff_retrace_pct: '0.50', min_model_prob_after_entry: '0.88', min_odds_after_entry: '0.80', max_reverse_velocity_sigma: '0.40' },
+    dynamic_exit: { enabled: true, min_diff_sigma_after_entry: '1.3', max_diff_retrace_pct: '0.50', min_model_prob_after_entry: '0.88', min_odds_after_entry: '0.80', max_reverse_velocity_sigma: '0.40', catastrophe_bid_floor: '', max_drawdown_pct: '', catastrophe_immediate: false },
     execution: { tp_slippage: '', stop_slippage: '', worst_price: '' },
-    _extra: {}
+    _extra: {},
+    _dynExtra: {}
   },
   PREMIUM: {
     hold_to_expiry: false,
     tp_limit: { enabled: true, price: '0.99', ratio: '1' },
     stop_loss: { enabled: false, offset: '0.30', min_price: '0.60', ratio: '1' },
-    dynamic_exit: { enabled: true, min_diff_sigma_after_entry: '1.0', max_diff_retrace_pct: '0.60', min_model_prob_after_entry: '0.85', min_odds_after_entry: '0.75', max_reverse_velocity_sigma: '0.50' },
+    dynamic_exit: { enabled: true, min_diff_sigma_after_entry: '1.0', max_diff_retrace_pct: '0.60', min_model_prob_after_entry: '0.85', min_odds_after_entry: '0.75', max_reverse_velocity_sigma: '0.50', catastrophe_bid_floor: '', max_drawdown_pct: '', catastrophe_immediate: false },
     execution: { tp_slippage: '', stop_slippage: '', worst_price: '' },
-    _extra: {}
+    _extra: {},
+    _dynExtra: {}
   },
   TOP: {
     hold_to_expiry: true,
     tp_limit: { enabled: false, price: '1', ratio: '1' },
     stop_loss: { enabled: false, offset: '0.40', min_price: '0.50', ratio: '1' },
-    dynamic_exit: { enabled: true, min_diff_sigma_after_entry: '0.5', max_diff_retrace_pct: '0.80', min_model_prob_after_entry: '0.80', min_odds_after_entry: '0.70', max_reverse_velocity_sigma: '0.70' },
+    dynamic_exit: { enabled: true, min_diff_sigma_after_entry: '0.5', max_diff_retrace_pct: '0.80', min_model_prob_after_entry: '0.80', min_odds_after_entry: '0.70', max_reverse_velocity_sigma: '0.70', catastrophe_bid_floor: '', max_drawdown_pct: '', catastrophe_immediate: false },
     execution: { tp_slippage: '', stop_slippage: '', worst_price: '' },
-    _extra: {}
+    _extra: {},
+    _dynExtra: {}
   }
 }
 
@@ -64,6 +72,18 @@ const KNOWN_TOP_KEYS = new Set([
   'stop_loss', 'stopLoss',
   'dynamic_exit', 'dynamicExit',
   'execution'
+])
+
+const KNOWN_DYN_KEYS = new Set([
+  'enabled',
+  'min_diff_sigma_after_entry', 'minDiffSigmaAfterEntry',
+  'max_diff_retrace_pct', 'maxDiffRetracePct',
+  'min_model_prob_after_entry', 'minModelProbAfterEntry',
+  'min_odds_after_entry', 'minOddsAfterEntry',
+  'max_reverse_velocity_sigma', 'maxReverseVelocitySigma',
+  'catastrophe_bid_floor', 'catastropheBidFloor',
+  'max_drawdown_pct', 'maxDrawdownPct',
+  'catastrophe_immediate', 'catastropheImmediate'
 ])
 
 const pick = (obj: Record<string, unknown>, snake: string, camel: string): unknown =>
@@ -98,6 +118,10 @@ const parsePreset = (raw: string | undefined, def: PresetState): PresetState | n
   Object.keys(o).forEach((k) => {
     if (!KNOWN_TOP_KEYS.has(k)) extra[k] = o[k]
   })
+  const dynExtra: Record<string, unknown> = {}
+  Object.keys(dyn).forEach((k) => {
+    if (!KNOWN_DYN_KEYS.has(k)) dynExtra[k] = dyn[k]
+  })
   return {
     hold_to_expiry: asBool(pick(o, 'hold_to_expiry', 'holdToExpiry'), def.hold_to_expiry),
     tp_limit: {
@@ -117,14 +141,19 @@ const parsePreset = (raw: string | undefined, def: PresetState): PresetState | n
       max_diff_retrace_pct: asStr(pick(dyn, 'max_diff_retrace_pct', 'maxDiffRetracePct'), def.dynamic_exit.max_diff_retrace_pct),
       min_model_prob_after_entry: asStr(pick(dyn, 'min_model_prob_after_entry', 'minModelProbAfterEntry'), def.dynamic_exit.min_model_prob_after_entry),
       min_odds_after_entry: asStr(pick(dyn, 'min_odds_after_entry', 'minOddsAfterEntry'), def.dynamic_exit.min_odds_after_entry),
-      max_reverse_velocity_sigma: asStr(pick(dyn, 'max_reverse_velocity_sigma', 'maxReverseVelocitySigma'), def.dynamic_exit.max_reverse_velocity_sigma)
+      max_reverse_velocity_sigma: asStr(pick(dyn, 'max_reverse_velocity_sigma', 'maxReverseVelocitySigma'), def.dynamic_exit.max_reverse_velocity_sigma),
+      // 催熔断字段：缺失时为 ''（= 不写出 = 后端默认 0 关闭）
+      catastrophe_bid_floor: asStr(pick(dyn, 'catastrophe_bid_floor', 'catastropheBidFloor'), ''),
+      max_drawdown_pct: asStr(pick(dyn, 'max_drawdown_pct', 'maxDrawdownPct'), ''),
+      catastrophe_immediate: asBool(pick(dyn, 'catastrophe_immediate', 'catastropheImmediate'), def.dynamic_exit.catastrophe_immediate)
     },
     execution: {
       tp_slippage: asStr(pick(exec, 'tp_slippage', 'tpSlippage'), ''),
       stop_slippage: asStr(pick(exec, 'stop_slippage', 'stopSlippage'), ''),
       worst_price: asStr(pick(exec, 'worst_price', 'worstPrice'), '')
     },
-    _extra: extra
+    _extra: extra,
+    _dynExtra: dynExtra
   }
 }
 
@@ -134,19 +163,26 @@ const serializePreset = (s: PresetState): string => {
   if (s.execution.tp_slippage !== '') execution.tp_slippage = s.execution.tp_slippage
   if (s.execution.stop_slippage !== '') execution.stop_slippage = s.execution.stop_slippage
   if (s.execution.worst_price !== '') execution.worst_price = s.execution.worst_price
+  const dynamic_exit: Record<string, unknown> = {
+    ...s._dynExtra,
+    enabled: s.dynamic_exit.enabled,
+    min_diff_sigma_after_entry: s.dynamic_exit.min_diff_sigma_after_entry,
+    max_diff_retrace_pct: s.dynamic_exit.max_diff_retrace_pct,
+    min_model_prob_after_entry: s.dynamic_exit.min_model_prob_after_entry,
+    min_odds_after_entry: s.dynamic_exit.min_odds_after_entry,
+    max_reverse_velocity_sigma: s.dynamic_exit.max_reverse_velocity_sigma
+  }
+  // 催熔断字段：仅在显式设置时写出（空 = 后端默认 0 关闭），避免无意写入 0 改变语义
+  if (s.dynamic_exit.catastrophe_bid_floor !== '') dynamic_exit.catastrophe_bid_floor = s.dynamic_exit.catastrophe_bid_floor
+  if (s.dynamic_exit.max_drawdown_pct !== '') dynamic_exit.max_drawdown_pct = s.dynamic_exit.max_drawdown_pct
+  // 即时开关仅在开启时写出（false=后端默认，省略保持 JSON 简洁）
+  if (s.dynamic_exit.catastrophe_immediate) dynamic_exit.catastrophe_immediate = true
   const out: Record<string, unknown> = {
     ...s._extra,
     hold_to_expiry: s.hold_to_expiry,
     tp_limit: { enabled: s.tp_limit.enabled, price: s.tp_limit.price, ratio: s.tp_limit.ratio },
     stop_loss: { enabled: s.stop_loss.enabled, offset: s.stop_loss.offset, min_price: s.stop_loss.min_price, ratio: s.stop_loss.ratio },
-    dynamic_exit: {
-      enabled: s.dynamic_exit.enabled,
-      min_diff_sigma_after_entry: s.dynamic_exit.min_diff_sigma_after_entry,
-      max_diff_retrace_pct: s.dynamic_exit.max_diff_retrace_pct,
-      min_model_prob_after_entry: s.dynamic_exit.min_model_prob_after_entry,
-      min_odds_after_entry: s.dynamic_exit.min_odds_after_entry,
-      max_reverse_velocity_sigma: s.dynamic_exit.max_reverse_velocity_sigma
-    },
+    dynamic_exit,
     execution
   }
   return JSON.stringify(out)
@@ -308,7 +344,20 @@ const TailDiffExitPresetField: React.FC<Props> = ({ value, onChange, tier }) => 
               {numCol(t('cryptoTailStrategy.form.exitEditor.dynMinModelProb'), state.dynamic_exit.min_model_prob_after_entry, (v) => emit({ ...state, dynamic_exit: { ...state.dynamic_exit, min_model_prob_after_entry: v } }), { min: 0, max: 1, step: 0.01 })}
               {numCol(t('cryptoTailStrategy.form.exitEditor.dynMinOdds'), state.dynamic_exit.min_odds_after_entry, (v) => emit({ ...state, dynamic_exit: { ...state.dynamic_exit, min_odds_after_entry: v } }), { min: 0, max: 1, step: 0.01 })}
               {numCol(t('cryptoTailStrategy.form.exitEditor.dynMaxReverseVel'), state.dynamic_exit.max_reverse_velocity_sigma, (v) => emit({ ...state, dynamic_exit: { ...state.dynamic_exit, max_reverse_velocity_sigma: v } }), { min: 0, step: 0.05 })}
+              {numCol(t('cryptoTailStrategy.form.exitEditor.dynCatastropheBidFloor'), state.dynamic_exit.catastrophe_bid_floor, (v) => emit({ ...state, dynamic_exit: { ...state.dynamic_exit, catastrophe_bid_floor: v } }), { min: 0, max: 1, step: 0.01 })}
+              {numCol(t('cryptoTailStrategy.form.exitEditor.dynMaxDrawdownPct'), state.dynamic_exit.max_drawdown_pct, (v) => emit({ ...state, dynamic_exit: { ...state.dynamic_exit, max_drawdown_pct: v } }), { min: 0, max: 1, step: 0.05 })}
             </Space>
+            <Space style={{ marginTop: 8 }}>
+              <Switch
+                size="small"
+                checked={state.dynamic_exit.catastrophe_immediate}
+                onChange={(v) => emit({ ...state, dynamic_exit: { ...state.dynamic_exit, catastrophe_immediate: v } })}
+              />
+              <Typography.Text style={{ fontSize: 12 }}>{t('cryptoTailStrategy.form.exitEditor.catastropheImmediate')}</Typography.Text>
+            </Space>
+            <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+              {t('cryptoTailStrategy.form.exitEditor.catastropheHint')}
+            </Typography.Text>
           </Card>
 
           <Card size="small" title={t('cryptoTailStrategy.form.exitEditor.execution')}>

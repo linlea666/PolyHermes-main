@@ -654,6 +654,13 @@ data class CryptoTailStrategy(
     @Column(name = "tail_diff_odds_lag_window_seconds", nullable = false)
     val tailDiffOddsLagWindowSeconds: Int = 5,
 
+    /**
+     * 强等级低估逃生口：DYNAMIC/HYBRID 模式下 lag<=0 时，若 edge>=edgeFullScale 且模型为统计型(STATS/HYBRID_STATS)
+     * 且样本足量，则放行 ODDS_LAG_INSUFFICIENT 否决（视为确有等级错价而非纯 Φ 同构定价）。默认 false=零回归。
+     */
+    @Column(name = "tail_diff_odds_lag_strong_edge_bypass", nullable = false)
+    val tailDiffOddsLagStrongEdgeBypass: Boolean = false,
+
     /** 标的朝领先方向移动满分锚点（σ 单位） */
     @Column(name = "tail_diff_lag_price_move_full_scale_sigma", nullable = false, precision = 20, scale = 8)
     val tailDiffLagPriceMoveFullScaleSigma: BigDecimal = BigDecimal("0.5"),

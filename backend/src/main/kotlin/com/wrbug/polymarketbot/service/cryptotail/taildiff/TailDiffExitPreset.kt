@@ -61,7 +61,23 @@ data class TailDiffExitPreset(
         /** 持仓中 bestBid 跌破此值 → 退出（独立于 stopLoss.minPrice，更宽） */
         val minOddsAfterEntry: BigDecimal = BigDecimal("0.80"),
         /** 反抽速度上限（σ/秒）；超过 → 退出（同入场闸的 PRICE_RETRACING_FAST 阈值，但口径在持仓中） */
-        val maxReverseVelocitySigma: BigDecimal = BigDecimal("0.40")
+        val maxReverseVelocitySigma: BigDecimal = BigDecimal("0.40"),
+        /**
+         * 真熔断·灾难绝对线：bestBid 跌破此值（经 exitConfirmTicks 确认）→ 无 worstPrice 地板的真实市价止损。
+         * 优先于 minOdds 评估，封住"模型仍自信但价格崩盘"且 minOdds 卖单被地板挡死成交不了的尾部风险。
+         * 默认 0 = 关闭（零回归）。应设在 worstPrice 之下，确保只在确认性崩盘时才放弃地板。
+         */
+        val catastropheBidFloor: BigDecimal = BigDecimal.ZERO,
+        /**
+         * 真熔断·相对回撤：(entryFillPrice - bestBid)/entryFillPrice >= 此值 → 无地板真实市价止损。
+         * 与 catastropheBidFloor 取"任一触发"，覆盖入场价不同导致绝对线不适配的情况。默认 0 = 关闭。
+         */
+        val maxDrawdownPct: BigDecimal = BigDecimal.ZERO,
+        /**
+         * 真熔断是否即时放行：true=灾难线/回撤触发时跳过 exitConfirmTicks 确认，立即砍仓（最快止血，牺牲防插针）；
+         * false（默认）=与现有 HARD_STOP 一致仍走确认。仅在 catastropheBidFloor/maxDrawdownPct 至少一项启用时有意义。
+         */
+        val catastropheImmediate: Boolean = false
     )
 
     /**
@@ -96,7 +112,10 @@ data class TailDiffExitPreset(
             "max_diff_retrace_pct" to dynamicExit.maxDiffRetracePct.toPlainString(),
             "min_model_prob_after_entry" to dynamicExit.minModelProbAfterEntry.toPlainString(),
             "min_odds_after_entry" to dynamicExit.minOddsAfterEntry.toPlainString(),
-            "max_reverse_velocity_sigma" to dynamicExit.maxReverseVelocitySigma.toPlainString()
+            "max_reverse_velocity_sigma" to dynamicExit.maxReverseVelocitySigma.toPlainString(),
+            "catastrophe_bid_floor" to dynamicExit.catastropheBidFloor.toPlainString(),
+            "max_drawdown_pct" to dynamicExit.maxDrawdownPct.toPlainString(),
+            "catastrophe_immediate" to dynamicExit.catastropheImmediate
         ),
         "execution" to buildMap {
             execution.tpSlippage?.let { put("tp_slippage", it.toPlainString()) }
@@ -166,7 +185,10 @@ class TailDiffExitPresetResolver {
                 maxDiffRetracePct = dynamicRaw.pick("max_diff_retrace_pct", "maxDiffRetracePct").asBigDecimal(default.dynamicExit.maxDiffRetracePct),
                 minModelProbAfterEntry = dynamicRaw.pick("min_model_prob_after_entry", "minModelProbAfterEntry").asBigDecimal(default.dynamicExit.minModelProbAfterEntry),
                 minOddsAfterEntry = dynamicRaw.pick("min_odds_after_entry", "minOddsAfterEntry").asBigDecimal(default.dynamicExit.minOddsAfterEntry),
-                maxReverseVelocitySigma = dynamicRaw.pick("max_reverse_velocity_sigma", "maxReverseVelocitySigma").asBigDecimal(default.dynamicExit.maxReverseVelocitySigma)
+                maxReverseVelocitySigma = dynamicRaw.pick("max_reverse_velocity_sigma", "maxReverseVelocitySigma").asBigDecimal(default.dynamicExit.maxReverseVelocitySigma),
+                catastropheBidFloor = dynamicRaw.pick("catastrophe_bid_floor", "catastropheBidFloor").asBigDecimal(default.dynamicExit.catastropheBidFloor),
+                maxDrawdownPct = dynamicRaw.pick("max_drawdown_pct", "maxDrawdownPct").asBigDecimal(default.dynamicExit.maxDrawdownPct),
+                catastropheImmediate = dynamicRaw.pick("catastrophe_immediate", "catastropheImmediate").asBool(default.dynamicExit.catastropheImmediate)
             ),
             execution = TailDiffExitPreset.Execution(
                 tpSlippage = executionRaw.pick("tp_slippage", "tpSlippage").asBigDecimalOrNull() ?: default.execution.tpSlippage,
@@ -235,6 +257,8 @@ class TailDiffExitPresetResolver {
         if (!unit(dyn.pick("min_odds_after_entry", "minOddsAfterEntry"))) return false
         if (!nonNeg(dyn.pick("min_diff_sigma_after_entry", "minDiffSigmaAfterEntry"))) return false
         if (!nonNeg(dyn.pick("max_reverse_velocity_sigma", "maxReverseVelocitySigma"))) return false
+        if (!unit(dyn.pick("catastrophe_bid_floor", "catastropheBidFloor"))) return false
+        if (!unit(dyn.pick("max_drawdown_pct", "maxDrawdownPct"))) return false
         if (!nonNeg(exec.pick("tp_slippage", "tpSlippage")) || !nonNeg(exec.pick("stop_slippage", "stopSlippage"))) return false
         if (!unit(exec.pick("worst_price", "worstPrice"))) return false
         return true

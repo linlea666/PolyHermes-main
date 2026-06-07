@@ -192,10 +192,29 @@ class CryptoTailScoreEngine {
         //    注意：本门控依赖新鲜价（P0）与速度追踪器有数据，stale 价下 priceLeadMoveSigma 失真 → 应配合 P0 使用。
         if (strategy.tailDiffOddsLagMode.uppercase() != "STATIC") {
             val lag = dynamicLagScore(input, strategy)
-            if (lag == null || lag <= BigDecimal.ZERO) vetoes += "ODDS_LAG_INSUFFICIENT"
+            val lagInsufficient = lag == null || lag <= BigDecimal.ZERO
+            // 强等级低估逃生口：lag<=0（赔率已跟上/无净滞后）时，若确有强等级错价则放行，避免一刀切误杀。
+            if (lagInsufficient && !strongLevelEdgeBypass(input, strategy)) vetoes += "ODDS_LAG_INSUFFICIENT"
         }
 
         return vetoes.distinct()
+    }
+
+    /** 统计型模型来源（确有历史反转率支撑，非纯 Φ 同构定价）；FALLBACK 系列实为兜底，须排除。 */
+    private val statsBackedSources = setOf("STATS", "HYBRID_STATS")
+
+    /**
+     * 强等级低估逃生口（V73）：DYNAMIC/HYBRID 模式下 lag<=0 时的放行条件——
+     * 同时满足 ① edge>=edgeFullScale（顶级低估）② 模型来源为统计型 ③ 样本足量。
+     * 此时错价来自历史反转统计与市场 Φ 定价的真实分歧（确有 alpha），而非动量滞后，故可豁免滞后门控。
+     * 开关默认关闭 → 行为与旧版完全一致（零回归）。
+     */
+    private fun strongLevelEdgeBypass(input: Input, strategy: CryptoTailStrategy): Boolean {
+        if (!strategy.tailDiffOddsLagStrongEdgeBypass) return false
+        val edgeFullScale = strategy.tailDiffEdgeFullScale.let { if (it <= BigDecimal.ZERO) BigDecimal("0.10") else it }
+        return input.edge >= edgeFullScale &&
+            input.modelProbSource in statsBackedSources &&
+            input.statsSampleCount >= strategy.tailDiffStatsMinSamples
     }
 
     private fun computeRawScores(input: Input, strategy: CryptoTailStrategy): ComponentScores {

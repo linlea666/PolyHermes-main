@@ -93,4 +93,80 @@ class TailDiffExitPresetTest {
         // negative slippage
         assertFalse(resolver.isValid("""{"execution":{"stop_slippage":"-0.1"}}"""))
     }
+
+    // ===== V73 真熔断字段（catastrophe_bid_floor / max_drawdown_pct） =====
+
+    @Test
+    fun `parses catastrophe fields snake and camel case`() {
+        val snake = resolver.resolveForTier(
+            strategyWithNormalPreset("""{"dynamic_exit":{"catastrophe_bid_floor":"0.7","max_drawdown_pct":"0.45"}}"""),
+            TailDiffTier.NORMAL
+        )
+        assertEquals(BigDecimal("0.7"), snake.dynamicExit.catastropheBidFloor)
+        assertEquals(BigDecimal("0.45"), snake.dynamicExit.maxDrawdownPct)
+        val camel = resolver.resolveForTier(
+            strategyWithNormalPreset("""{"dynamicExit":{"catastropheBidFloor":"0.66","maxDrawdownPct":"0.4"}}"""),
+            TailDiffTier.NORMAL
+        )
+        assertEquals(BigDecimal("0.66"), camel.dynamicExit.catastropheBidFloor)
+        assertEquals(BigDecimal("0.4"), camel.dynamicExit.maxDrawdownPct)
+    }
+
+    @Test
+    fun `catastrophe fields default to zero (disabled, zero regression)`() {
+        // 默认档与未提供该字段时均为 0=关闭，确保旧配置行为不变
+        assertEquals(BigDecimal.ZERO, resolver.defaultForTier(TailDiffTier.TOP).dynamicExit.catastropheBidFloor)
+        assertEquals(BigDecimal.ZERO, resolver.defaultForTier(TailDiffTier.TOP).dynamicExit.maxDrawdownPct)
+        val noField = resolver.resolveForTier(
+            strategyWithNormalPreset("""{"dynamic_exit":{"min_odds_after_entry":"0.8"}}"""),
+            TailDiffTier.NORMAL
+        )
+        assertEquals(BigDecimal.ZERO, noField.dynamicExit.catastropheBidFloor)
+        assertEquals(BigDecimal.ZERO, noField.dynamicExit.maxDrawdownPct)
+    }
+
+    @Test
+    fun `catastrophe fields round trip through toMap`() {
+        val original = resolver.defaultForTier(TailDiffTier.TOP).let {
+            it.copy(dynamicExit = it.dynamicExit.copy(catastropheBidFloor = BigDecimal("0.62"), maxDrawdownPct = BigDecimal("0.45")))
+        }
+        val reparsed = resolver.resolveForTier(
+            CryptoTailStrategy(mode = TradingMode.TAIL_DIFF, tailDiffExitPresetTopJson = original.toMap().toJson()),
+            TailDiffTier.TOP
+        )
+        assertEquals(original.dynamicExit, reparsed.dynamicExit)
+    }
+
+    @Test
+    fun `parses and round-trips catastrophe immediate flag`() {
+        val parsed = resolver.resolveForTier(
+            strategyWithNormalPreset("""{"dynamic_exit":{"catastrophe_bid_floor":"0.7","catastrophe_immediate":true}}"""),
+            TailDiffTier.NORMAL
+        )
+        assertTrue(parsed.dynamicExit.catastropheImmediate)
+        // 默认（未提供）为 false，零回归
+        val def = resolver.resolveForTier(
+            strategyWithNormalPreset("""{"dynamic_exit":{"catastrophe_bid_floor":"0.7"}}"""),
+            TailDiffTier.NORMAL
+        )
+        assertFalse(def.dynamicExit.catastropheImmediate)
+        // round-trip
+        val original = resolver.defaultForTier(TailDiffTier.TOP).let {
+            it.copy(dynamicExit = it.dynamicExit.copy(catastropheBidFloor = BigDecimal("0.62"), catastropheImmediate = true))
+        }
+        val reparsed = resolver.resolveForTier(
+            CryptoTailStrategy(mode = TradingMode.TAIL_DIFF, tailDiffExitPresetTopJson = original.toMap().toJson()),
+            TailDiffTier.TOP
+        )
+        assertEquals(original.dynamicExit, reparsed.dynamicExit)
+    }
+
+    @Test
+    fun `isValid rejects out-of-range catastrophe values`() {
+        assertTrue(resolver.isValid("""{"dynamic_exit":{"catastrophe_bid_floor":"0.7","max_drawdown_pct":"0.45"}}"""))
+        // bidFloor > 1
+        assertFalse(resolver.isValid("""{"dynamic_exit":{"catastrophe_bid_floor":"1.2"}}"""))
+        // drawdown > 1
+        assertFalse(resolver.isValid("""{"dynamic_exit":{"max_drawdown_pct":"1.5"}}"""))
+    }
 }

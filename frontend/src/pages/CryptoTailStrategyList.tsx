@@ -91,6 +91,7 @@ const TAIL_DIFF_DEFAULTS = {
   // ===== 评分增强（V72）：默认值 = 后端默认（零回归）=====
   tailDiffOddsLagMode: 'STATIC',
   tailDiffOddsLagWindowSeconds: 5,
+  tailDiffOddsLagStrongEdgeBypass: false,
   tailDiffLagPriceMoveFullScaleSigma: '0.5',
   tailDiffLagOddsMoveFullScale: '0.05',
   tailDiffEdgeFullScale: '0.10',
@@ -151,6 +152,7 @@ const buildTailDiffFormValues = (record: CryptoTailStrategyDto): typeof TAIL_DIF
   tailDiffEntrySegmentsJson: record.tailDiffEntrySegmentsJson ?? TAIL_DIFF_DEFAULTS.tailDiffEntrySegmentsJson,
   tailDiffOddsLagMode: record.tailDiffOddsLagMode ?? TAIL_DIFF_DEFAULTS.tailDiffOddsLagMode,
   tailDiffOddsLagWindowSeconds: record.tailDiffOddsLagWindowSeconds ?? TAIL_DIFF_DEFAULTS.tailDiffOddsLagWindowSeconds,
+  tailDiffOddsLagStrongEdgeBypass: record.tailDiffOddsLagStrongEdgeBypass ?? TAIL_DIFF_DEFAULTS.tailDiffOddsLagStrongEdgeBypass,
   tailDiffLagPriceMoveFullScaleSigma: record.tailDiffLagPriceMoveFullScaleSigma ?? TAIL_DIFF_DEFAULTS.tailDiffLagPriceMoveFullScaleSigma,
   tailDiffLagOddsMoveFullScale: record.tailDiffLagOddsMoveFullScale ?? TAIL_DIFF_DEFAULTS.tailDiffLagOddsMoveFullScale,
   tailDiffEdgeFullScale: record.tailDiffEdgeFullScale ?? TAIL_DIFF_DEFAULTS.tailDiffEdgeFullScale,
@@ -239,6 +241,7 @@ const buildTailDiffPayload = (v: Record<string, unknown>): CryptoTailTailDiffPar
   tailDiffEntrySegmentsJson: strOrEmpty(v.tailDiffEntrySegmentsJson),
   tailDiffOddsLagMode: strOrUndef(v.tailDiffOddsLagMode),
   tailDiffOddsLagWindowSeconds: numOrUndef(v.tailDiffOddsLagWindowSeconds),
+  tailDiffOddsLagStrongEdgeBypass: v.tailDiffOddsLagStrongEdgeBypass === true,
   tailDiffLagPriceMoveFullScaleSigma: strOrUndef(v.tailDiffLagPriceMoveFullScaleSigma),
   tailDiffLagOddsMoveFullScale: strOrUndef(v.tailDiffLagOddsMoveFullScale),
   tailDiffEdgeFullScale: strOrUndef(v.tailDiffEdgeFullScale),
@@ -3006,6 +3009,14 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="tailDiffOddsLagWindowSeconds" label={t('cryptoTailStrategy.form.tailDiffOddsLagWindowSeconds')}>
                 <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item
+                name="tailDiffOddsLagStrongEdgeBypass"
+                label={t('cryptoTailStrategy.form.tailDiffOddsLagStrongEdgeBypass')}
+                tooltip={t('cryptoTailStrategy.form.tailDiffOddsLagStrongEdgeBypassHint')}
+                valuePropName="checked"
+              >
+                <Switch />
               </Form.Item>
               <Form.Item name="tailDiffLagPriceMoveFullScaleSigma" label={t('cryptoTailStrategy.form.tailDiffLagPriceMoveFullScaleSigma')}>
                 <InputNumber min={0} step={0.1} style={{ width: '100%' }} addonAfter="σ" stringMode />

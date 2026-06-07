@@ -1660,6 +1660,7 @@ export interface CryptoTailStrategyDto {
   // ===== 尾盘价差评分增强（V72）=====
   tailDiffOddsLagMode?: string
   tailDiffOddsLagWindowSeconds?: number
+  tailDiffOddsLagStrongEdgeBypass?: boolean
   tailDiffLagPriceMoveFullScaleSigma?: string
   tailDiffLagOddsMoveFullScale?: string
   tailDiffEdgeFullScale?: string
@@ -1723,6 +1724,7 @@ export interface CryptoTailTailDiffParams {
   // ===== 尾盘价差评分增强（V72）=====
   tailDiffOddsLagMode?: string
   tailDiffOddsLagWindowSeconds?: number
+  tailDiffOddsLagStrongEdgeBypass?: boolean
   tailDiffLagPriceMoveFullScaleSigma?: string
   tailDiffLagOddsMoveFullScale?: string
   tailDiffEdgeFullScale?: string

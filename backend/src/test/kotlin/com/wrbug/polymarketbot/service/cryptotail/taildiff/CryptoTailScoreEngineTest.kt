@@ -59,7 +59,9 @@ class CryptoTailScoreEngineTest {
         askDepthUsd: String = "100",
         orderbookAgeMs: Long = 100,
         priceAgeMs: Long? = 100,
-        reverseVelocity: String = "0"
+        reverseVelocity: String = "0",
+        modelProbSource: String = "STATS",
+        statsSampleCount: Int = 120
     ) = CryptoTailScoreEngine.Input(
         coin = "BTC",
         open = BigDecimal("100000"),
@@ -72,8 +74,8 @@ class CryptoTailScoreEngineTest {
         remainingSeconds = remainingSeconds,
         periodSeconds = 300,
         modelProb = BigDecimal(modelProb),
-        modelProbSource = "STATS",
-        statsSampleCount = 120,
+        modelProbSource = modelProbSource,
+        statsSampleCount = statsSampleCount,
         effectiveCost = BigDecimal("0.92"),
         edge = BigDecimal(edge),
         midImpliedProb = BigDecimal("0.90"),
@@ -229,6 +231,52 @@ class CryptoTailScoreEngineTest {
             dyn
         )
         assertFalse(lagging.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "got ${lagging.vetoes}")
+    }
+
+    // ===== V73 强等级低估逃生口（聪明 lag 闸） =====
+
+    @Test
+    fun `strong edge bypass off keeps ODDS_LAG veto even with strong stats edge (zero regression)`() {
+        // 开关关闭（默认）：即便强 edge + 统计型模型，lag<=0 仍按旧版否决
+        val dyn = strategy().copy(tailDiffOddsLagMode = "DYNAMIC", tailDiffOddsLagStrongEdgeBypass = false)
+        val out = engine.evaluate(input(edge = "0.12", modelProbSource = "HYBRID_STATS"), dyn)
+        assertTrue(out.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "bypass 关闭时不应放行, got ${out.vetoes}")
+    }
+
+    @Test
+    fun `strong edge bypass on passes lag gate for strong stats-backed edge`() {
+        // 开关开启 + edge>=edgeFullScale(0.10) + 统计型来源 + 样本足量 → 放行滞后门控
+        val dyn = strategy().copy(tailDiffOddsLagMode = "DYNAMIC", tailDiffOddsLagStrongEdgeBypass = true)
+        val statsOk = engine.evaluate(input(edge = "0.12", modelProbSource = "STATS"), dyn)
+        assertFalse(statsOk.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "STATS 强 edge 应放行, got ${statsOk.vetoes}")
+        val hybridStatsOk = engine.evaluate(input(edge = "0.12", modelProbSource = "HYBRID_STATS"), dyn)
+        assertFalse(hybridStatsOk.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "HYBRID_STATS 强 edge 应放行, got ${hybridStatsOk.vetoes}")
+    }
+
+    @Test
+    fun `strong edge bypass on still vetoes weak edge`() {
+        // 开关开启但 edge<edgeFullScale(0.10) → 仍否决（仅顶级低估才放行）
+        val dyn = strategy().copy(tailDiffOddsLagMode = "DYNAMIC", tailDiffOddsLagStrongEdgeBypass = true)
+        val out = engine.evaluate(input(edge = "0.05", modelProbSource = "STATS"), dyn)
+        assertTrue(out.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "弱 edge 不应放行, got ${out.vetoes}")
+    }
+
+    @Test
+    fun `strong edge bypass on still vetoes fallback model source`() {
+        // STATS_FALLBACK/HYBRID_FALLBACK 实为兜底（非统计型）→ 即便强 edge 也不放行（集合精确判别）
+        val dyn = strategy().copy(tailDiffOddsLagMode = "DYNAMIC", tailDiffOddsLagStrongEdgeBypass = true)
+        val fb = engine.evaluate(input(edge = "0.12", modelProbSource = "STATS_FALLBACK"), dyn)
+        assertTrue(fb.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "STATS_FALLBACK 不应放行, got ${fb.vetoes}")
+        val hfb = engine.evaluate(input(edge = "0.12", modelProbSource = "HYBRID_FALLBACK"), dyn)
+        assertTrue(hfb.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "HYBRID_FALLBACK 不应放行, got ${hfb.vetoes}")
+    }
+
+    @Test
+    fun `strong edge bypass on still vetoes when stats samples insufficient`() {
+        // 强 edge + 统计来源，但样本不足（< tailDiffStatsMinSamples=50）→ 不放行
+        val dyn = strategy().copy(tailDiffOddsLagMode = "DYNAMIC", tailDiffOddsLagStrongEdgeBypass = true)
+        val out = engine.evaluate(input(edge = "0.12", modelProbSource = "STATS", statsSampleCount = 10), dyn)
+        assertTrue(out.vetoes.contains("ODDS_LAG_INSUFFICIENT"), "样本不足不应放行, got ${out.vetoes}")
     }
 
     @Test
