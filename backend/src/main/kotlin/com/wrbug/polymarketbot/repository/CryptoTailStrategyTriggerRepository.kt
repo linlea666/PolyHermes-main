@@ -78,6 +78,9 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
     /** 风控-并发敞口闸：已成功下单但未结算的笔数 */
     fun countByStrategyIdAndStatusAndResolvedFalse(strategyId: Long, status: String): Long
 
+    /** SCALP_FLIP 同方向并发上限闸：同策略同 outcome 方向、已成功下单但未结算的笔数 */
+    fun countByStrategyIdAndOutcomeIndexAndStatusAndResolvedFalse(strategyId: Long, outcomeIndex: Int, status: String): Long
+
     /** 账户级风控-并发敞口闸：同账户所有策略已成功下单但未结算的笔数 */
     @Query(
         "SELECT COUNT(t) FROM CryptoTailStrategyTrigger t, CryptoTailStrategy s " +

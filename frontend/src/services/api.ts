@@ -645,7 +645,7 @@ export const apiService = {
       maxOrdersPerDay?: number | null
       maxConsecutiveLosses?: number | null
       pauseAfterLossMinutes?: number
-    } & import('../types').CryptoTailTailDiffParams) =>
+    } & import('../types').CryptoTailTailDiffParams & import('../types').CryptoTailScalpParams) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/create', data),
     update: (data: {
       strategyId: number
@@ -756,7 +756,7 @@ export const apiService = {
       maxOrdersPerDay?: number | null
       maxConsecutiveLosses?: number | null
       pauseAfterLossMinutes?: number
-    } & import('../types').CryptoTailTailDiffParams) =>
+    } & import('../types').CryptoTailTailDiffParams & import('../types').CryptoTailScalpParams) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyDto>>('/crypto-tail-strategy/update', data),
     tailDiffPreview: (data: import('../types').CryptoTailTailDiffPreviewRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailTailDiffPreviewResponse>>('/crypto-tail-strategy/tail-diff/preview', data),

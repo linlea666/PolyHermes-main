@@ -1671,8 +1671,69 @@ export interface CryptoTailStrategyDto {
   tailDiffEnableKellyCap?: boolean
   tailDiffKellyFraction?: string
   tailDiffDepthFillRatio?: string
+  // ===== 快进快出模式（SCALP_FLIP, V77）=====
+  scalpEntryMinPrice?: string
+  scalpEntryMaxPrice?: string
+  scalpMaxFillPrice?: string
+  scalpWindowStartSeconds?: number
+  scalpWindowEndSeconds?: number
+  scalpMinRemainingSeconds?: number
+  scalpMinExitBidDepthUsdc?: string | null
+  scalpReversalGateEnabled?: boolean
+  scalpMinModelProb?: string
+  scalpMinEdge?: string
+  scalpStatsSource?: string
+  scalpStatsLookbackDays?: number
+  scalpStatsMinSamples?: number
+  scalpRequireStats?: boolean
+  scalpMaxConcurrentSameDirection?: number | null
+  scalpHoldWinnerToSettle?: boolean
+  scalpTpPrice?: string
+  scalpStopEnabled?: boolean
+  scalpStopOffset?: string
+  scalpStopMinPrice?: string
+  scalpMinOddsAfterEntry?: string
+  scalpUnderlyingStopEnabled?: boolean
+  scalpUnderlyingStopSigma?: string
+  scalpReverseVelocityStopEnabled?: boolean
+  scalpMaxReverseVelocitySigma?: string
+  scalpReverseVelocityWindowSeconds?: number
+  scalpMinModelProbAfterEntry?: string
+  scalpMaxDiffRetracePct?: string
   createdAt: number
   updatedAt: number
+}
+
+/** 快进快出模式（SCALP_FLIP, V77）参数集合；create/update 共用 */
+export interface CryptoTailScalpParams {
+  scalpEntryMinPrice?: string
+  scalpEntryMaxPrice?: string
+  scalpMaxFillPrice?: string
+  scalpWindowStartSeconds?: number
+  scalpWindowEndSeconds?: number
+  scalpMinRemainingSeconds?: number
+  scalpMinExitBidDepthUsdc?: string | null
+  scalpReversalGateEnabled?: boolean
+  scalpMinModelProb?: string
+  scalpMinEdge?: string
+  scalpStatsSource?: string
+  scalpStatsLookbackDays?: number
+  scalpStatsMinSamples?: number
+  scalpRequireStats?: boolean
+  scalpMaxConcurrentSameDirection?: number | null
+  scalpHoldWinnerToSettle?: boolean
+  scalpTpPrice?: string
+  scalpStopEnabled?: boolean
+  scalpStopOffset?: string
+  scalpStopMinPrice?: string
+  scalpMinOddsAfterEntry?: string
+  scalpUnderlyingStopEnabled?: boolean
+  scalpUnderlyingStopSigma?: string
+  scalpReverseVelocityStopEnabled?: boolean
+  scalpMaxReverseVelocitySigma?: string
+  scalpReverseVelocityWindowSeconds?: number
+  scalpMinModelProbAfterEntry?: string
+  scalpMaxDiffRetracePct?: string
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */

@@ -325,11 +325,17 @@ class CryptoTailBracketExitService(
         // 故反抽序列必须在退出评估热路径上补喂，否则 TAIL_DIFF 动态退出的 maxReverseVelocitySigma 永远拿不到样本。
         val nowMs = System.currentTimeMillis()
         reverseVelocityTracker.observe(strategy.marketSlugPrefix, closeP, nowMs)
+        // 反抽速度采样窗口按模式取：SCALP_FLIP 用其专属窗口，其余模式沿用 TAIL_DIFF 窗口（行为不变）。
+        val reverseVelocityWindow = if (strategy.mode == TradingMode.SCALP_FLIP) {
+            strategy.scalpReverseVelocityWindowSeconds
+        } else {
+            strategy.tailDiffReverseVelocityWindowSeconds
+        }
         val reverseVelocity = reverseVelocityTracker.computeReverseVelocity(
             marketSlugPrefix = strategy.marketSlugPrefix,
             outcomeIndex = trigger.outcomeIndex,
             sigmaPerSqrtS = sigma,
-            windowSeconds = strategy.tailDiffReverseVelocityWindowSeconds,
+            windowSeconds = reverseVelocityWindow,
             nowMs = nowMs
         )
         val reverseVelocitySigmaPerSec = if (reverseVelocity.isReversing) reverseVelocity.velocitySigmaPerSec else BigDecimal.ZERO
@@ -382,9 +388,11 @@ class CryptoTailBracketExitService(
         if (remainingSeconds <= 0) {
             return Decision(null, BigDecimal.ZERO, "周期已结束，等待结算")
         }
-        // TAIL_DIFF：使用入场时冻结的退出预设（按 tier 三档）做独立决策；不复用 BRACKET 的 TP/SL/动态退出。
+        // TAIL_DIFF / SCALP_FLIP：使用入场时冻结的退出预设做独立决策；不复用 BRACKET 的 TP/SL/动态退出。
         // 入场快照存于 trigger.exitPresetJson；策略表中途修改预设不影响在途持仓。
-        if (strategy.mode == TradingMode.TAIL_DIFF) {
+        // SCALP_FLIP 复用同一退出引擎：入场按 scalp_* 列冻结一份 preset（hold_to_expiry 恒为 false，
+        // 用 tp_limit.enabled 切换"持有到结算(不挂TP)"与"挂止盈"，stop_loss + dynamic_exit 提供价位/标的/反抽止损）。
+        if (strategy.mode == TradingMode.TAIL_DIFF || strategy.mode == TradingMode.SCALP_FLIP) {
             return decideTailDiffExit(strategy, trigger, holding, bestBid, remainingSeconds)
         }
         val entryFillPrice = trigger.entryFillPrice ?: run {
@@ -1283,9 +1291,9 @@ class CryptoTailBracketExitService(
                 if (strategy.mode != TradingMode.TAIL_DIFF && strategy.exitOrderType.uppercase() == "MAKER") "GTC" else "FAK"
             ExitKind.SETTLE -> "FAK"  // 不应到这（SETTLE 由 SettlementService 处理）
         }
-        // TAIL_DIFF：用入场冻结预设的 execution 块覆盖退出滑点（按 TP/STOP 分别取），并应用 worstPrice 绝对底线；
+        // TAIL_DIFF / SCALP_FLIP：用入场冻结预设的 execution 块覆盖退出滑点（按 TP/STOP 分别取），并应用 worstPrice 绝对底线；
         // 其他模式与未配置时回退全局 strategy.exitFakSlippage（行为不变）。
-        val (effExitSlippage, worstPriceFloor) = if (strategy.mode == TradingMode.TAIL_DIFF) {
+        val (effExitSlippage, worstPriceFloor) = if (strategy.mode == TradingMode.TAIL_DIFF || strategy.mode == TradingMode.SCALP_FLIP) {
             val preset = resolveTailDiffPresetForTrigger(strategy, trigger, TailDiffTier.fromLabel(trigger.tier))
             val isTp = kind == ExitKind.TP1 || kind == ExitKind.TP2
             val slip = (if (isTp) preset.execution.tpSlippage else preset.execution.stopSlippage) ?: strategy.exitFakSlippage

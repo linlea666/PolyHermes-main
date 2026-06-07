@@ -92,7 +92,9 @@ const CryptoTailMonitor: React.FC = () => {
   const barrierEnabled = selectedMode === 1 || selectedMode === 2
   // 尾盘价差（mode=3）也产出决策事件，需放开决策订阅/拉取以展示策略建议
   const isTailDiff = selectedMode === 3
-  const decisionEnabled = barrierEnabled || isTailDiff
+  // 快进快出（mode=4）同样产出 GATE/ORDER_RESULT/SETTLED 决策事件，复用同一决策日志面板
+  const isScalp = selectedMode === 4
+  const decisionEnabled = barrierEnabled || isTailDiff || isScalp
 
   // 导出单笔成交分析快照 CSV（用于离线回测/复盘）
   const handleExportSnapshots = async () => {

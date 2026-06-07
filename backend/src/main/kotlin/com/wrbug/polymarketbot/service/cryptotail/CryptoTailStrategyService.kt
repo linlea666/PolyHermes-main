@@ -218,6 +218,12 @@ class CryptoTailStrategyService(
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_TAIL_DIFF_PARAM_INVALID.messageKey))
             }
 
+            // ===== 快进快出模式（SCALP_FLIP, V77）：缺省走 V77 SQL 默认值，行为不影响其他模式 =====
+            val sc = resolveScalpCreate(request)
+            if (resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.SCALP_FLIP && !isScalpParamsValid(sc)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_SCALP_PARAM_INVALID.messageKey))
+            }
+
             if (resolvedMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD &&
                 !isBarrierParamsValid(entryProb, entryEdge, maxEntryPrice, costBuffer, barrierMinMarketProb, sigmaScale, dailyLossLimitUsdc, maxConcurrentPositions, takerFeeBps, makerRebateBps, gasCostUsdc, entryOrderType, entryFakSlippage, makerPriceOffset, makerCancelBeforeSettleSeconds, interval, probeAmountUsdc, calibrationMinSamples, calibrationMaxError, sigmaMethod, ewmaLambda, kellyFraction)) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_BARRIER_PARAM_INVALID.messageKey))
@@ -419,7 +425,35 @@ class CryptoTailStrategyService(
                 tailDiffSigmaScoreMultiple = td.sigmaScoreMultiple,
                 tailDiffEnableKellyCap = td.enableKellyCap,
                 tailDiffKellyFraction = td.kellyFraction,
-                tailDiffDepthFillRatio = td.depthFillRatio
+                tailDiffDepthFillRatio = td.depthFillRatio,
+                scalpEntryMinPrice = sc.entryMinPrice,
+                scalpEntryMaxPrice = sc.entryMaxPrice,
+                scalpMaxFillPrice = sc.maxFillPrice,
+                scalpWindowStartSeconds = sc.windowStartSeconds,
+                scalpWindowEndSeconds = sc.windowEndSeconds,
+                scalpMinRemainingSeconds = sc.minRemainingSeconds,
+                scalpMinExitBidDepthUsdc = sc.minExitBidDepthUsdc,
+                scalpReversalGateEnabled = sc.reversalGateEnabled,
+                scalpMinModelProb = sc.minModelProb,
+                scalpMinEdge = sc.minEdge,
+                scalpStatsSource = sc.statsSource,
+                scalpStatsLookbackDays = sc.statsLookbackDays,
+                scalpStatsMinSamples = sc.statsMinSamples,
+                scalpRequireStats = sc.requireStats,
+                scalpMaxConcurrentSameDirection = sc.maxConcurrentSameDirection,
+                scalpHoldWinnerToSettle = sc.holdWinnerToSettle,
+                scalpTpPrice = sc.tpPrice,
+                scalpStopEnabled = sc.stopEnabled,
+                scalpStopOffset = sc.stopOffset,
+                scalpStopMinPrice = sc.stopMinPrice,
+                scalpMinOddsAfterEntry = sc.minOddsAfterEntry,
+                scalpUnderlyingStopEnabled = sc.underlyingStopEnabled,
+                scalpUnderlyingStopSigma = sc.underlyingStopSigma,
+                scalpReverseVelocityStopEnabled = sc.reverseVelocityStopEnabled,
+                scalpMaxReverseVelocitySigma = sc.maxReverseVelocitySigma,
+                scalpReverseVelocityWindowSeconds = sc.reverseVelocityWindowSeconds,
+                scalpMinModelProbAfterEntry = sc.minModelProbAfterEntry,
+                scalpMaxDiffRetracePct = sc.maxDiffRetracePct
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -596,6 +630,12 @@ class CryptoTailStrategyService(
             val td = resolveTailDiffUpdate(request, existing)
             if (newMode == com.wrbug.polymarketbot.enums.TradingMode.TAIL_DIFF && !isTailDiffParamsValid(td)) {
                 return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_TAIL_DIFF_PARAM_INVALID.messageKey))
+            }
+
+            // ===== 快进快出模式（SCALP_FLIP, V77）：null 字段保留 existing，行为不影响其他模式 =====
+            val sc = resolveScalpUpdate(request, existing)
+            if (newMode == com.wrbug.polymarketbot.enums.TradingMode.SCALP_FLIP && !isScalpParamsValid(sc)) {
+                return Result.failure(IllegalArgumentException(ErrorCode.CRYPTO_TAIL_STRATEGY_SCALP_PARAM_INVALID.messageKey))
             }
 
             if (newMode == com.wrbug.polymarketbot.enums.TradingMode.BARRIER_HOLD &&
@@ -797,6 +837,34 @@ class CryptoTailStrategyService(
                 tailDiffEnableKellyCap = td.enableKellyCap,
                 tailDiffKellyFraction = td.kellyFraction,
                 tailDiffDepthFillRatio = td.depthFillRatio,
+                scalpEntryMinPrice = sc.entryMinPrice,
+                scalpEntryMaxPrice = sc.entryMaxPrice,
+                scalpMaxFillPrice = sc.maxFillPrice,
+                scalpWindowStartSeconds = sc.windowStartSeconds,
+                scalpWindowEndSeconds = sc.windowEndSeconds,
+                scalpMinRemainingSeconds = sc.minRemainingSeconds,
+                scalpMinExitBidDepthUsdc = sc.minExitBidDepthUsdc,
+                scalpReversalGateEnabled = sc.reversalGateEnabled,
+                scalpMinModelProb = sc.minModelProb,
+                scalpMinEdge = sc.minEdge,
+                scalpStatsSource = sc.statsSource,
+                scalpStatsLookbackDays = sc.statsLookbackDays,
+                scalpStatsMinSamples = sc.statsMinSamples,
+                scalpRequireStats = sc.requireStats,
+                scalpMaxConcurrentSameDirection = sc.maxConcurrentSameDirection,
+                scalpHoldWinnerToSettle = sc.holdWinnerToSettle,
+                scalpTpPrice = sc.tpPrice,
+                scalpStopEnabled = sc.stopEnabled,
+                scalpStopOffset = sc.stopOffset,
+                scalpStopMinPrice = sc.stopMinPrice,
+                scalpMinOddsAfterEntry = sc.minOddsAfterEntry,
+                scalpUnderlyingStopEnabled = sc.underlyingStopEnabled,
+                scalpUnderlyingStopSigma = sc.underlyingStopSigma,
+                scalpReverseVelocityStopEnabled = sc.reverseVelocityStopEnabled,
+                scalpMaxReverseVelocitySigma = sc.maxReverseVelocitySigma,
+                scalpReverseVelocityWindowSeconds = sc.reverseVelocityWindowSeconds,
+                scalpMinModelProbAfterEntry = sc.minModelProbAfterEntry,
+                scalpMaxDiffRetracePct = sc.maxDiffRetracePct,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -1833,6 +1901,146 @@ class CryptoTailStrategyService(
         return true
     }
 
+    /** 快进快出模式（SCALP_FLIP）解析后的字段集合，类型与实体一致 */
+    private data class ScalpResolved(
+        val entryMinPrice: BigDecimal,
+        val entryMaxPrice: BigDecimal,
+        val maxFillPrice: BigDecimal,
+        val windowStartSeconds: Int,
+        val windowEndSeconds: Int,
+        val minRemainingSeconds: Int,
+        val minExitBidDepthUsdc: BigDecimal?,
+        val reversalGateEnabled: Boolean,
+        val minModelProb: BigDecimal,
+        val minEdge: BigDecimal,
+        val statsSource: String,
+        val statsLookbackDays: Int,
+        val statsMinSamples: Int,
+        val requireStats: Boolean,
+        val maxConcurrentSameDirection: Int?,
+        val holdWinnerToSettle: Boolean,
+        val tpPrice: BigDecimal,
+        val stopEnabled: Boolean,
+        val stopOffset: BigDecimal,
+        val stopMinPrice: BigDecimal,
+        val minOddsAfterEntry: BigDecimal,
+        val underlyingStopEnabled: Boolean,
+        val underlyingStopSigma: BigDecimal,
+        val reverseVelocityStopEnabled: Boolean,
+        val maxReverseVelocitySigma: BigDecimal,
+        val reverseVelocityWindowSeconds: Int,
+        val minModelProbAfterEntry: BigDecimal,
+        val maxDiffRetracePct: BigDecimal
+    )
+
+    /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
+    private fun normalizeScalpStatsSource(raw: String?): String {
+        val v = (raw ?: "HYBRID").trim().uppercase()
+        return if (v == "HYBRID" || v == "POLYMARKET" || v == "BINANCE") v else "HYBRID"
+    }
+
+    /** 可空 Int 字段三态：null=保留旧值；<=0 视为清空(null)；>0=更新。 */
+    private fun resolveNullableIntUpdate(requestValue: Int?, existing: Int?): Int? = when {
+        requestValue == null -> existing
+        requestValue <= 0 -> null
+        else -> requestValue
+    }
+
+    /** 创建场景：缺省走默认值（与 V77 SQL 默认一致） */
+    private fun resolveScalpCreate(r: CryptoTailStrategyCreateRequest): ScalpResolved = ScalpResolved(
+        entryMinPrice = r.scalpEntryMinPrice?.toSafeBigDecimal() ?: BigDecimal("0.96"),
+        entryMaxPrice = r.scalpEntryMaxPrice?.toSafeBigDecimal() ?: BigDecimal("0.97"),
+        maxFillPrice = r.scalpMaxFillPrice?.toSafeBigDecimal() ?: BigDecimal("0.975"),
+        windowStartSeconds = r.scalpWindowStartSeconds ?: 0,
+        windowEndSeconds = r.scalpWindowEndSeconds ?: 0,
+        minRemainingSeconds = r.scalpMinRemainingSeconds ?: 30,
+        minExitBidDepthUsdc = r.scalpMinExitBidDepthUsdc?.takeIf { it.isNotBlank() }?.toSafeBigDecimal(),
+        reversalGateEnabled = r.scalpReversalGateEnabled ?: true,
+        minModelProb = r.scalpMinModelProb?.toSafeBigDecimal() ?: BigDecimal("0.95"),
+        minEdge = r.scalpMinEdge?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        statsSource = normalizeScalpStatsSource(r.scalpStatsSource),
+        statsLookbackDays = r.scalpStatsLookbackDays ?: 180,
+        statsMinSamples = r.scalpStatsMinSamples ?: 30,
+        requireStats = r.scalpRequireStats ?: false,
+        maxConcurrentSameDirection = r.scalpMaxConcurrentSameDirection?.takeIf { it > 0 },
+        holdWinnerToSettle = r.scalpHoldWinnerToSettle ?: true,
+        tpPrice = r.scalpTpPrice?.toSafeBigDecimal() ?: BigDecimal("0.99"),
+        stopEnabled = r.scalpStopEnabled ?: true,
+        stopOffset = r.scalpStopOffset?.toSafeBigDecimal() ?: BigDecimal("0.05"),
+        stopMinPrice = r.scalpStopMinPrice?.toSafeBigDecimal() ?: BigDecimal("0.90"),
+        minOddsAfterEntry = r.scalpMinOddsAfterEntry?.toSafeBigDecimal() ?: BigDecimal("0.93"),
+        underlyingStopEnabled = r.scalpUnderlyingStopEnabled ?: true,
+        underlyingStopSigma = r.scalpUnderlyingStopSigma?.toSafeBigDecimal() ?: BigDecimal("0.30"),
+        reverseVelocityStopEnabled = r.scalpReverseVelocityStopEnabled ?: true,
+        maxReverseVelocitySigma = r.scalpMaxReverseVelocitySigma?.toSafeBigDecimal() ?: BigDecimal("0.40"),
+        reverseVelocityWindowSeconds = r.scalpReverseVelocityWindowSeconds ?: 10,
+        minModelProbAfterEntry = r.scalpMinModelProbAfterEntry?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: BigDecimal.ZERO
+    )
+
+    /** 更新场景：null 字段保留 existing */
+    private fun resolveScalpUpdate(r: CryptoTailStrategyUpdateRequest, e: CryptoTailStrategy): ScalpResolved = ScalpResolved(
+        entryMinPrice = r.scalpEntryMinPrice?.toSafeBigDecimal() ?: e.scalpEntryMinPrice,
+        entryMaxPrice = r.scalpEntryMaxPrice?.toSafeBigDecimal() ?: e.scalpEntryMaxPrice,
+        maxFillPrice = r.scalpMaxFillPrice?.toSafeBigDecimal() ?: e.scalpMaxFillPrice,
+        windowStartSeconds = r.scalpWindowStartSeconds ?: e.scalpWindowStartSeconds,
+        windowEndSeconds = r.scalpWindowEndSeconds ?: e.scalpWindowEndSeconds,
+        minRemainingSeconds = r.scalpMinRemainingSeconds ?: e.scalpMinRemainingSeconds,
+        minExitBidDepthUsdc = resolveNullableBigDecimalUpdate(r.scalpMinExitBidDepthUsdc, e.scalpMinExitBidDepthUsdc),
+        reversalGateEnabled = r.scalpReversalGateEnabled ?: e.scalpReversalGateEnabled,
+        minModelProb = r.scalpMinModelProb?.toSafeBigDecimal() ?: e.scalpMinModelProb,
+        minEdge = r.scalpMinEdge?.toSafeBigDecimal() ?: e.scalpMinEdge,
+        statsSource = r.scalpStatsSource?.let { normalizeScalpStatsSource(it) } ?: e.scalpStatsSource,
+        statsLookbackDays = r.scalpStatsLookbackDays ?: e.scalpStatsLookbackDays,
+        statsMinSamples = r.scalpStatsMinSamples ?: e.scalpStatsMinSamples,
+        requireStats = r.scalpRequireStats ?: e.scalpRequireStats,
+        maxConcurrentSameDirection = resolveNullableIntUpdate(r.scalpMaxConcurrentSameDirection, e.scalpMaxConcurrentSameDirection),
+        holdWinnerToSettle = r.scalpHoldWinnerToSettle ?: e.scalpHoldWinnerToSettle,
+        tpPrice = r.scalpTpPrice?.toSafeBigDecimal() ?: e.scalpTpPrice,
+        stopEnabled = r.scalpStopEnabled ?: e.scalpStopEnabled,
+        stopOffset = r.scalpStopOffset?.toSafeBigDecimal() ?: e.scalpStopOffset,
+        stopMinPrice = r.scalpStopMinPrice?.toSafeBigDecimal() ?: e.scalpStopMinPrice,
+        minOddsAfterEntry = r.scalpMinOddsAfterEntry?.toSafeBigDecimal() ?: e.scalpMinOddsAfterEntry,
+        underlyingStopEnabled = r.scalpUnderlyingStopEnabled ?: e.scalpUnderlyingStopEnabled,
+        underlyingStopSigma = r.scalpUnderlyingStopSigma?.toSafeBigDecimal() ?: e.scalpUnderlyingStopSigma,
+        reverseVelocityStopEnabled = r.scalpReverseVelocityStopEnabled ?: e.scalpReverseVelocityStopEnabled,
+        maxReverseVelocitySigma = r.scalpMaxReverseVelocitySigma?.toSafeBigDecimal() ?: e.scalpMaxReverseVelocitySigma,
+        reverseVelocityWindowSeconds = r.scalpReverseVelocityWindowSeconds ?: e.scalpReverseVelocityWindowSeconds,
+        minModelProbAfterEntry = r.scalpMinModelProbAfterEntry?.toSafeBigDecimal() ?: e.scalpMinModelProbAfterEntry,
+        maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: e.scalpMaxDiffRetracePct
+    )
+
+    /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
+    private fun isScalpParamsValid(sc: ScalpResolved): Boolean {
+        val zero = BigDecimal.ZERO
+        val one = BigDecimal.ONE
+        // 价格区间：0 < entryMin <= entryMax <= maxFill <= 1
+        if (sc.entryMinPrice <= zero || sc.entryMinPrice > one) return false
+        if (sc.entryMaxPrice < sc.entryMinPrice || sc.entryMaxPrice > one) return false
+        if (sc.maxFillPrice < sc.entryMaxPrice || sc.maxFillPrice > one) return false
+        // 窗口：windowStart<windowEnd（windowEnd=0 表示不设上限，跳过该校验）；minRemaining>=0
+        if (sc.windowStartSeconds < 0 || sc.windowEndSeconds < 0 || sc.minRemainingSeconds < 0) return false
+        if (sc.windowEndSeconds > 0 && sc.windowEndSeconds <= sc.windowStartSeconds) return false
+        sc.minExitBidDepthUsdc?.let { if (it < zero) return false }
+        // 反转率门槛
+        if (sc.minModelProb <= zero || sc.minModelProb > one) return false
+        if (sc.minEdge < zero || sc.minEdge >= one) return false
+        if (sc.statsLookbackDays <= 0 || sc.statsMinSamples < 0) return false
+        sc.maxConcurrentSameDirection?.let { if (it <= 0) return false }
+        // 退出
+        if (sc.tpPrice <= zero || sc.tpPrice > one) return false
+        if (sc.stopOffset < zero || sc.stopOffset >= one) return false
+        if (sc.stopMinPrice < zero || sc.stopMinPrice > one) return false
+        if (sc.minOddsAfterEntry < zero || sc.minOddsAfterEntry > one) return false
+        if (sc.underlyingStopSigma < zero) return false
+        if (sc.maxReverseVelocitySigma < zero) return false
+        if (sc.reverseVelocityWindowSeconds <= 0) return false
+        // 退出软阈值（0=关闭）：minModelProbAfterEntry ∈ [0,1]；maxDiffRetracePct ∈ [0,1)
+        if (sc.minModelProbAfterEntry < zero || sc.minModelProbAfterEntry > one) return false
+        if (sc.maxDiffRetracePct < zero || sc.maxDiffRetracePct >= one) return false
+        return true
+    }
+
     private fun entityToDto(e: CryptoTailStrategy, lastTriggerAt: Long?): CryptoTailStrategyDto {
         val strategyId = e.id ?: 0L
         val totalPnl = triggerRepository.sumRealizedPnlByStrategyId(strategyId)
@@ -2025,6 +2233,34 @@ class CryptoTailStrategyService(
             tailDiffEnableKellyCap = e.tailDiffEnableKellyCap,
             tailDiffKellyFraction = e.tailDiffKellyFraction.toPlainString(),
             tailDiffDepthFillRatio = e.tailDiffDepthFillRatio.toPlainString(),
+            scalpEntryMinPrice = e.scalpEntryMinPrice.toPlainString(),
+            scalpEntryMaxPrice = e.scalpEntryMaxPrice.toPlainString(),
+            scalpMaxFillPrice = e.scalpMaxFillPrice.toPlainString(),
+            scalpWindowStartSeconds = e.scalpWindowStartSeconds,
+            scalpWindowEndSeconds = e.scalpWindowEndSeconds,
+            scalpMinRemainingSeconds = e.scalpMinRemainingSeconds,
+            scalpMinExitBidDepthUsdc = e.scalpMinExitBidDepthUsdc?.toPlainString(),
+            scalpReversalGateEnabled = e.scalpReversalGateEnabled,
+            scalpMinModelProb = e.scalpMinModelProb.toPlainString(),
+            scalpMinEdge = e.scalpMinEdge.toPlainString(),
+            scalpStatsSource = e.scalpStatsSource,
+            scalpStatsLookbackDays = e.scalpStatsLookbackDays,
+            scalpStatsMinSamples = e.scalpStatsMinSamples,
+            scalpRequireStats = e.scalpRequireStats,
+            scalpMaxConcurrentSameDirection = e.scalpMaxConcurrentSameDirection,
+            scalpHoldWinnerToSettle = e.scalpHoldWinnerToSettle,
+            scalpTpPrice = e.scalpTpPrice.toPlainString(),
+            scalpStopEnabled = e.scalpStopEnabled,
+            scalpStopOffset = e.scalpStopOffset.toPlainString(),
+            scalpStopMinPrice = e.scalpStopMinPrice.toPlainString(),
+            scalpMinOddsAfterEntry = e.scalpMinOddsAfterEntry.toPlainString(),
+            scalpUnderlyingStopEnabled = e.scalpUnderlyingStopEnabled,
+            scalpUnderlyingStopSigma = e.scalpUnderlyingStopSigma.toPlainString(),
+            scalpReverseVelocityStopEnabled = e.scalpReverseVelocityStopEnabled,
+            scalpMaxReverseVelocitySigma = e.scalpMaxReverseVelocitySigma.toPlainString(),
+            scalpReverseVelocityWindowSeconds = e.scalpReverseVelocityWindowSeconds,
+            scalpMinModelProbAfterEntry = e.scalpMinModelProbAfterEntry.toPlainString(),
+            scalpMaxDiffRetracePct = e.scalpMaxDiffRetracePct.toPlainString(),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )

@@ -11,14 +11,18 @@ package com.wrbug.polymarketbot.enums
  *  - TAIL_DIFF     : 尾盘价差模式（V62 引入），用 0-100 加权机会评分（价差/时间/赔率/历史反转率/盘口/数据可靠性）
  *                    + 13 项硬否决，按分数分层（普通/优质/顶级）决定金额倍率与退出预设；
  *                    复用 BARRIER 的 gap/σ/pWin 内核与 BRACKET 的退出引擎，不重写下单/退出/风控/日志。
+ *  - SCALP_FLIP    : 快进快出模式（V77 引入），极简价格区间进场（如 0.96~0.97 买入favorite）+ 可选历史反转率门槛筛选；
+ *                    退出可切换"赢单持有到结算(拿 1.0)"或"挂止盈单(如 0.99)锁利"，并以多源可配置止损（标的方向反转/反抽速度/价位兜底，
+ *                    按剩余时间分段）砍左尾。复用 LEGACY 的极简进场骨架与 BRACKET/TAIL_DIFF 的退出引擎，物理隔离不影响其他模式。
  *
- * 历史迁移：barrier_enabled=1 → BARRIER_HOLD，否则 LEGACY_SPREAD（TAIL_DIFF 仅由新建/更新写入）
+ * 历史迁移：barrier_enabled=1 → BARRIER_HOLD，否则 LEGACY_SPREAD（TAIL_DIFF/SCALP_FLIP 仅由新建/更新写入）
  */
 enum class TradingMode(val value: Int, val description: String) {
     LEGACY_SPREAD(0, "旧价差"),
     BARRIER_HOLD(1, "障碍"),
     BRACKET_DYNAMIC(2, "概率阶梯止盈"),
-    TAIL_DIFF(3, "尾盘价差");
+    TAIL_DIFF(3, "尾盘价差"),
+    SCALP_FLIP(4, "快进快出");
 
     companion object {
         fun fromValue(value: Int?): TradingMode {

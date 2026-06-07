@@ -23,6 +23,9 @@ import com.wrbug.polymarketbot.service.binance.BinanceKlineService
 import com.wrbug.polymarketbot.service.common.PolymarketClobService
 import com.wrbug.polymarketbot.service.copytrading.orders.OrderSigningService
 import com.wrbug.polymarketbot.service.cryptotail.taildiff.CryptoTailTailDiffDecisionService
+import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffBuckets
+import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffExitPreset
+import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailReversalStatsLookup
 import com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffTier
 import com.wrbug.polymarketbot.util.CryptoUtils
 import com.wrbug.polymarketbot.util.RetrofitFactory
@@ -96,7 +99,8 @@ class CryptoTailStrategyExecutionService(
     private val orderbookSnapshotFetcher: CryptoTailOrderbookSnapshotFetcher,
     private val boostService: CryptoTailBoostService,
     private val tailDiffDecisionService: CryptoTailTailDiffDecisionService,
-    private val tailDiffEntrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver
+    private val tailDiffEntrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
+    private val reversalStatsLookup: TailReversalStatsLookup
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailStrategyExecutionService::class.java)
@@ -154,6 +158,16 @@ class CryptoTailStrategyExecutionService(
         .expireAfterWrite(java.time.Duration.ofHours(1))
         .build()
 
+    /**
+     * SCALP_FLIP 入场冻结快照（key=strategyId-periodStartUnix-outcomeIndex），saveTriggerRecord 落库后即清。
+     * 除退出预设 JSON 外，冻结入场信号（modelSide/pWin/safeRatio/gap/remaining），使退出引擎的方向翻转止损
+     * (MODEL_FLIP 依赖 trigger.entryModelSide) 对 SCALP 生效，并填充触发记录/成交快照的入场信号列。
+     */
+    private val scalpEntrySnapshotCache: Cache<String, ScalpEntrySnapshot> = Caffeine.newBuilder()
+        .maximumSize(500)
+        .expireAfterWrite(java.time.Duration.ofHours(1))
+        .build()
+
     private data class TailDiffEntrySnapshot(
         val score: Int,
         val tier: TailDiffTier,
@@ -162,6 +176,25 @@ class CryptoTailStrategyExecutionService(
         val diffPct: BigDecimal?,
         val diffSigma: BigDecimal?,
         val modelProbSource: String?
+    )
+
+    /** SCALP_FLIP 入场冻结快照：退出预设 + 入场信号（价源不可用时信号字段为 null，graceful 降级与历史一致） */
+    private data class ScalpEntrySnapshot(
+        val exitPresetJson: String,
+        val modelSide: Int?,
+        val pWin: BigDecimal?,
+        val safeRatio: BigDecimal?,
+        val gap: BigDecimal?,
+        val remainingSeconds: Int?
+    )
+
+    /** SCALP_FLIP 入场信号（winProbTerminal 输出 + gap/remaining），用于冻结到 trigger 入场列 */
+    private data class ScalpEntrySignal(
+        val modelSide: Int,
+        val pWin: BigDecimal,
+        val safeRatio: BigDecimal,
+        val gap: BigDecimal,
+        val remainingSeconds: Int
     )
 
     /**
@@ -233,6 +266,8 @@ class CryptoTailStrategyExecutionService(
             TradingMode.BRACKET_DYNAMIC -> probabilityEntryEdge(strategy)
             // TAIL_DIFF 用自己的 minEdge；FAK 定价仍走 EV 安全限价复用 BARRIER 算式
             TradingMode.TAIL_DIFF -> strategy.tailDiffMinEdge
+            // SCALP_FLIP 不走 EV 安全限价定价路径（与 LEGACY 同走 computeBuyPrice），此处仅为穷举完整
+            TradingMode.SCALP_FLIP -> strategy.scalpMinEdge
             TradingMode.LEGACY_SPREAD -> BigDecimal.ZERO
         }
     }
@@ -243,6 +278,8 @@ class CryptoTailStrategyExecutionService(
             TradingMode.BRACKET_DYNAMIC -> probabilityMaxEntryPrice(strategy)
             // TAIL_DIFF 用 hardMaxPrice（更严的兜底；规则书"绝对禁止"上限）
             TradingMode.TAIL_DIFF -> strategy.tailDiffHardMaxPrice
+            // SCALP_FLIP 买入限价封顶
+            TradingMode.SCALP_FLIP -> strategy.scalpMaxFillPrice
             TradingMode.LEGACY_SPREAD -> BigDecimal(TRIGGER_FIXED_PRICE)
         }
     }
@@ -417,6 +454,7 @@ class CryptoTailStrategyExecutionService(
                     TradingMode.BARRIER_HOLD -> "障碍模式"
                     TradingMode.BRACKET_DYNAMIC -> "概率阶梯止盈"
                     TradingMode.TAIL_DIFF -> "尾盘价差"
+                    TradingMode.SCALP_FLIP -> "快进快出"
                     TradingMode.LEGACY_SPREAD -> if (strategy.spreadDirection == SpreadDirection.MAX) "最大价差" else "最小价差"
                 }
                 logger.info(
@@ -531,6 +569,51 @@ class CryptoTailStrategyExecutionService(
                             amountOverrideUsdc = decision.amountUsdc, metrics = null, scaling = null, preRefreshOrderbook = orderbook
                         )
                     }
+                    TradingMode.SCALP_FLIP -> {
+                        if (orderbook == null) {
+                            recordBarrierDecision(
+                                strategy, periodStartUnix, outcomeIndex,
+                                BarrierEval(false, "ORDERBOOK_STALE", "SCALP_FLIP 需要订单簿快照", orderbookPayload(null).toJson()),
+                                tokenIdForOutcome
+                            )
+                            return@accountLock
+                        }
+                        val eval = evaluateScalpEntryGates(strategy, periodStartUnix, outcomeIndex, bestBid, bestAsk, orderbook)
+                        recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval, tokenIdForOutcome)
+                        if (!eval.pass) return@accountLock
+                        val risk = cryptoTailRiskService.checkRiskGate(strategy)
+                        if (!risk.passed) {
+                            recordDecisionOncePerPeriod(
+                                strategy, periodStartUnix, "GATE_FAILED-${risk.gateName}", outcomeIndex,
+                                eventType = "GATE_FAILED", gateName = risk.gateName, passed = false, reason = risk.reason,
+                                payloadJson = mapOf("mode" to "SCALP_FLIP").toJson(),
+                                triggerId = null, tokenId = tokenIdForOutcome
+                            )
+                            return@accountLock
+                        }
+                        // 入场时冻结一份退出预设 + 入场信号到独立快照缓存，saveTriggerRecord 落库到 trigger；
+                        // 后续退出评估走 BracketExitService.decideTailDiffExit 读取该快照，策略表中途修改不影响在途持仓。
+                        // 冻结 modelSide 使退出引擎方向翻转止损(MODEL_FLIP)对 SCALP 生效；价源不可用时信号留空，graceful 降级。
+                        val scalpRemaining = (periodStartUnix + strategy.intervalSeconds - System.currentTimeMillis() / 1000).toInt()
+                        val scalpSignal = computeScalpEntrySignal(strategy, periodStartUnix, outcomeIndex, scalpRemaining)
+                        scalpEntrySnapshotCache.put(
+                            tailDiffSnapshotKey(strategy.id!!, periodStartUnix, outcomeIndex),
+                            ScalpEntrySnapshot(
+                                exitPresetJson = buildScalpExitPresetJson(strategy),
+                                modelSide = scalpSignal?.modelSide,
+                                pWin = scalpSignal?.pWin,
+                                safeRatio = scalpSignal?.safeRatio,
+                                gap = scalpSignal?.gap,
+                                remainingSeconds = scalpSignal?.remainingSeconds
+                            )
+                        )
+                        ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
+                        // 复用极简下单链路（与 LEGACY 同走 computeBuyPrice + FAK），bestAsk 用于买入限价计算
+                        placeOrderForTrigger(
+                            strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex, bestBid, bestAsk,
+                            amountOverrideUsdc = null, metrics = null, scaling = null, preRefreshOrderbook = orderbook
+                        )
+                    }
                     TradingMode.LEGACY_SPREAD -> {
                         if (!passSpreadCheck(strategy, periodStartUnix, outcomeIndex)) return@accountLock
                         ensurePeriodContext(strategy, periodStartUnix, tokenIds, marketTitle)
@@ -543,6 +626,267 @@ class CryptoTailStrategyExecutionService(
 
     private fun tailDiffSnapshotKey(strategyId: Long, periodStartUnix: Long, outcomeIndex: Int): String =
         "$strategyId-$periodStartUnix-$outcomeIndex"
+
+    // ===================== SCALP_FLIP（快进快出）进场与退出预设 =====================
+
+    /**
+     * 快进快出进场闸（极简）：时间窗口 + 盘口新鲜度 + 价格区间(按 bestAsk) + 退出流动性深度 + 同方向并发上限 + 可选反转率门槛。
+     * 不复用 BARRIER 的 pWin/EV/wick 闸，物理隔离；返回 metrics=null（SCALP 不走 EV 定价）。
+     */
+    private fun evaluateScalpEntryGates(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        bestBid: BigDecimal,
+        bestAsk: BigDecimal?,
+        orderbook: OrderbookQualitySnapshot
+    ): BarrierEval {
+        val nowMs = System.currentTimeMillis()
+        val nowSeconds = nowMs / 1000
+        val remainingSeconds = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toInt()
+        val elapsedSeconds = (nowSeconds - periodStartUnix).toInt()
+
+        // 1) 进场时间窗口
+        if (strategy.scalpWindowStartSeconds > 0 && elapsedSeconds < strategy.scalpWindowStartSeconds) {
+            return BarrierEval(false, "SCALP_WINDOW", "未到进场窗口起点: elapsed=${elapsedSeconds}s<${strategy.scalpWindowStartSeconds}s",
+                mapOf("elapsedSeconds" to elapsedSeconds, "windowStart" to strategy.scalpWindowStartSeconds).toJson())
+        }
+        if (strategy.scalpWindowEndSeconds > 0 && elapsedSeconds > strategy.scalpWindowEndSeconds) {
+            return BarrierEval(false, "SCALP_WINDOW", "已过进场窗口终点: elapsed=${elapsedSeconds}s>${strategy.scalpWindowEndSeconds}s",
+                mapOf("elapsedSeconds" to elapsedSeconds, "windowEnd" to strategy.scalpWindowEndSeconds).toJson())
+        }
+        if (strategy.scalpMinRemainingSeconds > 0 && remainingSeconds < strategy.scalpMinRemainingSeconds) {
+            return BarrierEval(false, "SCALP_MIN_REMAINING", "剩余不足: remaining=${remainingSeconds}s<${strategy.scalpMinRemainingSeconds}s",
+                mapOf("remainingSeconds" to remainingSeconds, "minRemaining" to strategy.scalpMinRemainingSeconds).toJson())
+        }
+
+        // 2) 盘口新鲜度（复用通用 maxOrderbookAgeMs）
+        val quoteAge = orderbook.quoteAgeMs(nowMs)
+        if (strategy.maxOrderbookAgeMs > 0 && quoteAge > strategy.maxOrderbookAgeMs) {
+            return BarrierEval(false, "ORDERBOOK_STALE", "订单簿过期: quoteAgeMs=$quoteAge>${strategy.maxOrderbookAgeMs}",
+                orderbookPayload(orderbook, nowMs).toJson())
+        }
+
+        // 3) 价格区间（按 bestAsk 判定买入价，∈[entryMin, entryMax]）
+        val ask = bestAsk ?: orderbook.bestAsk
+            ?: return BarrierEval(false, "SCALP_ASK_UNAVAILABLE", "盘口缺少 bestAsk，无法判定进场价", orderbookPayload(orderbook, nowMs).toJson())
+        if (ask < strategy.scalpEntryMinPrice || ask > strategy.scalpEntryMaxPrice) {
+            return BarrierEval(false, "SCALP_PRICE_OUT_OF_RANGE",
+                "bestAsk=${ask.toPlainString()}∉[${strategy.scalpEntryMinPrice.toPlainString()},${strategy.scalpEntryMaxPrice.toPlainString()}]",
+                orderbookPayload(orderbook, nowMs).toJson())
+        }
+
+        // 4) 退出流动性深度（确保可退出；null=不检查）
+        val minDepth = strategy.scalpMinExitBidDepthUsdc
+        if (minDepth != null && minDepth > BigDecimal.ZERO) {
+            val bidDepth = orderbook.bidDepthUsd ?: BigDecimal.ZERO
+            if (bidDepth < minDepth) {
+                return BarrierEval(false, "SCALP_EXIT_DEPTH_INSUFFICIENT",
+                    "卖盘深度不足: bidDepth=${bidDepth.toPlainString()}<${minDepth.toPlainString()}",
+                    orderbookPayload(orderbook, nowMs).toJson())
+            }
+        }
+
+        // 5) 同方向并发上限（NULL=不限制）
+        val maxConc = strategy.scalpMaxConcurrentSameDirection
+        if (maxConc != null && maxConc > 0) {
+            val openSameDir = triggerRepository.countByStrategyIdAndOutcomeIndexAndStatusAndResolvedFalse(strategy.id!!, outcomeIndex, "success")
+            if (openSameDir >= maxConc) {
+                return BarrierEval(false, "SCALP_MAX_CONCURRENT_SAME_DIRECTION",
+                    "同方向未结算敞口 $openSameDir>=$maxConc (outcomeIndex=$outcomeIndex)",
+                    mapOf("openSameDir" to openSameDir, "maxConcurrent" to maxConc, "outcomeIndex" to outcomeIndex).toJson())
+            }
+        }
+
+        // 6) 历史反转率门槛（可选）
+        if (strategy.scalpReversalGateEnabled) {
+            val (pass, reason) = evaluateScalpReversalGate(strategy, outcomeIndex, ask, periodStartUnix, remainingSeconds)
+            if (!pass) {
+                return BarrierEval(false, "SCALP_REVERSAL_GATE", reason,
+                    mapOf("bestAsk" to ask.toPlainString(), "remainingSeconds" to remainingSeconds).toJson())
+            }
+            return BarrierEval(true, "ALL", "SCALP 进场通过: bestAsk=${ask.toPlainString()} remaining=${remainingSeconds}s ($reason)",
+                orderbookPayload(orderbook, nowMs).toJson())
+        }
+        return BarrierEval(true, "ALL", "SCALP 进场通过: bestAsk=${ask.toPlainString()} remaining=${remainingSeconds}s (反转门槛关闭)",
+            orderbookPayload(orderbook, nowMs).toJson())
+    }
+
+    /**
+     * 反转率门槛：买 favorite（ask∈区间，odds>0.5）时领先方向=outcomeIndex，
+     * 查 model_prob（领先方向维持到结算的历史概率），>= scalpMinModelProb 且 edge 达标才放行。
+     * 数据源 HYBRID=POLYMARKET 优先回退 BINANCE；统计不可用时按 scalpRequireStats 决定拦截/降级放行。
+     */
+    private fun evaluateScalpReversalGate(
+        strategy: CryptoTailStrategy,
+        outcomeIndex: Int,
+        ask: BigDecimal,
+        periodStartUnix: Long,
+        remainingSeconds: Int
+    ): Pair<Boolean, String> {
+        val coin = inferScalpCoin(strategy)
+        val leadOutcome = outcomeIndex
+        val diffSigma = computeScalpDiffSigma(strategy, periodStartUnix, outcomeIndex, remainingSeconds) ?: BigDecimal.ZERO
+        val oddsBucket = TailDiffBuckets.oddsBucket(ask)
+        val remainingBucket = TailDiffBuckets.remainingBucket(remainingSeconds)
+        val result = queryScalpReversal(strategy.scalpStatsSource.uppercase(), coin, strategy, leadOutcome, diffSigma, oddsBucket, remainingBucket)
+        val statsAvailable = result.modelProb != null && result.sampleCount >= strategy.scalpStatsMinSamples
+        if (!statsAvailable) {
+            if (strategy.scalpRequireStats) {
+                return false to "反转率统计不可用(modelProb=${result.modelProb}, samples=${result.sampleCount}<${strategy.scalpStatsMinSamples}) 且 requireStats=true，拦截进场"
+            }
+            // F5 可观测性：降级为纯价格放行不是「门槛生效」而是「门槛失效兜底」，显式记一条决策事件（每周期一次），
+            // 避免运营误以为反转率筛选在起作用其实并未命中数据。requireStats=true 的拦截已由上层 GATE_FAILED 记录。
+            recordDecisionOncePerPeriod(
+                strategy, periodStartUnix, "SCALP_REVERSAL_DEGRADED", outcomeIndex,
+                eventType = "REVERSAL_DEGRADED", gateName = "SCALP_REVERSAL_GATE", passed = true,
+                reason = "反转率统计不可用(modelProb=${result.modelProb}, samples=${result.sampleCount}<${strategy.scalpStatsMinSamples}, source=${result.source})，已降级为纯价格区间放行（requireStats=false）",
+                payloadJson = mapOf(
+                    "coin" to (coin ?: ""),
+                    "leadOutcome" to leadOutcome,
+                    "diffSigma" to diffSigma.toPlainString(),
+                    "oddsBucket" to oddsBucket,
+                    "remainingBucket" to remainingBucket,
+                    "sampleCount" to result.sampleCount,
+                    "minSamples" to strategy.scalpStatsMinSamples,
+                    "statsSource" to strategy.scalpStatsSource,
+                    "requireStats" to strategy.scalpRequireStats
+                ).toJson(),
+                triggerId = null
+            )
+            return true to "反转率统计不可用(samples=${result.sampleCount})，降级为纯价格区间放行"
+        }
+        val modelProb = result.modelProb!!
+        if (modelProb < strategy.scalpMinModelProb) {
+            return false to "modelProb=${modelProb.toPlainString()}<${strategy.scalpMinModelProb.toPlainString()} (samples=${result.sampleCount}, source=${result.source})"
+        }
+        if (strategy.scalpMinEdge > BigDecimal.ZERO) {
+            val edge = modelProb.subtract(ask)
+            if (edge < strategy.scalpMinEdge) {
+                return false to "edge=${edge.toPlainString()}<${strategy.scalpMinEdge.toPlainString()} (modelProb=${modelProb.toPlainString()}, ask=${ask.toPlainString()})"
+            }
+        }
+        return true to "modelProb=${modelProb.toPlainString()}>=${strategy.scalpMinModelProb.toPlainString()} (samples=${result.sampleCount}, source=${result.source})"
+    }
+
+    /** HYBRID=POLYMARKET 优先样本不足回退 BINANCE；POLYMARKET/BINANCE 单源直查。 */
+    private fun queryScalpReversal(
+        source: String,
+        coin: String?,
+        strategy: CryptoTailStrategy,
+        leadOutcome: Int,
+        diffSigma: BigDecimal,
+        oddsBucket: String,
+        remainingBucket: String
+    ): TailReversalStatsLookup.Result {
+        fun q(ds: String) = reversalStatsLookup.queryReversalProb(
+            TailReversalStatsLookup.Query(
+                coin = coin,
+                intervalSeconds = strategy.intervalSeconds,
+                leadOutcome = leadOutcome,
+                diffSigma = diffSigma,
+                oddsBucket = oddsBucket,
+                remainingBucket = remainingBucket,
+                lookbackDays = strategy.scalpStatsLookbackDays,
+                dataSource = ds
+            )
+        )
+        return when (source) {
+            "POLYMARKET" -> q("POLYMARKET")
+            "BINANCE" -> q("BINANCE")
+            else -> {
+                val poly = q("POLYMARKET")
+                if (poly.modelProb != null && poly.sampleCount >= strategy.scalpStatsMinSamples) poly else q("BINANCE")
+            }
+        }
+    }
+
+    /** 尽力计算 diff_sigma（领先优势 σ 数），用于 BINANCE 桶精确匹配；价源未就绪返回 null（POLYMARKET 走 ANY 不依赖）。 */
+    private fun computeScalpDiffSigma(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        remainingSeconds: Int
+    ): BigDecimal? = computeScalpEntrySignal(strategy, periodStartUnix, outcomeIndex, remainingSeconds)?.safeRatio
+
+    /**
+     * 尽力计算 SCALP 入场信号（modelSide/pWin/safeRatio/gap/remaining），复用 BARRIER 内核 winProbTerminal。
+     * 价源未就绪返回 null（与历史 graceful 降级一致：信号列留空，不阻断进场）。
+     */
+    private fun computeScalpEntrySignal(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        remainingSeconds: Int
+    ): ScalpEntrySignal? {
+        if (remainingSeconds <= 0) return null
+        if (!periodPriceProvider.isAvailable(strategy.marketSlugPrefix)) return null
+        val oc = periodPriceProvider.getCurrentOpenClose(strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix) ?: return null
+        val (openP, closeP) = oc
+        val gap = closeP.subtract(openP)
+        val sigma = periodPriceProvider.getSigmaPerSqrtS(
+            strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix,
+            outcomeIndex, strategy.sigmaScale, strategy.sigmaMethod, strategy.ewmaLambda
+        ) ?: return null
+        val r = BarrierProbability.winProbTerminal(gap, sigma, remainingSeconds.toDouble()) ?: return null
+        return ScalpEntrySignal(
+            modelSide = r.side,
+            pWin = r.pWin,
+            safeRatio = r.safeRatio,
+            gap = gap,
+            remainingSeconds = remainingSeconds
+        )
+    }
+
+    private fun inferScalpCoin(strategy: CryptoTailStrategy): String? {
+        val slug = strategy.marketSlugPrefix.lowercase()
+        return when {
+            slug.contains("btc") -> "BTC"
+            slug.contains("eth") -> "ETH"
+            else -> null
+        }
+    }
+
+    /**
+     * 入场冻结一份退出预设 JSON：
+     *  - hold_to_expiry 恒为 false（确保 stop_loss + dynamic_exit 始终被评估）；
+     *  - tp_limit.enabled = !scalpHoldWinnerToSettle：true=挂止盈(scalpTpPrice)，false=不挂(赢单持有到结算拿 1.0)；
+     *  - stop_loss = 价位止损(回撤 offset + 绝对地板 minPrice)；
+     *  - dynamic_exit = 标的方向(diff_sigma 跌破)/反抽速度/minOdds 软止损。
+     * 退出评估走 CryptoTailBracketExitService.decideTailDiffExit 读取该快照。
+     */
+    private fun buildScalpExitPresetJson(strategy: CryptoTailStrategy): String {
+        val preset = TailDiffExitPreset(
+            holdToExpiry = false,
+            tpLimit = TailDiffExitPreset.TpLimit(
+                enabled = !strategy.scalpHoldWinnerToSettle,
+                price = strategy.scalpTpPrice,
+                ratio = BigDecimal.ONE
+            ),
+            stopLoss = TailDiffExitPreset.StopLoss(
+                enabled = strategy.scalpStopEnabled,
+                offset = strategy.scalpStopOffset,
+                minPrice = strategy.scalpStopMinPrice,
+                ratio = BigDecimal.ONE
+            ),
+            dynamicExit = TailDiffExitPreset.DynamicExit(
+                enabled = strategy.scalpUnderlyingStopEnabled || strategy.scalpReverseVelocityStopEnabled ||
+                    strategy.scalpMinOddsAfterEntry > BigDecimal.ZERO ||
+                    strategy.scalpMinModelProbAfterEntry > BigDecimal.ZERO ||
+                    strategy.scalpMaxDiffRetracePct > BigDecimal.ZERO,
+                minDiffSigmaAfterEntry = if (strategy.scalpUnderlyingStopEnabled) strategy.scalpUnderlyingStopSigma else BigDecimal.ZERO,
+                maxDiffRetracePct = strategy.scalpMaxDiffRetracePct,
+                minModelProbAfterEntry = strategy.scalpMinModelProbAfterEntry,
+                minOddsAfterEntry = strategy.scalpMinOddsAfterEntry,
+                maxReverseVelocitySigma = if (strategy.scalpReverseVelocityStopEnabled) strategy.scalpMaxReverseVelocitySigma else BigDecimal.ZERO,
+                catastropheBidFloor = BigDecimal.ZERO,
+                maxDrawdownPct = BigDecimal.ZERO,
+                catastropheImmediate = false
+            ),
+            execution = TailDiffExitPreset.Execution()
+        )
+        return preset.toMap().toJson()
+    }
 
     /** 障碍模式闸评估结果 */
     private data class BarrierEval(
@@ -1243,6 +1587,8 @@ class CryptoTailStrategyExecutionService(
                 orderbook
             )
             TradingMode.LEGACY_SPREAD -> BarrierEval(true, "ALL", "旧价差模式不走概率入场闸", null)
+            // SCALP_FLIP 与 LEGACY 一样走极简进场（跳过概率/EV 复核），进场闸已在 dispatch 分支独立把关
+            TradingMode.SCALP_FLIP -> BarrierEval(true, "ALL", "快进快出模式不走概率入场闸", null)
         }
     }
 
@@ -1659,6 +2005,13 @@ class CryptoTailStrategyExecutionService(
                     .setScale(4, RoundingMode.UP)
                     .min(strategy.tailDiffHardMaxPrice)
             }
+            TradingMode.SCALP_FLIP -> {
+                // 快进快出 FAK 进场：cost = bestAsk(缺则 triggerPrice+小缓冲) + entryFakSlippage，封顶 scalpMaxFillPrice
+                val effectiveCost = bestAsk ?: triggerPrice.add(strategy.costBuffer)
+                effectiveCost.add(strategy.entryFakSlippage)
+                    .setScale(4, RoundingMode.UP)
+                    .min(strategy.scalpMaxFillPrice)
+            }
             TradingMode.LEGACY_SPREAD -> {
                 if (strategy.spreadDirection == SpreadDirection.MAX) {
                     triggerPrice.add(BigDecimal(SPREAD_MAX_PRICE_ADJUSTMENT)).setScale(8, RoundingMode.HALF_UP)
@@ -1897,7 +2250,9 @@ class CryptoTailStrategyExecutionService(
             }
 
             // 根据模式确定下单价格（FAK 吃单）
-            val refreshedOrderbook = if (strategy.mode != TradingMode.LEGACY_SPREAD) {
+            // SCALP_FLIP 与 LEGACY 一样走极简进场：不做发单前 REST 盘口复核与概率/EV 闸，
+            // 进场质量已在 dispatch 的 SCALP 分支用 WS 盘口把关（价格区间/窗口/深度/反转率/并发），避免被概率快路径牵连。
+            val refreshedOrderbook = if (strategy.mode != TradingMode.LEGACY_SPREAD && strategy.mode != TradingMode.SCALP_FLIP) {
                 orderbookSnapshotFetcher.fetch(ctx.clobApi, tokenId) ?: run {
                     recordBarrierDecision(
                         strategy,
@@ -2492,6 +2847,17 @@ class CryptoTailStrategyExecutionService(
         val tailDiffSnap = if (strategy.mode == TradingMode.TAIL_DIFF) {
             tailDiffEntrySnapshotCache.getIfPresent(tailDiffSnapshotKey(strategy.id!!, periodStartUnix, outcomeIndex))
         } else null
+        // SCALP_FLIP：从独立快照取出入场冻结的退出预设 + 入场信号（写入 trigger，供退出引擎/监控读取）
+        val scalpSnap = if (strategy.mode == TradingMode.SCALP_FLIP) {
+            scalpEntrySnapshotCache.getIfPresent(tailDiffSnapshotKey(strategy.id!!, periodStartUnix, outcomeIndex))
+        } else null
+        val scalpExitPresetJson = scalpSnap?.exitPresetJson?.takeIf { it.isNotBlank() }
+        // SCALP 入场信号优先用调用方传入（恒为 null），回退到冻结快照，使方向翻转止损生效 + 填充监控列
+        val effEntryModelSide = entryModelSide ?: scalpSnap?.modelSide
+        val effEntryPWin = entryPWin ?: scalpSnap?.pWin
+        val effEntrySafeRatio = entrySafeRatio ?: scalpSnap?.safeRatio
+        val effEntryGap = entryGap ?: scalpSnap?.gap
+        val effEntryRemainingSeconds = entryRemainingSeconds ?: scalpSnap?.remainingSeconds
         val record = CryptoTailStrategyTrigger(
             strategyId = strategy.id!!,
             periodStartUnix = periodStartUnix,
@@ -2512,24 +2878,29 @@ class CryptoTailStrategyExecutionService(
             remainingSize = remainingSize,
             exitStatus = exitStatus,
             entryFillPrice = entryFillPrice,
-            entryModelSide = entryModelSide,
-            entryPWin = entryPWin,
-            entrySafeRatio = entrySafeRatio,
-            entryGap = entryGap,
-            entryRemainingSeconds = entryRemainingSeconds,
+            entryModelSide = effEntryModelSide,
+            entryPWin = effEntryPWin,
+            entrySafeRatio = effEntrySafeRatio,
+            entryGap = effEntryGap,
+            entryRemainingSeconds = effEntryRemainingSeconds,
             peakBid = peakBid,
             score = tailDiffSnap?.score,
             tier = tailDiffSnap?.tier?.label,
-            exitPresetJson = tailDiffSnap?.exitPresetJson?.takeIf { it.isNotBlank() },
+            exitPresetJson = tailDiffSnap?.exitPresetJson?.takeIf { it.isNotBlank() } ?: scalpExitPresetJson,
             rawDiff = tailDiffSnap?.rawDiff,
             diffPct = tailDiffSnap?.diffPct,
-            diffSigma = tailDiffSnap?.diffSigma,
+            // SCALP 用冻结的 safeRatio 作为 diff_sigma（监控/复盘一致；其退出预设 maxDiffRetracePct=0，不改变退出行为）
+            diffSigma = tailDiffSnap?.diffSigma ?: scalpSnap?.safeRatio,
             modelProbSource = tailDiffSnap?.modelProbSource
         )
         val saved = triggerRepository.save(record)
         // 落库成功后清理 TAIL_DIFF 决策快照（每周期入场一次即用即清）
         if (tailDiffSnap != null) {
             tailDiffEntrySnapshotCache.invalidate(tailDiffSnapshotKey(strategy.id!!, periodStartUnix, outcomeIndex))
+        }
+        // 落库成功后清理 SCALP_FLIP 入场冻结快照
+        if (scalpSnap != null) {
+            scalpEntrySnapshotCache.invalidate(tailDiffSnapshotKey(strategy.id!!, periodStartUnix, outcomeIndex))
         }
         // 非旧价差模式（BARRIER/BRACKET）记录下单结果到决策日志（链路终点锚点）
         if (strategy.mode != TradingMode.LEGACY_SPREAD) {

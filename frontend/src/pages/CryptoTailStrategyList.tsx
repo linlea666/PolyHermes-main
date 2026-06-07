@@ -40,7 +40,7 @@ import CryptoTailReversalResearchModal from './CryptoTailReversalResearchModal'
 import CryptoTailTailDiffAdvisorModal from './CryptoTailTailDiffAdvisorModal'
 import TailDiffEntrySegmentsField from '../components/TailDiffEntrySegmentsField'
 import TailDiffExitPresetField from '../components/TailDiffExitPresetField'
-import type { CryptoTailTailDiffParams, CryptoTailTailDiffPreviewResponse } from '../types'
+import type { CryptoTailTailDiffParams, CryptoTailScalpParams, CryptoTailTailDiffPreviewResponse } from '../types'
 
 /** 尾盘价差模式（TAIL_DIFF, V62）表单默认值，与后端 V62 SQL / 实体默认保持一致 */
 const TAIL_DIFF_DEFAULTS = {
@@ -103,6 +103,70 @@ const TAIL_DIFF_DEFAULTS = {
   tailDiffKellyFraction: '0.10',
   tailDiffDepthFillRatio: '0'
 }
+
+/** 快进快出模式（SCALP_FLIP, V77）表单默认值，与后端 V77 SQL / 实体默认保持一致 */
+const SCALP_DEFAULTS = {
+  scalpEntryMinPrice: '0.96',
+  scalpEntryMaxPrice: '0.97',
+  scalpMaxFillPrice: '0.975',
+  scalpWindowStartSeconds: 0,
+  scalpWindowEndSeconds: 0,
+  scalpMinRemainingSeconds: 30,
+  scalpMinExitBidDepthUsdc: undefined as string | undefined,
+  scalpReversalGateEnabled: true,
+  scalpMinModelProb: '0.95',
+  scalpMinEdge: '0',
+  scalpStatsSource: 'HYBRID',
+  scalpStatsLookbackDays: 180,
+  scalpStatsMinSamples: 30,
+  scalpRequireStats: false,
+  scalpMaxConcurrentSameDirection: undefined as number | undefined,
+  scalpHoldWinnerToSettle: true,
+  scalpTpPrice: '0.99',
+  scalpStopEnabled: true,
+  scalpStopOffset: '0.05',
+  scalpStopMinPrice: '0.90',
+  scalpMinOddsAfterEntry: '0.93',
+  scalpUnderlyingStopEnabled: true,
+  scalpUnderlyingStopSigma: '0.30',
+  scalpReverseVelocityStopEnabled: true,
+  scalpMaxReverseVelocitySigma: '0.40',
+  scalpReverseVelocityWindowSeconds: 10,
+  scalpMinModelProbAfterEntry: '0',
+  scalpMaxDiffRetracePct: '0'
+}
+
+/** 编辑态：用 record 已存值回填表单，缺失走默认值 */
+const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAULTS => ({
+  scalpEntryMinPrice: record.scalpEntryMinPrice ?? SCALP_DEFAULTS.scalpEntryMinPrice,
+  scalpEntryMaxPrice: record.scalpEntryMaxPrice ?? SCALP_DEFAULTS.scalpEntryMaxPrice,
+  scalpMaxFillPrice: record.scalpMaxFillPrice ?? SCALP_DEFAULTS.scalpMaxFillPrice,
+  scalpWindowStartSeconds: record.scalpWindowStartSeconds ?? SCALP_DEFAULTS.scalpWindowStartSeconds,
+  scalpWindowEndSeconds: record.scalpWindowEndSeconds ?? SCALP_DEFAULTS.scalpWindowEndSeconds,
+  scalpMinRemainingSeconds: record.scalpMinRemainingSeconds ?? SCALP_DEFAULTS.scalpMinRemainingSeconds,
+  scalpMinExitBidDepthUsdc: record.scalpMinExitBidDepthUsdc ?? SCALP_DEFAULTS.scalpMinExitBidDepthUsdc,
+  scalpReversalGateEnabled: record.scalpReversalGateEnabled ?? SCALP_DEFAULTS.scalpReversalGateEnabled,
+  scalpMinModelProb: record.scalpMinModelProb ?? SCALP_DEFAULTS.scalpMinModelProb,
+  scalpMinEdge: record.scalpMinEdge ?? SCALP_DEFAULTS.scalpMinEdge,
+  scalpStatsSource: record.scalpStatsSource ?? SCALP_DEFAULTS.scalpStatsSource,
+  scalpStatsLookbackDays: record.scalpStatsLookbackDays ?? SCALP_DEFAULTS.scalpStatsLookbackDays,
+  scalpStatsMinSamples: record.scalpStatsMinSamples ?? SCALP_DEFAULTS.scalpStatsMinSamples,
+  scalpRequireStats: record.scalpRequireStats ?? SCALP_DEFAULTS.scalpRequireStats,
+  scalpMaxConcurrentSameDirection: record.scalpMaxConcurrentSameDirection ?? SCALP_DEFAULTS.scalpMaxConcurrentSameDirection,
+  scalpHoldWinnerToSettle: record.scalpHoldWinnerToSettle ?? SCALP_DEFAULTS.scalpHoldWinnerToSettle,
+  scalpTpPrice: record.scalpTpPrice ?? SCALP_DEFAULTS.scalpTpPrice,
+  scalpStopEnabled: record.scalpStopEnabled ?? SCALP_DEFAULTS.scalpStopEnabled,
+  scalpStopOffset: record.scalpStopOffset ?? SCALP_DEFAULTS.scalpStopOffset,
+  scalpStopMinPrice: record.scalpStopMinPrice ?? SCALP_DEFAULTS.scalpStopMinPrice,
+  scalpMinOddsAfterEntry: record.scalpMinOddsAfterEntry ?? SCALP_DEFAULTS.scalpMinOddsAfterEntry,
+  scalpUnderlyingStopEnabled: record.scalpUnderlyingStopEnabled ?? SCALP_DEFAULTS.scalpUnderlyingStopEnabled,
+  scalpUnderlyingStopSigma: record.scalpUnderlyingStopSigma ?? SCALP_DEFAULTS.scalpUnderlyingStopSigma,
+  scalpReverseVelocityStopEnabled: record.scalpReverseVelocityStopEnabled ?? SCALP_DEFAULTS.scalpReverseVelocityStopEnabled,
+  scalpMaxReverseVelocitySigma: record.scalpMaxReverseVelocitySigma ?? SCALP_DEFAULTS.scalpMaxReverseVelocitySigma,
+  scalpReverseVelocityWindowSeconds: record.scalpReverseVelocityWindowSeconds ?? SCALP_DEFAULTS.scalpReverseVelocityWindowSeconds,
+  scalpMinModelProbAfterEntry: record.scalpMinModelProbAfterEntry ?? SCALP_DEFAULTS.scalpMinModelProbAfterEntry,
+  scalpMaxDiffRetracePct: record.scalpMaxDiffRetracePct ?? SCALP_DEFAULTS.scalpMaxDiffRetracePct
+})
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
 const buildTailDiffFormValues = (record: CryptoTailStrategyDto): typeof TAIL_DIFF_DEFAULTS => ({
@@ -252,6 +316,40 @@ const buildTailDiffPayload = (v: Record<string, unknown>): CryptoTailTailDiffPar
   tailDiffEnableKellyCap: typeof v.tailDiffEnableKellyCap === 'boolean' ? v.tailDiffEnableKellyCap : undefined,
   tailDiffKellyFraction: strOrUndef(v.tailDiffKellyFraction),
   tailDiffDepthFillRatio: strOrUndef(v.tailDiffDepthFillRatio)
+})
+
+/** 提交态：把表单值转换为后端 create/update 接受的 SCALP_FLIP 参数 */
+const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams => ({
+  scalpEntryMinPrice: strOrUndef(v.scalpEntryMinPrice),
+  scalpEntryMaxPrice: strOrUndef(v.scalpEntryMaxPrice),
+  scalpMaxFillPrice: strOrUndef(v.scalpMaxFillPrice),
+  scalpWindowStartSeconds: numOrUndef(v.scalpWindowStartSeconds),
+  scalpWindowEndSeconds: numOrUndef(v.scalpWindowEndSeconds),
+  scalpMinRemainingSeconds: numOrUndef(v.scalpMinRemainingSeconds),
+  // 可空：空发 ''（后端三态显式清空置 NULL）
+  scalpMinExitBidDepthUsdc: strOrEmpty(v.scalpMinExitBidDepthUsdc),
+  scalpReversalGateEnabled: typeof v.scalpReversalGateEnabled === 'boolean' ? v.scalpReversalGateEnabled : undefined,
+  scalpMinModelProb: strOrUndef(v.scalpMinModelProb),
+  scalpMinEdge: strOrUndef(v.scalpMinEdge),
+  scalpStatsSource: strOrUndef(v.scalpStatsSource),
+  scalpStatsLookbackDays: numOrUndef(v.scalpStatsLookbackDays),
+  scalpStatsMinSamples: numOrUndef(v.scalpStatsMinSamples),
+  scalpRequireStats: typeof v.scalpRequireStats === 'boolean' ? v.scalpRequireStats : undefined,
+  // 可空：空发 null（后端 resolveNullableIntUpdate 显式清空）
+  scalpMaxConcurrentSameDirection: v.scalpMaxConcurrentSameDirection != null && v.scalpMaxConcurrentSameDirection !== '' ? Number(v.scalpMaxConcurrentSameDirection) : null,
+  scalpHoldWinnerToSettle: typeof v.scalpHoldWinnerToSettle === 'boolean' ? v.scalpHoldWinnerToSettle : undefined,
+  scalpTpPrice: strOrUndef(v.scalpTpPrice),
+  scalpStopEnabled: typeof v.scalpStopEnabled === 'boolean' ? v.scalpStopEnabled : undefined,
+  scalpStopOffset: strOrUndef(v.scalpStopOffset),
+  scalpStopMinPrice: strOrUndef(v.scalpStopMinPrice),
+  scalpMinOddsAfterEntry: strOrUndef(v.scalpMinOddsAfterEntry),
+  scalpUnderlyingStopEnabled: typeof v.scalpUnderlyingStopEnabled === 'boolean' ? v.scalpUnderlyingStopEnabled : undefined,
+  scalpUnderlyingStopSigma: strOrUndef(v.scalpUnderlyingStopSigma),
+  scalpReverseVelocityStopEnabled: typeof v.scalpReverseVelocityStopEnabled === 'boolean' ? v.scalpReverseVelocityStopEnabled : undefined,
+  scalpMaxReverseVelocitySigma: strOrUndef(v.scalpMaxReverseVelocitySigma),
+  scalpReverseVelocityWindowSeconds: numOrUndef(v.scalpReverseVelocityWindowSeconds),
+  scalpMinModelProbAfterEntry: strOrUndef(v.scalpMinModelProbAfterEntry),
+  scalpMaxDiffRetracePct: strOrUndef(v.scalpMaxDiffRetracePct)
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -593,7 +691,8 @@ const CryptoTailStrategyList: React.FC = () => {
       maxOrdersPerDay: undefined,
       maxConsecutiveLosses: undefined,
       pauseAfterLossMinutes: 0,
-      ...TAIL_DIFF_DEFAULTS
+      ...TAIL_DIFF_DEFAULTS,
+      ...SCALP_DEFAULTS
     })
     setFormModalOpen(true)
   }
@@ -717,7 +816,8 @@ const CryptoTailStrategyList: React.FC = () => {
       maxOrdersPerDay: record.maxOrdersPerDay ?? undefined,
       maxConsecutiveLosses: record.maxConsecutiveLosses ?? undefined,
       pauseAfterLossMinutes: record.pauseAfterLossMinutes ?? 0,
-      ...buildTailDiffFormValues(record)
+      ...buildTailDiffFormValues(record),
+      ...buildScalpFormValues(record)
     })
     setFormModalOpen(true)
   }
@@ -818,8 +918,9 @@ const CryptoTailStrategyList: React.FC = () => {
       }
       const resolvedMode: number = typeof v.mode === 'number' ? v.mode : (v.barrierEnabled === true ? 1 : 0)
       const tailDiffOn = resolvedMode === 3
-      // TAIL_DIFF 与障碍/阶梯一致：旧价格区间/价差闸不生效，由 tailDiff 自有阈值管控
-      const probabilityMode = resolvedMode === 1 || resolvedMode === 2 || resolvedMode === 3
+      const scalpOn = resolvedMode === 4
+      // 概率/价差等非旧价差模式：旧价格区间/价差闸不生效，由各模式自有阈值管控（SCALP 用 scalp_* 价格区间）
+      const probabilityMode = resolvedMode === 1 || resolvedMode === 2 || resolvedMode === 3 || resolvedMode === 4
       const barrierOn = resolvedMode === 1
       const bracketOn = resolvedMode === 2
       // TAIL_DIFF 入场前权重之和必须为 100，前端先校验，避免后端 4xxx 报错难定位
@@ -835,6 +936,8 @@ const CryptoTailStrategyList: React.FC = () => {
         }
       }
       const tailDiffParams = tailDiffOn ? buildTailDiffPayload(v) : {}
+      // SCALP_FLIP：退出复用 BRACKET/TAIL_DIFF 引擎，必须开启持仓退出管理器，否则止盈/止损不评估
+      const scalpParams = scalpOn ? { ...buildScalpPayload(v), enableExitManager: true } : {}
       // 障碍/阶梯模式：旧价格区间/价差闸不生效，统一存默认值
       const bracketParams = bracketOn ? {
         bracketEntryProb: v.bracketEntryProb != null ? String(v.bracketEntryProb) : undefined,
@@ -942,7 +1045,8 @@ const CryptoTailStrategyList: React.FC = () => {
           kellyFraction: v.kellyFraction != null ? String(v.kellyFraction) : undefined
         } : {}),
         ...bracketParams,
-        ...tailDiffParams
+        ...tailDiffParams,
+        ...scalpParams
       }
       const payload = {
         accountId: v.accountId as number,
@@ -1336,14 +1440,16 @@ const CryptoTailStrategyList: React.FC = () => {
       ellipsis: true,
       render: (name: string | undefined, r: CryptoTailStrategyDto) => {
         const recordMode = typeof r.mode === 'number' ? r.mode : (r.barrierEnabled ? 1 : 0)
-        const tagColor = recordMode === 3 ? 'volcano' : recordMode === 2 ? 'purple' : recordMode === 1 ? 'geekblue' : 'default'
-        const tagKey = recordMode === 3
-          ? 'cryptoTailStrategy.form.modeTailDiff'
-          : recordMode === 2
-            ? 'cryptoTailStrategy.form.modeBracket'
-            : recordMode === 1
-              ? 'cryptoTailStrategy.form.modeBarrier'
-              : 'cryptoTailStrategy.form.modeLegacy'
+        const tagColor = recordMode === 4 ? 'gold' : recordMode === 3 ? 'volcano' : recordMode === 2 ? 'purple' : recordMode === 1 ? 'geekblue' : 'default'
+        const tagKey = recordMode === 4
+          ? 'cryptoTailStrategy.form.modeScalp'
+          : recordMode === 3
+            ? 'cryptoTailStrategy.form.modeTailDiff'
+            : recordMode === 2
+              ? 'cryptoTailStrategy.form.modeBracket'
+              : recordMode === 1
+                ? 'cryptoTailStrategy.form.modeBarrier'
+                : 'cryptoTailStrategy.form.modeLegacy'
         return (
           <Space size={4} direction="vertical" style={{ display: 'inline-flex', maxWidth: '100%' }}>
             <Typography.Text strong style={{ wordBreak: 'break-word', whiteSpace: 'normal' }}>
@@ -1545,9 +1651,10 @@ const CryptoTailStrategyList: React.FC = () => {
   const isBarrierMode = mode === 1
   const isBracketMode = mode === 2
   const isTailDiffMode = mode === 3
+  const isScalpMode = mode === 4
   const barrierEnabled = isBarrierMode || isBracketMode
-  // 旧价差/价格区间字段仅在 LEGACY 模式展示；障碍/阶梯/尾盘价差均有各自的入场闸
-  const legacyMode = !barrierEnabled && !isTailDiffMode
+  // 旧价差/价格区间字段仅在 LEGACY 模式展示；障碍/阶梯/尾盘价差/快进快出均有各自的入场闸
+  const legacyMode = !barrierEnabled && !isTailDiffMode && !isScalpMode
   const entryOrderType = Form.useWatch('entryOrderType', form)
   const calibrationGateEnabled = Form.useWatch('calibrationGateEnabled', form)
   const sigmaMethod = Form.useWatch('sigmaMethod', form)
@@ -1920,6 +2027,7 @@ const CryptoTailStrategyList: React.FC = () => {
               <Radio value={1}>{t('cryptoTailStrategy.form.modeBarrier')}</Radio>
               <Radio value={2}>{t('cryptoTailStrategy.form.modeBracket')}</Radio>
               <Radio value={3}>{t('cryptoTailStrategy.form.modeTailDiff')}</Radio>
+              <Radio value={4}>{t('cryptoTailStrategy.form.modeScalp')}</Radio>
             </Radio.Group>
           </Form.Item>
           <Form.Item name="barrierEnabled" hidden valuePropName="checked">
@@ -3171,6 +3279,128 @@ const CryptoTailStrategyList: React.FC = () => {
                   }
                 />
               )}
+            </>
+          )}
+          {isScalpMode && (
+            <>
+              <Form.Item style={{ marginBottom: 12 }}>
+                <Typography.Text strong>{t('cryptoTailStrategy.form.scalpSection')}</Typography.Text>
+              </Form.Item>
+              <Alert type="info" showIcon style={{ marginBottom: 16 }} message={t('cryptoTailStrategy.form.scalpInfo')} />
+
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpEntrySubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpEntryMinPrice" label={t('cryptoTailStrategy.form.scalpEntryMinPrice')} rules={[{ required: true }]}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpEntryMaxPrice" label={t('cryptoTailStrategy.form.scalpEntryMaxPrice')} rules={[{ required: true }]}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpMaxFillPrice" label={t('cryptoTailStrategy.form.scalpMaxFillPrice')} extra={t('cryptoTailStrategy.form.scalpMaxFillPriceHint')} rules={[{ required: true }]}>
+                <InputNumber min={0} max={1} step={0.005} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpMinExitBidDepthUsdc" label={t('cryptoTailStrategy.form.scalpMinExitBidDepthUsdc')} extra={t('cryptoTailStrategy.form.scalpMinExitBidDepthHint')}>
+                <InputNumber min={0} step={1} style={{ width: '100%' }} addonBefore="$" placeholder={t('cryptoTailStrategy.form.scalpOptionalPlaceholder')} stringMode />
+              </Form.Item>
+
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpWindowSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpWindowStartSeconds" label={t('cryptoTailStrategy.form.scalpWindowStartSeconds')} extra={t('cryptoTailStrategy.form.scalpWindowStartHint')} rules={[{ required: true }]}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpWindowEndSeconds" label={t('cryptoTailStrategy.form.scalpWindowEndSeconds')} extra={t('cryptoTailStrategy.form.scalpWindowEndHint')} rules={[{ required: true }]}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpMinRemainingSeconds" label={t('cryptoTailStrategy.form.scalpMinRemainingSeconds')} extra={t('cryptoTailStrategy.form.scalpMinRemainingHint')} rules={[{ required: true }]}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpReversalSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpReversalGateEnabled" label={t('cryptoTailStrategy.form.scalpReversalGateEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpReversalGateHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpMinModelProb" label={t('cryptoTailStrategy.form.scalpMinModelProb')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpMinEdge" label={t('cryptoTailStrategy.form.scalpMinEdge')} extra={t('cryptoTailStrategy.form.scalpMinEdgeHint')}>
+                <InputNumber min={0} max={1} step={0.005} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpStatsSource" label={t('cryptoTailStrategy.form.scalpStatsSource')}>
+                <Select
+                  options={[
+                    { label: t('cryptoTailStrategy.form.scalpStatsSourceHybrid'), value: 'HYBRID' },
+                    { label: 'POLYMARKET', value: 'POLYMARKET' },
+                    { label: 'BINANCE', value: 'BINANCE' }
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item name="scalpStatsLookbackDays" label={t('cryptoTailStrategy.form.scalpStatsLookbackDays')}>
+                <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} addonAfter="d" />
+              </Form.Item>
+              <Form.Item name="scalpStatsMinSamples" label={t('cryptoTailStrategy.form.scalpStatsMinSamples')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="scalpRequireStats" label={t('cryptoTailStrategy.form.scalpRequireStats')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpRequireStatsHint')}>
+                <Switch />
+              </Form.Item>
+
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpConcurrencySubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpMaxConcurrentSameDirection" label={t('cryptoTailStrategy.form.scalpMaxConcurrentSameDirection')} extra={t('cryptoTailStrategy.form.scalpMaxConcurrentHint')}>
+                <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} placeholder={t('cryptoTailStrategy.form.scalpOptionalPlaceholder')} />
+              </Form.Item>
+
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpExitModeSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpHoldWinnerToSettle" label={t('cryptoTailStrategy.form.scalpHoldWinnerToSettle')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpHoldWinnerToSettleHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpTpPrice" label={t('cryptoTailStrategy.form.scalpTpPrice')} extra={t('cryptoTailStrategy.form.scalpTpPriceHint')}>
+                <InputNumber min={0} max={1} step={0.005} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpStopSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpStopEnabled" label={t('cryptoTailStrategy.form.scalpStopEnabled')} valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpStopOffset" label={t('cryptoTailStrategy.form.scalpStopOffset')} extra={t('cryptoTailStrategy.form.scalpStopOffsetHint')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpStopMinPrice" label={t('cryptoTailStrategy.form.scalpStopMinPrice')} extra={t('cryptoTailStrategy.form.scalpStopMinPriceHint')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpMinOddsAfterEntry" label={t('cryptoTailStrategy.form.scalpMinOddsAfterEntry')} extra={t('cryptoTailStrategy.form.scalpMinOddsAfterEntryHint')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpUnderlyingStopEnabled" label={t('cryptoTailStrategy.form.scalpUnderlyingStopEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpUnderlyingStopHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpUnderlyingStopSigma" label={t('cryptoTailStrategy.form.scalpUnderlyingStopSigma')}>
+                <InputNumber min={0} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpReverseVelocityStopEnabled" label={t('cryptoTailStrategy.form.scalpReverseVelocityStopEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpReverseVelocityHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpMaxReverseVelocitySigma" label={t('cryptoTailStrategy.form.scalpMaxReverseVelocitySigma')}>
+                <InputNumber min={0} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpReverseVelocityWindowSeconds" label={t('cryptoTailStrategy.form.scalpReverseVelocityWindowSeconds')}>
+                <InputNumber min={1} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpMinModelProbAfterEntry" label={t('cryptoTailStrategy.form.scalpMinModelProbAfterEntry')} extra={t('cryptoTailStrategy.form.scalpMinModelProbAfterEntryHint')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpMaxDiffRetracePct" label={t('cryptoTailStrategy.form.scalpMaxDiffRetracePct')} extra={t('cryptoTailStrategy.form.scalpMaxDiffRetracePctHint')}>
+                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
             </>
           )}
           {barrierEnabled && (

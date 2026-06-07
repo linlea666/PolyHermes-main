@@ -327,14 +327,26 @@ class CryptoTailOrderbookWsService(
             //  - TAIL_DIFF 用分段包络（remaining 维度），覆盖早窗分段，避免被全局 elapsed 窗（windowStart/EndSeconds）误卡；
             //    精确窗口/分段命中仍由 DecisionService 内的 segment resolve + WINDOW_* 否决把关，这里只做粗过滤减少协程启动。
             //  - 其他模式保持原 elapsed 时间窗行为不变。
-            val inEntryWindow = if (e.strategy.mode == TradingMode.TAIL_DIFF) {
-                val (envLo, envHi) = entrySegmentResolver.windowEnvelope(e.strategy)
-                val remaining = (e.periodStartUnix + e.strategy.intervalSeconds) - nowSeconds
-                remaining in envLo.toLong()..envHi.toLong()
-            } else {
-                val windowStart = e.periodStartUnix + e.strategy.windowStartSeconds
-                val windowEnd = e.periodStartUnix + e.strategy.windowEndSeconds
-                nowSeconds >= windowStart && nowSeconds < windowEnd
+            val inEntryWindow = when (e.strategy.mode) {
+                TradingMode.TAIL_DIFF -> {
+                    val (envLo, envHi) = entrySegmentResolver.windowEnvelope(e.strategy)
+                    val remaining = (e.periodStartUnix + e.strategy.intervalSeconds) - nowSeconds
+                    remaining in envLo.toLong()..envHi.toLong()
+                }
+                // SCALP_FLIP 用专属窗口（elapsed 维度）：[scalpWindowStart, scalpWindowEnd) 或 windowEnd=0 时收口到 interval-minRemaining；
+                // 精确窗口/剩余时间仍由 evaluateScalpEntryGates 内的 SCALP_WINDOW/SCALP_MIN_REMAINING 否决把关，这里只做粗过滤。
+                TradingMode.SCALP_FLIP -> {
+                    val s = e.strategy
+                    val windowStart = e.periodStartUnix + s.scalpWindowStartSeconds
+                    val upperElapsed = if (s.scalpWindowEndSeconds > 0) s.scalpWindowEndSeconds else (s.intervalSeconds - s.scalpMinRemainingSeconds)
+                    val windowEnd = e.periodStartUnix + upperElapsed
+                    nowSeconds >= windowStart && nowSeconds < windowEnd
+                }
+                else -> {
+                    val windowStart = e.periodStartUnix + e.strategy.windowStartSeconds
+                    val windowEnd = e.periodStartUnix + e.strategy.windowEndSeconds
+                    nowSeconds >= windowStart && nowSeconds < windowEnd
+                }
             }
 
             // 入场分支：仅在时间窗内评估。

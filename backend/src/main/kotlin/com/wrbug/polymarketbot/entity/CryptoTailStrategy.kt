@@ -701,6 +701,122 @@ data class CryptoTailStrategy(
     @Column(name = "tail_diff_depth_fill_ratio", nullable = false, precision = 20, scale = 8)
     val tailDiffDepthFillRatio: BigDecimal = BigDecimal.ZERO,
 
+    // ===== 快进快出模式（SCALP_FLIP，V77）=====
+    // 默认值对历史 LEGACY/BARRIER/BRACKET/TAIL_DIFF 记录无任何行为影响（仅 mode=4 时被读取）。
+    // 退出复用 BRACKET/TAIL_DIFF 引擎：入场冻结一份 TailDiffExitPreset 到 trigger.exit_preset_json。
+
+    /** 进场价格区间下限（按 bestAsk 判定）；bestAsk ∈ [min,max] 才进场 */
+    @Column(name = "scalp_entry_min_price", nullable = false, precision = 20, scale = 8)
+    val scalpEntryMinPrice: BigDecimal = BigDecimal("0.96"),
+
+    /** 进场价格区间上限（按 bestAsk 判定） */
+    @Column(name = "scalp_entry_max_price", nullable = false, precision = 20, scale = 8)
+    val scalpEntryMaxPrice: BigDecimal = BigDecimal("0.97"),
+
+    /** 买入限价封顶（FAK 限价 = bestAsk+entryFakSlippage，封顶此值），防滑点把成本买穿 */
+    @Column(name = "scalp_max_fill_price", nullable = false, precision = 20, scale = 8)
+    val scalpMaxFillPrice: BigDecimal = BigDecimal("0.975"),
+
+    /** 进场窗口起点（距周期开始秒数，0=周期开始即可进） */
+    @Column(name = "scalp_window_start_seconds", nullable = false)
+    val scalpWindowStartSeconds: Int = 0,
+
+    /** 进场窗口终点（距周期开始秒数，0=不设上限，仅由 minRemaining 收口尾盘） */
+    @Column(name = "scalp_window_end_seconds", nullable = false)
+    val scalpWindowEndSeconds: Int = 0,
+
+    /** 进场最小剩余秒数（剩余<此值禁止新开，避免尾盘流动性枯竭/无法退出） */
+    @Column(name = "scalp_min_remaining_seconds", nullable = false)
+    val scalpMinRemainingSeconds: Int = 30,
+
+    /** 进场时要求的最小卖盘(bid)深度 USDC，确保可退出；null=不检查 */
+    @Column(name = "scalp_min_exit_bid_depth_usdc", precision = 20, scale = 8)
+    val scalpMinExitBidDepthUsdc: BigDecimal? = null,
+
+    /** 是否启用历史反转率门槛筛选（关闭=纯价格区间进场） */
+    @Column(name = "scalp_reversal_gate_enabled", nullable = false)
+    val scalpReversalGateEnabled: Boolean = true,
+
+    /** 反转率门槛：领先方向维持到结算的历史概率需 >= 此值 */
+    @Column(name = "scalp_min_model_prob", nullable = false, precision = 20, scale = 8)
+    val scalpMinModelProb: BigDecimal = BigDecimal("0.95"),
+
+    /** 反转率门槛附加 edge 要求（modelProb - 有效成本 >= 此值）；0=不检查 edge */
+    @Column(name = "scalp_min_edge", nullable = false, precision = 20, scale = 8)
+    val scalpMinEdge: BigDecimal = BigDecimal.ZERO,
+
+    /** 反转率统计数据源：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
+    @Column(name = "scalp_stats_source", nullable = false, length = 16)
+    val scalpStatsSource: String = "HYBRID",
+
+    /** 反转率统计回看天数 */
+    @Column(name = "scalp_stats_lookback_days", nullable = false)
+    val scalpStatsLookbackDays: Int = 180,
+
+    /** 反转率统计最小样本数；低于此值视为统计不可用 */
+    @Column(name = "scalp_stats_min_samples", nullable = false)
+    val scalpStatsMinSamples: Int = 30,
+
+    /** 统计不可用时是否拦截进场：true=拦截；false=降级为纯价格区间放行 */
+    @Column(name = "scalp_require_stats", nullable = false)
+    val scalpRequireStats: Boolean = false,
+
+    /** 同方向最大并发未结算敞口；null=不限制（仍受全局 maxConcurrentPositions 约束） */
+    @Column(name = "scalp_max_concurrent_same_direction")
+    val scalpMaxConcurrentSameDirection: Int? = null,
+
+    /** 退出模式：true=赢单持有到结算(拿 1.0，不挂止盈)；false=挂止盈单(scalpTpPrice)锁利 */
+    @Column(name = "scalp_hold_winner_to_settle", nullable = false)
+    val scalpHoldWinnerToSettle: Boolean = true,
+
+    /** 止盈价（仅 scalpHoldWinnerToSettle=false 时生效，bestBid>=此值挂卖） */
+    @Column(name = "scalp_tp_price", nullable = false, precision = 20, scale = 8)
+    val scalpTpPrice: BigDecimal = BigDecimal("0.99"),
+
+    /** 价位止损开关（相对入场价回撤 + 绝对地板） */
+    @Column(name = "scalp_stop_enabled", nullable = false)
+    val scalpStopEnabled: Boolean = true,
+
+    /** 价位止损：相对入场价最大回撤比例（如 0.05=跌 5% 止损）。注：高价进场(0.96+)时需 < 1-minPrice/entry 才不被绝对地板覆盖 */
+    @Column(name = "scalp_stop_offset", nullable = false, precision = 20, scale = 8)
+    val scalpStopOffset: BigDecimal = BigDecimal("0.05"),
+
+    /** 价位止损：绝对最低 bestBid 地板（与相对止损取较高者，越早触发） */
+    @Column(name = "scalp_stop_min_price", nullable = false, precision = 20, scale = 8)
+    val scalpStopMinPrice: BigDecimal = BigDecimal("0.90"),
+
+    /** 持仓中 bestBid 跌破此值触发软止损（连续确认+地板防插针）；0=不启用。需 > 硬止损线才会先于硬止损触发 */
+    @Column(name = "scalp_min_odds_after_entry", nullable = false, precision = 20, scale = 8)
+    val scalpMinOddsAfterEntry: BigDecimal = BigDecimal("0.93"),
+
+    /** 标的方向止损开关：持仓中 diff_sigma 跌破阈值即退出（领先优势消失=反转前兆） */
+    @Column(name = "scalp_underlying_stop_enabled", nullable = false)
+    val scalpUnderlyingStopEnabled: Boolean = true,
+
+    /** 标的方向止损阈值：diff_sigma（领先优势 σ 数）跌破此值退出 */
+    @Column(name = "scalp_underlying_stop_sigma", nullable = false, precision = 20, scale = 8)
+    val scalpUnderlyingStopSigma: BigDecimal = BigDecimal("0.30"),
+
+    /** 反抽速度止损开关：标的向反方向反抽速度过快即退出 */
+    @Column(name = "scalp_reverse_velocity_stop_enabled", nullable = false)
+    val scalpReverseVelocityStopEnabled: Boolean = true,
+
+    /** 反抽速度止损阈值（σ/秒），超过即退出 */
+    @Column(name = "scalp_max_reverse_velocity_sigma", nullable = false, precision = 20, scale = 8)
+    val scalpMaxReverseVelocitySigma: BigDecimal = BigDecimal("0.40"),
+
+    /** 反抽速度估算窗口秒数 */
+    @Column(name = "scalp_reverse_velocity_window_seconds", nullable = false)
+    val scalpReverseVelocityWindowSeconds: Int = 10,
+
+    /** 持仓模型衰减软止损：持仓中 pWin 跌破此值即退出（0=不启用）。依赖价源可用 */
+    @Column(name = "scalp_min_model_prob_after_entry", nullable = false, precision = 20, scale = 8)
+    val scalpMinModelProbAfterEntry: BigDecimal = BigDecimal.ZERO,
+
+    /** 领先优势回撤软止损：持仓 diff_sigma 相对入场回撤比例超过此值即退出（0=不启用）。依赖价源+入场冻结 diff_sigma */
+    @Column(name = "scalp_max_diff_retrace_pct", nullable = false, precision = 20, scale = 8)
+    val scalpMaxDiffRetracePct: BigDecimal = BigDecimal.ZERO,
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 
