@@ -133,7 +133,9 @@ const SCALP_DEFAULTS = {
   scalpMaxReverseVelocitySigma: '0.40',
   scalpReverseVelocityWindowSeconds: 10,
   scalpMinModelProbAfterEntry: '0',
-  scalpMaxDiffRetracePct: '0'
+  scalpMaxDiffRetracePct: '0',
+  scalpCatastropheBidFloor: '0.88',
+  scalpCatastropheImmediate: true
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -165,7 +167,9 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpMaxReverseVelocitySigma: record.scalpMaxReverseVelocitySigma ?? SCALP_DEFAULTS.scalpMaxReverseVelocitySigma,
   scalpReverseVelocityWindowSeconds: record.scalpReverseVelocityWindowSeconds ?? SCALP_DEFAULTS.scalpReverseVelocityWindowSeconds,
   scalpMinModelProbAfterEntry: record.scalpMinModelProbAfterEntry ?? SCALP_DEFAULTS.scalpMinModelProbAfterEntry,
-  scalpMaxDiffRetracePct: record.scalpMaxDiffRetracePct ?? SCALP_DEFAULTS.scalpMaxDiffRetracePct
+  scalpMaxDiffRetracePct: record.scalpMaxDiffRetracePct ?? SCALP_DEFAULTS.scalpMaxDiffRetracePct,
+  scalpCatastropheBidFloor: record.scalpCatastropheBidFloor ?? SCALP_DEFAULTS.scalpCatastropheBidFloor,
+  scalpCatastropheImmediate: record.scalpCatastropheImmediate ?? SCALP_DEFAULTS.scalpCatastropheImmediate
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -349,7 +353,9 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpMaxReverseVelocitySigma: strOrUndef(v.scalpMaxReverseVelocitySigma),
   scalpReverseVelocityWindowSeconds: numOrUndef(v.scalpReverseVelocityWindowSeconds),
   scalpMinModelProbAfterEntry: strOrUndef(v.scalpMinModelProbAfterEntry),
-  scalpMaxDiffRetracePct: strOrUndef(v.scalpMaxDiffRetracePct)
+  scalpMaxDiffRetracePct: strOrUndef(v.scalpMaxDiffRetracePct),
+  scalpCatastropheBidFloor: strOrUndef(v.scalpCatastropheBidFloor),
+  scalpCatastropheImmediate: typeof v.scalpCatastropheImmediate === 'boolean' ? v.scalpCatastropheImmediate : undefined
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -3520,6 +3526,12 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpMaxDiffRetracePct" label={t('cryptoTailStrategy.form.scalpMaxDiffRetracePct')} extra={t('cryptoTailStrategy.form.scalpMaxDiffRetracePctHint')}>
                 <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpCatastropheBidFloor" label={t('cryptoTailStrategy.form.scalpCatastropheBidFloor')} extra={t('cryptoTailStrategy.form.scalpCatastropheBidFloorHint')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpCatastropheImmediate" label={t('cryptoTailStrategy.form.scalpCatastropheImmediate')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpCatastropheImmediateHint')}>
+                <Switch />
               </Form.Item>
             </>
           )}

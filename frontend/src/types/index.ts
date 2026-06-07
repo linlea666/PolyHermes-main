@@ -1700,6 +1700,8 @@ export interface CryptoTailStrategyDto {
   scalpReverseVelocityWindowSeconds?: number
   scalpMinModelProbAfterEntry?: string
   scalpMaxDiffRetracePct?: string
+  scalpCatastropheBidFloor?: string
+  scalpCatastropheImmediate?: boolean
   createdAt: number
   updatedAt: number
 }
@@ -1734,6 +1736,8 @@ export interface CryptoTailScalpParams {
   scalpReverseVelocityWindowSeconds?: number
   scalpMinModelProbAfterEntry?: string
   scalpMaxDiffRetracePct?: string
+  scalpCatastropheBidFloor?: string
+  scalpCatastropheImmediate?: boolean
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */

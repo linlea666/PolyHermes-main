@@ -881,15 +881,16 @@ class CryptoTailStrategyExecutionService(
                 enabled = strategy.scalpUnderlyingStopEnabled || strategy.scalpReverseVelocityStopEnabled ||
                     strategy.scalpMinOddsAfterEntry > BigDecimal.ZERO ||
                     strategy.scalpMinModelProbAfterEntry > BigDecimal.ZERO ||
-                    strategy.scalpMaxDiffRetracePct > BigDecimal.ZERO,
+                    strategy.scalpMaxDiffRetracePct > BigDecimal.ZERO ||
+                    strategy.scalpCatastropheBidFloor > BigDecimal.ZERO,
                 minDiffSigmaAfterEntry = if (strategy.scalpUnderlyingStopEnabled) strategy.scalpUnderlyingStopSigma else BigDecimal.ZERO,
                 maxDiffRetracePct = strategy.scalpMaxDiffRetracePct,
                 minModelProbAfterEntry = strategy.scalpMinModelProbAfterEntry,
                 minOddsAfterEntry = strategy.scalpMinOddsAfterEntry,
                 maxReverseVelocitySigma = if (strategy.scalpReverseVelocityStopEnabled) strategy.scalpMaxReverseVelocitySigma else BigDecimal.ZERO,
-                catastropheBidFloor = BigDecimal.ZERO,
+                catastropheBidFloor = strategy.scalpCatastropheBidFloor,
                 maxDrawdownPct = BigDecimal.ZERO,
-                catastropheImmediate = false
+                catastropheImmediate = strategy.scalpCatastropheImmediate
             ),
             execution = TailDiffExitPreset.Execution()
         )

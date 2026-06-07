@@ -453,7 +453,9 @@ class CryptoTailStrategyService(
                 scalpMaxReverseVelocitySigma = sc.maxReverseVelocitySigma,
                 scalpReverseVelocityWindowSeconds = sc.reverseVelocityWindowSeconds,
                 scalpMinModelProbAfterEntry = sc.minModelProbAfterEntry,
-                scalpMaxDiffRetracePct = sc.maxDiffRetracePct
+                scalpMaxDiffRetracePct = sc.maxDiffRetracePct,
+                scalpCatastropheBidFloor = sc.catastropheBidFloor,
+                scalpCatastropheImmediate = sc.catastropheImmediate
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -865,6 +867,8 @@ class CryptoTailStrategyService(
                 scalpReverseVelocityWindowSeconds = sc.reverseVelocityWindowSeconds,
                 scalpMinModelProbAfterEntry = sc.minModelProbAfterEntry,
                 scalpMaxDiffRetracePct = sc.maxDiffRetracePct,
+                scalpCatastropheBidFloor = sc.catastropheBidFloor,
+                scalpCatastropheImmediate = sc.catastropheImmediate,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -1930,7 +1934,9 @@ class CryptoTailStrategyService(
         val maxReverseVelocitySigma: BigDecimal,
         val reverseVelocityWindowSeconds: Int,
         val minModelProbAfterEntry: BigDecimal,
-        val maxDiffRetracePct: BigDecimal
+        val maxDiffRetracePct: BigDecimal,
+        val catastropheBidFloor: BigDecimal,
+        val catastropheImmediate: Boolean
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -1975,7 +1981,9 @@ class CryptoTailStrategyService(
         maxReverseVelocitySigma = r.scalpMaxReverseVelocitySigma?.toSafeBigDecimal() ?: BigDecimal("0.40"),
         reverseVelocityWindowSeconds = r.scalpReverseVelocityWindowSeconds ?: 10,
         minModelProbAfterEntry = r.scalpMinModelProbAfterEntry?.toSafeBigDecimal() ?: BigDecimal.ZERO,
-        maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: BigDecimal.ZERO
+        maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        catastropheBidFloor = r.scalpCatastropheBidFloor?.toSafeBigDecimal() ?: BigDecimal("0.88"),
+        catastropheImmediate = r.scalpCatastropheImmediate ?: true
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2007,7 +2015,9 @@ class CryptoTailStrategyService(
         maxReverseVelocitySigma = r.scalpMaxReverseVelocitySigma?.toSafeBigDecimal() ?: e.scalpMaxReverseVelocitySigma,
         reverseVelocityWindowSeconds = r.scalpReverseVelocityWindowSeconds ?: e.scalpReverseVelocityWindowSeconds,
         minModelProbAfterEntry = r.scalpMinModelProbAfterEntry?.toSafeBigDecimal() ?: e.scalpMinModelProbAfterEntry,
-        maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: e.scalpMaxDiffRetracePct
+        maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: e.scalpMaxDiffRetracePct,
+        catastropheBidFloor = r.scalpCatastropheBidFloor?.toSafeBigDecimal() ?: e.scalpCatastropheBidFloor,
+        catastropheImmediate = r.scalpCatastropheImmediate ?: e.scalpCatastropheImmediate
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2038,6 +2048,8 @@ class CryptoTailStrategyService(
         // 退出软阈值（0=关闭）：minModelProbAfterEntry ∈ [0,1]；maxDiffRetracePct ∈ [0,1)
         if (sc.minModelProbAfterEntry < zero || sc.minModelProbAfterEntry > one) return false
         if (sc.maxDiffRetracePct < zero || sc.maxDiffRetracePct >= one) return false
+        // 熔断地板（0=关闭）∈ [0,1]
+        if (sc.catastropheBidFloor < zero || sc.catastropheBidFloor > one) return false
         return true
     }
 
@@ -2261,6 +2273,8 @@ class CryptoTailStrategyService(
             scalpReverseVelocityWindowSeconds = e.scalpReverseVelocityWindowSeconds,
             scalpMinModelProbAfterEntry = e.scalpMinModelProbAfterEntry.toPlainString(),
             scalpMaxDiffRetracePct = e.scalpMaxDiffRetracePct.toPlainString(),
+            scalpCatastropheBidFloor = e.scalpCatastropheBidFloor.toPlainString(),
+            scalpCatastropheImmediate = e.scalpCatastropheImmediate,
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )

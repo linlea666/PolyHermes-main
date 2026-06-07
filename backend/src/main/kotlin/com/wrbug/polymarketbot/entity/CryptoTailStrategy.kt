@@ -817,6 +817,14 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_max_diff_retrace_pct", nullable = false, precision = 20, scale = 8)
     val scalpMaxDiffRetracePct: BigDecimal = BigDecimal.ZERO,
 
+    /** 熔断绝对地板：持仓 bestBid 跌破此值即发无地板市价止损（0=不启用）。作为最深兜底，应低于 scalp_stop_min_price */
+    @Column(name = "scalp_catastrophe_bid_floor", nullable = false, precision = 20, scale = 8)
+    val scalpCatastropheBidFloor: BigDecimal = BigDecimal("0.88"),
+
+    /** 熔断即时砍：true=跌破地板时跳过 exitConfirmTicks 确认立即市价砍（应对急跌确认延迟放大亏损）；仅在地板>0 时有意义 */
+    @Column(name = "scalp_catastrophe_immediate", nullable = false)
+    val scalpCatastropheImmediate: Boolean = true,
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

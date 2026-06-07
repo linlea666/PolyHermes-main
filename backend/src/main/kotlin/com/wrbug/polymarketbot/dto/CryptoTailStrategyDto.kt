@@ -245,7 +245,9 @@ data class CryptoTailStrategyCreateRequest(
     val scalpMaxReverseVelocitySigma: String? = null,
     val scalpReverseVelocityWindowSeconds: Int? = null,
     val scalpMinModelProbAfterEntry: String? = null,
-    val scalpMaxDiffRetracePct: String? = null
+    val scalpMaxDiffRetracePct: String? = null,
+    val scalpCatastropheBidFloor: String? = null,
+    val scalpCatastropheImmediate: Boolean? = null
 )
 
 /**
@@ -465,7 +467,9 @@ data class CryptoTailStrategyUpdateRequest(
     val scalpMaxReverseVelocitySigma: String? = null,
     val scalpReverseVelocityWindowSeconds: Int? = null,
     val scalpMinModelProbAfterEntry: String? = null,
-    val scalpMaxDiffRetracePct: String? = null
+    val scalpMaxDiffRetracePct: String? = null,
+    val scalpCatastropheBidFloor: String? = null,
+    val scalpCatastropheImmediate: Boolean? = null
 )
 
 /**
@@ -720,6 +724,8 @@ data class CryptoTailStrategyDto(
     val scalpReverseVelocityWindowSeconds: Int = 10,
     val scalpMinModelProbAfterEntry: String = "0",
     val scalpMaxDiffRetracePct: String = "0",
+    val scalpCatastropheBidFloor: String = "0.88",
+    val scalpCatastropheImmediate: Boolean = true,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )
