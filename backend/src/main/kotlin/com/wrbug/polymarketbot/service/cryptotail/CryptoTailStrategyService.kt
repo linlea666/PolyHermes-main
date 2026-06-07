@@ -455,7 +455,9 @@ class CryptoTailStrategyService(
                 scalpMinModelProbAfterEntry = sc.minModelProbAfterEntry,
                 scalpMaxDiffRetracePct = sc.maxDiffRetracePct,
                 scalpCatastropheBidFloor = sc.catastropheBidFloor,
-                scalpCatastropheImmediate = sc.catastropheImmediate
+                scalpCatastropheImmediate = sc.catastropheImmediate,
+                scalpRequireUnderlyingAgreement = sc.requireUnderlyingAgreement,
+                scalpEntryMinPwin = sc.entryMinPwin
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -869,6 +871,8 @@ class CryptoTailStrategyService(
                 scalpMaxDiffRetracePct = sc.maxDiffRetracePct,
                 scalpCatastropheBidFloor = sc.catastropheBidFloor,
                 scalpCatastropheImmediate = sc.catastropheImmediate,
+                scalpRequireUnderlyingAgreement = sc.requireUnderlyingAgreement,
+                scalpEntryMinPwin = sc.entryMinPwin,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -1936,7 +1940,9 @@ class CryptoTailStrategyService(
         val minModelProbAfterEntry: BigDecimal,
         val maxDiffRetracePct: BigDecimal,
         val catastropheBidFloor: BigDecimal,
-        val catastropheImmediate: Boolean
+        val catastropheImmediate: Boolean,
+        val requireUnderlyingAgreement: Boolean,
+        val entryMinPwin: BigDecimal
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -1983,7 +1989,9 @@ class CryptoTailStrategyService(
         minModelProbAfterEntry = r.scalpMinModelProbAfterEntry?.toSafeBigDecimal() ?: BigDecimal.ZERO,
         maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: BigDecimal.ZERO,
         catastropheBidFloor = r.scalpCatastropheBidFloor?.toSafeBigDecimal() ?: BigDecimal("0.88"),
-        catastropheImmediate = r.scalpCatastropheImmediate ?: true
+        catastropheImmediate = r.scalpCatastropheImmediate ?: true,
+        requireUnderlyingAgreement = r.scalpRequireUnderlyingAgreement ?: true,
+        entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.90")
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2017,7 +2025,9 @@ class CryptoTailStrategyService(
         minModelProbAfterEntry = r.scalpMinModelProbAfterEntry?.toSafeBigDecimal() ?: e.scalpMinModelProbAfterEntry,
         maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: e.scalpMaxDiffRetracePct,
         catastropheBidFloor = r.scalpCatastropheBidFloor?.toSafeBigDecimal() ?: e.scalpCatastropheBidFloor,
-        catastropheImmediate = r.scalpCatastropheImmediate ?: e.scalpCatastropheImmediate
+        catastropheImmediate = r.scalpCatastropheImmediate ?: e.scalpCatastropheImmediate,
+        requireUnderlyingAgreement = r.scalpRequireUnderlyingAgreement ?: e.scalpRequireUnderlyingAgreement,
+        entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: e.scalpEntryMinPwin
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2050,6 +2060,8 @@ class CryptoTailStrategyService(
         if (sc.maxDiffRetracePct < zero || sc.maxDiffRetracePct >= one) return false
         // 熔断地板（0=关闭）∈ [0,1]
         if (sc.catastropheBidFloor < zero || sc.catastropheBidFloor > one) return false
+        // 进场标的胜率下限 ∈ [0,1]
+        if (sc.entryMinPwin < zero || sc.entryMinPwin > one) return false
         return true
     }
 
@@ -2275,6 +2287,8 @@ class CryptoTailStrategyService(
             scalpMaxDiffRetracePct = e.scalpMaxDiffRetracePct.toPlainString(),
             scalpCatastropheBidFloor = e.scalpCatastropheBidFloor.toPlainString(),
             scalpCatastropheImmediate = e.scalpCatastropheImmediate,
+            scalpRequireUnderlyingAgreement = e.scalpRequireUnderlyingAgreement,
+            scalpEntryMinPwin = e.scalpEntryMinPwin.toPlainString(),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )

@@ -135,7 +135,9 @@ const SCALP_DEFAULTS = {
   scalpMinModelProbAfterEntry: '0',
   scalpMaxDiffRetracePct: '0',
   scalpCatastropheBidFloor: '0.88',
-  scalpCatastropheImmediate: true
+  scalpCatastropheImmediate: true,
+  scalpRequireUnderlyingAgreement: true,
+  scalpEntryMinPwin: '0.90'
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -169,7 +171,9 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpMinModelProbAfterEntry: record.scalpMinModelProbAfterEntry ?? SCALP_DEFAULTS.scalpMinModelProbAfterEntry,
   scalpMaxDiffRetracePct: record.scalpMaxDiffRetracePct ?? SCALP_DEFAULTS.scalpMaxDiffRetracePct,
   scalpCatastropheBidFloor: record.scalpCatastropheBidFloor ?? SCALP_DEFAULTS.scalpCatastropheBidFloor,
-  scalpCatastropheImmediate: record.scalpCatastropheImmediate ?? SCALP_DEFAULTS.scalpCatastropheImmediate
+  scalpCatastropheImmediate: record.scalpCatastropheImmediate ?? SCALP_DEFAULTS.scalpCatastropheImmediate,
+  scalpRequireUnderlyingAgreement: record.scalpRequireUnderlyingAgreement ?? SCALP_DEFAULTS.scalpRequireUnderlyingAgreement,
+  scalpEntryMinPwin: record.scalpEntryMinPwin ?? SCALP_DEFAULTS.scalpEntryMinPwin
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -355,7 +359,9 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpMinModelProbAfterEntry: strOrUndef(v.scalpMinModelProbAfterEntry),
   scalpMaxDiffRetracePct: strOrUndef(v.scalpMaxDiffRetracePct),
   scalpCatastropheBidFloor: strOrUndef(v.scalpCatastropheBidFloor),
-  scalpCatastropheImmediate: typeof v.scalpCatastropheImmediate === 'boolean' ? v.scalpCatastropheImmediate : undefined
+  scalpCatastropheImmediate: typeof v.scalpCatastropheImmediate === 'boolean' ? v.scalpCatastropheImmediate : undefined,
+  scalpRequireUnderlyingAgreement: typeof v.scalpRequireUnderlyingAgreement === 'boolean' ? v.scalpRequireUnderlyingAgreement : undefined,
+  scalpEntryMinPwin: strOrUndef(v.scalpEntryMinPwin)
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -3472,6 +3478,16 @@ const CryptoTailStrategyList: React.FC = () => {
                 >
                   {t('cryptoTailStrategy.form.statsCoverage.compareAndAdopt')}
                 </Button>
+              </Form.Item>
+
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpDirectionSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpRequireUnderlyingAgreement" label={t('cryptoTailStrategy.form.scalpRequireUnderlyingAgreement')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpRequireUnderlyingAgreementHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpEntryMinPwin" label={t('cryptoTailStrategy.form.scalpEntryMinPwin')} extra={t('cryptoTailStrategy.form.scalpEntryMinPwinHint')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>

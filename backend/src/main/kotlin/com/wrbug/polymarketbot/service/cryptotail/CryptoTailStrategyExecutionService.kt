@@ -684,6 +684,33 @@ class CryptoTailStrategyExecutionService(
                 orderbookPayload(orderbook, nowMs).toJson())
         }
 
+        // 3.5) 进场实时方向确认（P0）：要求标的模型方向(modelSide)==买入侧 且 pWin 达标，过滤"下跌穿越"飞刀。
+        // 静态价格 + 历史分桶反转率无法区分"上涨穿越 0.95(真赢家)"与"下跌穿越 0.95(飞刀)"；此处用本周期实时标的信号确认方向。
+        // entrySignal 在此算一次，下方反转率分桶(diffSigma)复用，避免重复计算。价源不可用→graceful 降级放行+记可观测事件（与反转率门槛降级同口径）。
+        val entrySignal = computeScalpEntrySignal(strategy, periodStartUnix, outcomeIndex, remainingSeconds)
+        if (strategy.scalpRequireUnderlyingAgreement) {
+            if (entrySignal == null) {
+                recordDecisionOncePerPeriod(
+                    strategy, periodStartUnix, "SCALP_DIRECTION_DEGRADED", outcomeIndex,
+                    eventType = "DIRECTION_DEGRADED", gateName = "SCALP_UNDERLYING_AGREEMENT", passed = true,
+                    reason = "标的价源不可用，无法确认进场方向，已降级放行（requireUnderlyingAgreement=true）",
+                    payloadJson = mapOf("mode" to "SCALP_FLIP", "outcomeIndex" to outcomeIndex).toJson(),
+                    triggerId = null
+                )
+            } else {
+                if (entrySignal.modelSide != outcomeIndex) {
+                    return BarrierEval(false, "SCALP_DIRECTION_MISMATCH",
+                        "标的模型方向 modelSide=${entrySignal.modelSide}!=买入侧 outcomeIndex=$outcomeIndex（疑似下跌穿越/反向，pWin=${entrySignal.pWin.toPlainString()}）",
+                        orderbookPayload(orderbook, nowMs).plus(scalpSignalPayload(entrySignal)).toJson())
+                }
+                if (entrySignal.pWin < strategy.scalpEntryMinPwin) {
+                    return BarrierEval(false, "SCALP_DIRECTION_WEAK",
+                        "标的模型胜率不足 pWin=${entrySignal.pWin.toPlainString()}<${strategy.scalpEntryMinPwin.toPlainString()} (modelSide=${entrySignal.modelSide})",
+                        orderbookPayload(orderbook, nowMs).plus(scalpSignalPayload(entrySignal)).toJson())
+                }
+            }
+        }
+
         // 4) 退出流动性深度（确保可退出；null=不检查）
         val minDepth = strategy.scalpMinExitBidDepthUsdc
         if (minDepth != null && minDepth > BigDecimal.ZERO) {
@@ -706,19 +733,29 @@ class CryptoTailStrategyExecutionService(
             }
         }
 
-        // 6) 历史反转率门槛（可选）
+        // 6) 历史反转率门槛（可选）。复用上方已算的 entrySignal 提供 diffSigma，避免重复计算。
         if (strategy.scalpReversalGateEnabled) {
-            val (pass, reason) = evaluateScalpReversalGate(strategy, outcomeIndex, ask, periodStartUnix, remainingSeconds)
+            val (pass, reason) = evaluateScalpReversalGate(strategy, outcomeIndex, ask, periodStartUnix, remainingSeconds, entrySignal)
             if (!pass) {
                 return BarrierEval(false, "SCALP_REVERSAL_GATE", reason,
-                    orderbookPayload(orderbook, nowMs).plus("bestAsk" to ask.toPlainString()).plus("remainingSeconds" to remainingSeconds).toJson())
+                    orderbookPayload(orderbook, nowMs).plus("bestAsk" to ask.toPlainString()).plus("remainingSeconds" to remainingSeconds).plus(scalpSignalPayload(entrySignal)).toJson())
             }
             return BarrierEval(true, "ALL", "SCALP 进场通过: bestAsk=${ask.toPlainString()} remaining=${remainingSeconds}s ($reason)",
-                orderbookPayload(orderbook, nowMs).toJson())
+                orderbookPayload(orderbook, nowMs).plus(scalpSignalPayload(entrySignal)).toJson())
         }
         return BarrierEval(true, "ALL", "SCALP 进场通过: bestAsk=${ask.toPlainString()} remaining=${remainingSeconds}s (反转门槛关闭)",
-            orderbookPayload(orderbook, nowMs).toJson())
+            orderbookPayload(orderbook, nowMs).plus(scalpSignalPayload(entrySignal)).toJson())
     }
+
+    /** P1：SCALP 进场信号(modelSide/pWin/safeRatio/gap)作为决策 payload 字段，供事后验证方向是否一致；信号缺失返回空。 */
+    private fun scalpSignalPayload(signal: ScalpEntrySignal?): Map<String, Any?> =
+        if (signal == null) emptyMap()
+        else mapOf(
+            "modelSide" to signal.modelSide,
+            "pWin" to signal.pWin.toPlainString(),
+            "safeRatio" to signal.safeRatio.toPlainString(),
+            "gap" to signal.gap.toPlainString()
+        )
 
     /**
      * 反转率门槛：买 favorite（ask∈区间，odds>0.5）时领先方向=outcomeIndex，
@@ -730,11 +767,13 @@ class CryptoTailStrategyExecutionService(
         outcomeIndex: Int,
         ask: BigDecimal,
         periodStartUnix: Long,
-        remainingSeconds: Int
+        remainingSeconds: Int,
+        entrySignal: ScalpEntrySignal?
     ): Pair<Boolean, String> {
         val coin = inferScalpCoin(strategy)
         val leadOutcome = outcomeIndex
-        val diffSigma = computeScalpDiffSigma(strategy, periodStartUnix, outcomeIndex, remainingSeconds) ?: BigDecimal.ZERO
+        // 复用上游已算的进场信号 safeRatio 作为 diffSigma（BINANCE 桶精确匹配用）；缺失时回退 0（POLYMARKET 走 ANY 不依赖）。
+        val diffSigma = entrySignal?.safeRatio ?: BigDecimal.ZERO
         val oddsBucket = TailDiffBuckets.oddsBucket(ask)
         val remainingBucket = TailDiffBuckets.remainingBucket(remainingSeconds)
         val result = queryScalpReversal(strategy.scalpStatsSource.uppercase(), coin, strategy, leadOutcome, diffSigma, oddsBucket, remainingBucket)
@@ -808,14 +847,6 @@ class CryptoTailStrategyExecutionService(
             }
         }
     }
-
-    /** 尽力计算 diff_sigma（领先优势 σ 数），用于 BINANCE 桶精确匹配；价源未就绪返回 null（POLYMARKET 走 ANY 不依赖）。 */
-    private fun computeScalpDiffSigma(
-        strategy: CryptoTailStrategy,
-        periodStartUnix: Long,
-        outcomeIndex: Int,
-        remainingSeconds: Int
-    ): BigDecimal? = computeScalpEntrySignal(strategy, periodStartUnix, outcomeIndex, remainingSeconds)?.safeRatio
 
     /**
      * 尽力计算 SCALP 入场信号（modelSide/pWin/safeRatio/gap/remaining），复用 BARRIER 内核 winProbTerminal。
@@ -1531,18 +1562,22 @@ class CryptoTailStrategyExecutionService(
         periodStartUnix: Long,
         outcomeIndex: Int,
         eval: BarrierEval,
-        tokenId: String? = null
+        tokenId: String? = null,
+        stage: String? = null
     ) {
+        // stage 非空（如 PRESUBMIT）：用独立去重键 + 原因前缀区分"发单前复检"与初次闸评估，避免同周期同 gate 被去重吞没（Q1 观测盲区）。
+        val stagePrefix = stage?.let { "$it-" } ?: ""
+        val reasonPrefix = stage?.let { "[发单前复检] " } ?: ""
         if (eval.pass) {
             recordDecisionOncePerPeriod(
-                strategy, periodStartUnix, "GATE_PASSED-ALL", outcomeIndex,
-                eventType = "GATE_PASSED", gateName = "ALL", passed = true, reason = eval.reason,
+                strategy, periodStartUnix, "GATE_PASSED-${stagePrefix}ALL", outcomeIndex,
+                eventType = "GATE_PASSED", gateName = "ALL", passed = true, reason = reasonPrefix + (eval.reason ?: ""),
                 payloadJson = eval.payloadJson, triggerId = null, tokenId = tokenId
             )
         } else {
             recordDecisionOncePerPeriod(
-                strategy, periodStartUnix, "GATE_FAILED-${eval.gateName}", outcomeIndex,
-                eventType = "GATE_FAILED", gateName = eval.gateName, passed = false, reason = eval.reason,
+                strategy, periodStartUnix, "GATE_FAILED-${stagePrefix}${eval.gateName}", outcomeIndex,
+                eventType = "GATE_FAILED", gateName = eval.gateName, passed = false, reason = reasonPrefix + (eval.reason ?: ""),
                 payloadJson = eval.payloadJson, triggerId = null, tokenId = tokenId
             )
         }
@@ -1594,14 +1629,14 @@ class CryptoTailStrategyExecutionService(
                 refreshedOrderbook.bestBid ?: triggerPrice, refreshedOrderbook.bestAsk ?: bestAsk, refreshedOrderbook
             )
             if (!eval.pass) {
-                recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval, tokenId)
+                recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval, tokenId, stage = "PRESUBMIT")
                 return PreSubmitOutcome.Abort
             }
             return PreSubmitOutcome.Proceed(null)
         }
         val eval = evaluateProbabilityEntryGates(strategy, periodStartUnix, outcomeIndex, refreshedOrderbook)
         if (!eval.pass || eval.metrics == null) {
-            recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
+            recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval, stage = "PRESUBMIT")
             return PreSubmitOutcome.Abort
         }
         return PreSubmitOutcome.Proceed(eval)

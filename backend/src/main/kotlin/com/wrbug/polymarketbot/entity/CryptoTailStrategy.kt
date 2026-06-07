@@ -825,6 +825,14 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_catastrophe_immediate", nullable = false)
     val scalpCatastropheImmediate: Boolean = true,
 
+    /** 进场实时方向确认：true=要求标的模型方向(modelSide)与买入侧一致且 pWin 达标，过滤"下跌穿越"飞刀；价源不可用时降级放行 */
+    @Column(name = "scalp_require_underlying_agreement", nullable = false)
+    val scalpRequireUnderlyingAgreement: Boolean = true,
+
+    /** 进场标的模型胜率下限：买入侧 pWin 须 >= 此值才放行（仅在 scalp_require_underlying_agreement=true 时生效） */
+    @Column(name = "scalp_entry_min_pwin", nullable = false, precision = 20, scale = 8)
+    val scalpEntryMinPwin: BigDecimal = BigDecimal("0.90"),
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 
