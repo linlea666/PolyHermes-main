@@ -1927,6 +1927,8 @@
       "scalpMaxFillPriceHint": "FAK 买入限价上限，防止滑点买在过高价位",
       "scalpMinExitBidDepthUsdc": "最小可退出买盘深度（USDC）",
       "scalpMinExitBidDepthHint": "进场即检查可退出深度，留空=不检查",
+      "scalpMaxEntrySpread": "入场最大盘口价差",
+      "scalpMaxEntrySpreadHint": "bestAsk−bestBid 超过此值即拒（默认0.03）。宽价差=盘口不稳易瞬时塌陷，过滤接飞刀低价成交。0=关闭",
       "scalpOptionalPlaceholder": "留空=不限制",
       "scalpWindowSubsection": "进场时间窗口",
       "scalpWindowStartSeconds": "窗口起点（距周期开始秒数）",

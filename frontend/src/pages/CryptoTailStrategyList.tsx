@@ -3411,6 +3411,9 @@ const CryptoTailStrategyList: React.FC = () => {
               <Form.Item name="scalpMinExitBidDepthUsdc" label={t('cryptoTailStrategy.form.scalpMinExitBidDepthUsdc')} extra={t('cryptoTailStrategy.form.scalpMinExitBidDepthHint')}>
                 <InputNumber min={0} step={1} style={{ width: '100%' }} addonBefore="$" placeholder={t('cryptoTailStrategy.form.scalpOptionalPlaceholder')} stringMode />
               </Form.Item>
+              <Form.Item name="maxEntrySpread" label={t('cryptoTailStrategy.form.scalpMaxEntrySpread')} extra={t('cryptoTailStrategy.form.scalpMaxEntrySpreadHint')}>
+                <InputNumber min={0} max={1} step={0.005} style={{ width: '100%' }} stringMode />
+              </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpWindowSubsection')}</Typography.Text>

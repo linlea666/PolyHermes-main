@@ -572,6 +572,7 @@ class CryptoTailBracketExitService(
         remainingSeconds: Int
     ): Decision {
         val tier = TailDiffTier.fromLabel(trigger.tier)
+        val modeLabel = if (trigger.mode == TradingMode.SCALP_FLIP) "SCALP" else "TAIL_DIFF"
         val preset = resolveTailDiffPresetForTrigger(strategy, trigger, tier)
         if (preset.holdToExpiry) {
             // TOP 不再"无脑持有到结算"：即便 holdToExpiry，仍保留硬危险兜底（minOdds/反抽/价差坍缩/方向翻转），
@@ -580,7 +581,7 @@ class CryptoTailBracketExitService(
             // 高信念单上行封顶：升到 tp_limit（如 0.99）即落袋，避免为贪最后 1 分而承担尾盘反转风险。
             // tp_limit.enabled=false（TOP 默认）时返回 null → 行为不变，仍持有到结算。
             tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
-            return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "TOP"}] holdToExpiry=true，持有到结算（已通过硬危险兜底）remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
+            return Decision(null, BigDecimal.ZERO, "$modeLabel[${tier?.label ?: "TOP"}] holdToExpiry=true，持有到结算（已通过硬危险兜底）remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
         }
         val entryFillPrice = resolveEntryFillPrice(trigger)
         // 2) StopLoss
@@ -592,7 +593,7 @@ class CryptoTailBracketExitService(
                 return Decision(
                     ExitKind.HARD_STOP,
                     ratio,
-                    "TAIL_DIFF[${tier?.label ?: "?"}] StopLoss: bestBid=${bestBid.toPlainString()}<=${effectiveStop.toPlainString()} (entry=${entryFillPrice.toPlainString()}, offset=${preset.stopLoss.offset.toPlainString()}, minPrice=${preset.stopLoss.minPrice.toPlainString()})",
+                    "$modeLabel[${tier?.label ?: "?"}] StopLoss: bestBid=${bestBid.toPlainString()}<=${effectiveStop.toPlainString()} (entry=${entryFillPrice.toPlainString()}, offset=${preset.stopLoss.offset.toPlainString()}, minPrice=${preset.stopLoss.minPrice.toPlainString()})",
                     clearTp1HoldStartedAt = true
                 )
             }
@@ -601,7 +602,7 @@ class CryptoTailBracketExitService(
         dynamicExitDecision(preset, trigger, holding, bestBid, tier, hardOnly = false)?.let { return it }
         // 4) TpLimit
         tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
-        return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "?"}] 继续持有 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
+        return Decision(null, BigDecimal.ZERO, "$modeLabel[${tier?.label ?: "?"}] 继续持有 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
     }
 
     /**
@@ -617,17 +618,18 @@ class CryptoTailBracketExitService(
         tier: TailDiffTier?
     ): Decision? {
         if (!preset.tpLimit.enabled || bestBid < preset.tpLimit.price) return null
+        val modeLabel = if (trigger.mode == TradingMode.SCALP_FLIP) "SCALP" else "TAIL_DIFF"
         // 去重守卫：部分止盈(ratio<1)时价格维持在止盈线上会反复命中本分支，
         // 复用 hasExitOfKind(TP1) 确保 TP1 仅触发一次（与 BRACKET 同口径，避免重复挂卖单）。
         val triggerId = trigger.id
         if (triggerId != null && hasExitOfKind(triggerId, ExitKind.TP1)) {
-            return Decision(null, BigDecimal.ZERO, "TAIL_DIFF[${tier?.label ?: "?"}] TP1_ALREADY_TRIGGERED，不重复止盈", clearTp1HoldStartedAt = true)
+            return Decision(null, BigDecimal.ZERO, "$modeLabel[${tier?.label ?: "?"}] TP1_ALREADY_TRIGGERED，不重复止盈", clearTp1HoldStartedAt = true)
         }
         val ratio = preset.tpLimit.ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
         return Decision(
             ExitKind.TP1,
             ratio,
-            "TAIL_DIFF[${tier?.label ?: "?"}] TP: bestBid=${bestBid.toPlainString()}>=${preset.tpLimit.price.toPlainString()}",
+            "$modeLabel[${tier?.label ?: "?"}] TP: bestBid=${bestBid.toPlainString()}>=${preset.tpLimit.price.toPlainString()}",
             clearTp1HoldStartedAt = true
         )
     }
@@ -662,11 +664,12 @@ class CryptoTailBracketExitService(
         bestBid: BigDecimal,
         label: String
     ): Decision? {
+        val modeLabel = if (trigger.mode == TradingMode.SCALP_FLIP) "SCALP" else "TAIL_DIFF"
         if (cfg.catastropheBidFloor > BigDecimal.ZERO && bestBid <= cfg.catastropheBidFloor) {
             return Decision(
                 ExitKind.HARD_STOP,
                 BigDecimal.ONE,
-                "TAIL_DIFF[$label] Catastrophe: bestBid=${bestBid.toPlainString()}<=catastropheBidFloor=${cfg.catastropheBidFloor.toPlainString()} → 无地板市价止损${if (cfg.catastropheImmediate) "(即时)" else ""}",
+                "$modeLabel[$label] Catastrophe: bestBid=${bestBid.toPlainString()}<=catastropheBidFloor=${cfg.catastropheBidFloor.toPlainString()} → 无地板市价止损${if (cfg.catastropheImmediate) "(即时)" else ""}",
                 clearTp1HoldStartedAt = true,
                 forceImmediate = cfg.catastropheImmediate
             )
@@ -679,7 +682,7 @@ class CryptoTailBracketExitService(
                     return Decision(
                         ExitKind.HARD_STOP,
                         BigDecimal.ONE,
-                        "TAIL_DIFF[$label] Catastrophe: drawdown=${drawdown.toPlainString()}>=maxDrawdownPct=${cfg.maxDrawdownPct.toPlainString()} (entry=${entry.toPlainString()}, bid=${bestBid.toPlainString()}) → 无地板市价止损${if (cfg.catastropheImmediate) "(即时)" else ""}",
+                        "$modeLabel[$label] Catastrophe: drawdown=${drawdown.toPlainString()}>=maxDrawdownPct=${cfg.maxDrawdownPct.toPlainString()} (entry=${entry.toPlainString()}, bid=${bestBid.toPlainString()}) → 无地板市价止损${if (cfg.catastropheImmediate) "(即时)" else ""}",
                         clearTp1HoldStartedAt = true,
                         forceImmediate = cfg.catastropheImmediate
                     )
@@ -699,6 +702,7 @@ class CryptoTailBracketExitService(
     ): Decision? {
         if (!preset.dynamicExit.enabled || holding == null) return null
         val label = tier?.label ?: "?"
+        val modeLabel = if (trigger.mode == TradingMode.SCALP_FLIP) "SCALP" else "TAIL_DIFF"
         // 真熔断（最高优先级，先于 minOdds 评估）：minOdds 分支是 softPriceExit（套 worstPrice 地板），
         // 崩盘 bestBid<worstPrice 时那条卖单根本成交不了且会短路后续检查；holdToExpiry 又跳过 stop_loss 块，
         // 形成"模型仍自信 + 价格崩破地板"下大仓位零有效止损的裸奔缺口。此处灾难线/回撤任一触发即发
@@ -709,7 +713,7 @@ class CryptoTailBracketExitService(
             return Decision(
                 ExitKind.MODEL_INVALID,
                 BigDecimal.ONE,
-                "TAIL_DIFF[$label] DynamicExit: pWin=${holding.pWinHolding.toPlainString()}<${preset.dynamicExit.minModelProbAfterEntry.toPlainString()}",
+                "$modeLabel[$label] DynamicExit: pWin=${holding.pWinHolding.toPlainString()}<${preset.dynamicExit.minModelProbAfterEntry.toPlainString()}",
                 clearTp1HoldStartedAt = true
             )
         }
@@ -717,7 +721,7 @@ class CryptoTailBracketExitService(
             return Decision(
                 ExitKind.MODEL_INVALID,
                 BigDecimal.ONE,
-                "TAIL_DIFF[$label] DynamicExit: diffSigma=${holding.safeRatio.toPlainString()}<${preset.dynamicExit.minDiffSigmaAfterEntry.toPlainString()}",
+                "$modeLabel[$label] DynamicExit: diffSigma=${holding.safeRatio.toPlainString()}<${preset.dynamicExit.minDiffSigmaAfterEntry.toPlainString()}",
                 clearTp1HoldStartedAt = true
             )
         }
@@ -727,7 +731,7 @@ class CryptoTailBracketExitService(
             return Decision(
                 ExitKind.STOP,
                 BigDecimal.ONE,
-                "TAIL_DIFF[$label] DynamicExit: bestBid=${bestBid.toPlainString()}<${preset.dynamicExit.minOddsAfterEntry.toPlainString()}",
+                "$modeLabel[$label] DynamicExit: bestBid=${bestBid.toPlainString()}<${preset.dynamicExit.minOddsAfterEntry.toPlainString()}",
                 clearTp1HoldStartedAt = true,
                 softPriceExit = true
             )
@@ -741,7 +745,7 @@ class CryptoTailBracketExitService(
                 return Decision(
                     ExitKind.MODEL_INVALID,
                     BigDecimal.ONE,
-                    "TAIL_DIFF[$label] DynamicExit: diffRetrace=${retrace.toPlainString()}>${preset.dynamicExit.maxDiffRetracePct.toPlainString()} (entryDiffSigma=${entryDiffSigma.toPlainString()}, current=${holding.safeRatio.toPlainString()})",
+                    "$modeLabel[$label] DynamicExit: diffRetrace=${retrace.toPlainString()}>${preset.dynamicExit.maxDiffRetracePct.toPlainString()} (entryDiffSigma=${entryDiffSigma.toPlainString()}, current=${holding.safeRatio.toPlainString()})",
                     clearTp1HoldStartedAt = true
                 )
             }
@@ -753,7 +757,7 @@ class CryptoTailBracketExitService(
             return Decision(
                 ExitKind.STOP,
                 BigDecimal.ONE,
-                "TAIL_DIFF[$label] DynamicExit: reverseVelocity=${holding.reverseVelocitySigmaPerSec.toPlainString()}σ/s>${preset.dynamicExit.maxReverseVelocitySigma.toPlainString()}",
+                "$modeLabel[$label] DynamicExit: reverseVelocity=${holding.reverseVelocitySigmaPerSec.toPlainString()}σ/s>${preset.dynamicExit.maxReverseVelocitySigma.toPlainString()}",
                 clearTp1HoldStartedAt = true
             )
         }
@@ -762,7 +766,7 @@ class CryptoTailBracketExitService(
             return Decision(
                 ExitKind.MODEL_FLIP,
                 BigDecimal.ONE,
-                "TAIL_DIFF[$label] DynamicExit: modelSide flip from ${trigger.entryModelSide} to ${holding.modelSide}",
+                "$modeLabel[$label] DynamicExit: modelSide flip from ${trigger.entryModelSide} to ${holding.modelSide}",
                 clearTp1HoldStartedAt = true
             )
         }

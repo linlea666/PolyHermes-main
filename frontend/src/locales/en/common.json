@@ -1927,6 +1927,8 @@
       "scalpMaxFillPriceHint": "FAK buy limit cap to avoid filling at too high a price",
       "scalpMinExitBidDepthUsdc": "Min exit bid depth (USDC)",
       "scalpMinExitBidDepthHint": "Check exit depth at entry; leave empty to skip",
+      "scalpMaxEntrySpread": "Max entry spread",
+      "scalpMaxEntrySpreadHint": "Reject when bestAsk−bestBid exceeds this (default 0.03). Wide spread = unstable book prone to sudden collapse; filters falling-knife fills. 0 = disabled",
       "scalpOptionalPlaceholder": "Empty = no limit",
       "scalpWindowSubsection": "Entry Time Window",
       "scalpWindowStartSeconds": "Window start (seconds after period start)",

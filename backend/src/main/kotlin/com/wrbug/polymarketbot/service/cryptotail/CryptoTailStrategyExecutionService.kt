@@ -667,6 +667,14 @@ class CryptoTailStrategyExecutionService(
                 orderbookPayload(orderbook, nowMs).toJson())
         }
 
+        // 2.5) 最大价差（复用通用 maxEntrySpread，默认 0.03；宽价差=盘口不稳易瞬时塌陷，过滤"接飞刀"低价成交风险）
+        val spread = orderbook.spread
+        if (strategy.maxEntrySpread > BigDecimal.ZERO && spread != null && spread > strategy.maxEntrySpread) {
+            return BarrierEval(false, "SCALP_SPREAD_TOO_WIDE",
+                "盘口价差过大: spread=${spread.toPlainString()}>${strategy.maxEntrySpread.toPlainString()}",
+                orderbookPayload(orderbook, nowMs).toJson())
+        }
+
         // 3) 价格区间（按 bestAsk 判定买入价，∈[entryMin, entryMax]）
         val ask = bestAsk ?: orderbook.bestAsk
             ?: return BarrierEval(false, "SCALP_ASK_UNAVAILABLE", "盘口缺少 bestAsk，无法判定进场价", orderbookPayload(orderbook, nowMs).toJson())
@@ -703,7 +711,7 @@ class CryptoTailStrategyExecutionService(
             val (pass, reason) = evaluateScalpReversalGate(strategy, outcomeIndex, ask, periodStartUnix, remainingSeconds)
             if (!pass) {
                 return BarrierEval(false, "SCALP_REVERSAL_GATE", reason,
-                    mapOf("bestAsk" to ask.toPlainString(), "remainingSeconds" to remainingSeconds).toJson())
+                    orderbookPayload(orderbook, nowMs).plus("bestAsk" to ask.toPlainString()).plus("remainingSeconds" to remainingSeconds).toJson())
             }
             return BarrierEval(true, "ALL", "SCALP 进场通过: bestAsk=${ask.toPlainString()} remaining=${remainingSeconds}s ($reason)",
                 orderbookPayload(orderbook, nowMs).toJson())
@@ -1553,6 +1561,51 @@ class CryptoTailStrategyExecutionService(
         )
     }
 
+    /** 发单前盘口复检结果：Abort=调用方应立即放弃下单；Proceed=继续，metricsEval 携带概率模式的 metrics（SCALP/LEGACY 为 null）。 */
+    private sealed class PreSubmitOutcome {
+        object Abort : PreSubmitOutcome()
+        data class Proceed(val metricsEval: BarrierEval?) : PreSubmitOutcome()
+    }
+
+    /**
+     * 发单前盘口复检（统一快/慢路径，根因修复）。
+     * 进场判定基于 WS 盘口，到实际 REST 发单存在 1~3s 时点差，期间盘口可能塌陷，导致 FAK 跌破价格下限"接飞刀"成交。
+     * 统一在发单前用刷新后的最新盘口复检进场闸：
+     *  - refreshedOrderbook==null（LEGACY 或未刷新）→ Proceed(null)，沿用入场判定。
+     *  - SCALP_FLIP → 复用 evaluateScalpEntryGates 对最新盘口复检（价格区间/窗口/剩余/深度/价差/反转/并发）；通过 Proceed(null)（SCALP 无 metrics），失败记录 GATE_FAILED 并 Abort。
+     *  - 概率/尾盘模式 → 复用 evaluateProbabilityEntryGates；通过 Proceed(eval)（携带 metrics），失败记录并 Abort。
+     */
+    private fun resolvePreSubmitEval(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        triggerPrice: BigDecimal,
+        bestAsk: BigDecimal?,
+        preRefreshOrderbook: OrderbookQualitySnapshot?,
+        refreshedOrderbook: OrderbookQualitySnapshot?,
+        tokenId: String?
+    ): PreSubmitOutcome {
+        if (refreshedOrderbook == null) return PreSubmitOutcome.Proceed(null)
+        recordRefreshedAskDriftDiagnostic(strategy, periodStartUnix, outcomeIndex, preRefreshOrderbook, refreshedOrderbook, tokenId)
+        if (strategy.mode == TradingMode.SCALP_FLIP) {
+            val eval = evaluateScalpEntryGates(
+                strategy, periodStartUnix, outcomeIndex,
+                refreshedOrderbook.bestBid ?: triggerPrice, refreshedOrderbook.bestAsk ?: bestAsk, refreshedOrderbook
+            )
+            if (!eval.pass) {
+                recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval, tokenId)
+                return PreSubmitOutcome.Abort
+            }
+            return PreSubmitOutcome.Proceed(null)
+        }
+        val eval = evaluateProbabilityEntryGates(strategy, periodStartUnix, outcomeIndex, refreshedOrderbook)
+        if (!eval.pass || eval.metrics == null) {
+            recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
+            return PreSubmitOutcome.Abort
+        }
+        return PreSubmitOutcome.Proceed(eval)
+    }
+
     private fun evaluateProbabilityEntryGates(
         strategy: CryptoTailStrategy,
         periodStartUnix: Long,
@@ -2250,9 +2303,9 @@ class CryptoTailStrategyExecutionService(
             }
 
             // 根据模式确定下单价格（FAK 吃单）
-            // SCALP_FLIP 与 LEGACY 一样走极简进场：不做发单前 REST 盘口复核与概率/EV 闸，
-            // 进场质量已在 dispatch 的 SCALP 分支用 WS 盘口把关（价格区间/窗口/深度/反转率/并发），避免被概率快路径牵连。
-            val refreshedOrderbook = if (strategy.mode != TradingMode.LEGACY_SPREAD && strategy.mode != TradingMode.SCALP_FLIP) {
+            // LEGACY 仍走极简进场（不做发单前 REST 复核）。SCALP_FLIP 与概率/尾盘模式一致：发单前刷新 REST 盘口并复检进场闸，
+            // 杜绝"门槛判定→实际成交"1~3s 内盘口塌陷导致跌破价格下限的接飞刀成交（根因：进场判定与执行用了两个时点的盘口）。
+            val refreshedOrderbook = if (strategy.mode != TradingMode.LEGACY_SPREAD) {
                 orderbookSnapshotFetcher.fetch(ctx.clobApi, tokenId) ?: run {
                     recordBarrierDecision(
                         strategy,
@@ -2265,17 +2318,9 @@ class CryptoTailStrategyExecutionService(
             } else {
                 null
             }
-            val preSubmitEval = if (refreshedOrderbook != null) {
-                recordRefreshedAskDriftDiagnostic(strategy, periodStartUnix, outcomeIndex, preRefreshOrderbook, refreshedOrderbook, tokenId)
-                val eval = evaluateProbabilityEntryGates(strategy, periodStartUnix, outcomeIndex, refreshedOrderbook)
-                if (!eval.pass || eval.metrics == null) {
-                    recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
-                    return
-                }
-                eval
-            } else {
-                null
-            }
+            val preSubmit = resolvePreSubmitEval(strategy, periodStartUnix, outcomeIndex, triggerPrice, bestAsk, preRefreshOrderbook, refreshedOrderbook, tokenId)
+            if (preSubmit is PreSubmitOutcome.Abort) return
+            val preSubmitEval = (preSubmit as PreSubmitOutcome.Proceed).metricsEval
             val orderbookRefreshed = refreshedOrderbook != null
             val effectiveBestBid = refreshedOrderbook?.bestBid ?: triggerPrice
             val effectiveBestAsk = refreshedOrderbook?.bestAsk ?: bestAsk
@@ -2686,17 +2731,9 @@ class CryptoTailStrategyExecutionService(
         } else {
             null
         }
-        val preSubmitEval = if (refreshedOrderbook != null) {
-            recordRefreshedAskDriftDiagnostic(strategy, periodStartUnix, outcomeIndex, preRefreshOrderbook, refreshedOrderbook, tokenId)
-            val eval = evaluateProbabilityEntryGates(strategy, periodStartUnix, outcomeIndex, refreshedOrderbook)
-            if (!eval.pass || eval.metrics == null) {
-                recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval)
-                return
-            }
-            eval
-        } else {
-            null
-        }
+        val preSubmit = resolvePreSubmitEval(strategy, periodStartUnix, outcomeIndex, triggerPrice, bestAsk, preRefreshOrderbook, refreshedOrderbook, tokenId)
+        if (preSubmit is PreSubmitOutcome.Abort) return
+        val preSubmitEval = (preSubmit as PreSubmitOutcome.Proceed).metricsEval
         val orderbookRefreshed = refreshedOrderbook != null
         val effectiveBestBid = refreshedOrderbook?.bestBid ?: triggerPrice
         val effectiveBestAsk = refreshedOrderbook?.bestAsk ?: bestAsk
