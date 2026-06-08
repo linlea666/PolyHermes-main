@@ -809,13 +809,13 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_reverse_velocity_window_seconds", nullable = false)
     val scalpReverseVelocityWindowSeconds: Int = 10,
 
-    /** 持仓模型衰减软止损：持仓中 pWin 跌破此值即退出（0=不启用）。依赖价源可用 */
+    /** 持仓模型衰减软止损：持仓中 pWin 跌破此值即退出（0=不启用）。依赖价源可用。默认 0.80（防线A，反转保护，新建策略生效；存量需重新保存采用） */
     @Column(name = "scalp_min_model_prob_after_entry", nullable = false, precision = 20, scale = 8)
-    val scalpMinModelProbAfterEntry: BigDecimal = BigDecimal.ZERO,
+    val scalpMinModelProbAfterEntry: BigDecimal = BigDecimal("0.80"),
 
-    /** 领先优势回撤软止损：持仓 diff_sigma 相对入场回撤比例超过此值即退出（0=不启用）。依赖价源+入场冻结 diff_sigma */
+    /** 领先优势回撤软止损：持仓 diff_sigma 相对入场回撤比例超过此值即退出（0=不启用）。依赖价源+入场冻结 diff_sigma。默认 0.35（防线A，反转保护） */
     @Column(name = "scalp_max_diff_retrace_pct", nullable = false, precision = 20, scale = 8)
-    val scalpMaxDiffRetracePct: BigDecimal = BigDecimal.ZERO,
+    val scalpMaxDiffRetracePct: BigDecimal = BigDecimal("0.35"),
 
     /** 熔断绝对地板：持仓 bestBid 跌破此值即发无地板市价止损（0=不启用）。作为最深兜底，应低于 scalp_stop_min_price */
     @Column(name = "scalp_catastrophe_bid_floor", nullable = false, precision = 20, scale = 8)
@@ -896,6 +896,29 @@ data class CryptoTailStrategy(
     /** SCALP 当日连续亏损停笔数（V83）：当日连亏达此笔数后熔断到日终（0=关）。仅 SCALP_FLIP 消费 */
     @Column(name = "scalp_consec_loss_stop_count", nullable = false)
     val scalpConsecLossStopCount: Int = 3,
+
+    /**
+     * 进场价差闸总开关（V87）：true 时在方向闸之后增加一道"领先优势不足则拒单(SCALP_GAP_TOO_SMALL)"。
+     * 默认 false（零回归，待复盘因子数据驱动调参后再开）。仅 SCALP_FLIP 消费。
+     */
+    @Column(name = "scalp_gap_gate_enabled", nullable = false)
+    val scalpGapGateEnabled: Boolean = false,
+
+    /** 进场最小 diff_sigma（safeRatio）：闸生效时当前 diff_sigma < 此值即拒单；0=该维度不检查 */
+    @Column(name = "scalp_min_entry_diff_sigma", nullable = false, precision = 20, scale = 8)
+    val scalpMinEntryDiffSigma: BigDecimal = BigDecimal.ZERO,
+
+    /** 进场最小价差绝对值 |gap|：闸生效时当前 |gap| < 此值即拒单；0=该维度不检查 */
+    @Column(name = "scalp_min_entry_gap_abs", nullable = false, precision = 30, scale = 8)
+    val scalpMinEntryGapAbs: BigDecimal = BigDecimal.ZERO,
+
+    /** 价差闸生效窗口下限（距结算剩余秒）：闸仅当 remaining>=lo 生效；lo=0 表示无下限 */
+    @Column(name = "scalp_gap_gate_remaining_lo", nullable = false)
+    val scalpGapGateRemainingLo: Int = 0,
+
+    /** 价差闸生效窗口上限（距结算剩余秒）：hi<=0 表示无上界；与 lo 同为 0 即全周期生效；否则当 remaining ∈ [lo, hi] 生效 */
+    @Column(name = "scalp_gap_gate_remaining_hi", nullable = false)
+    val scalpGapGateRemainingHi: Int = 0,
 
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,

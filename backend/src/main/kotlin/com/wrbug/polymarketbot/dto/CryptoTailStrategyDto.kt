@@ -258,7 +258,12 @@ data class CryptoTailStrategyCreateRequest(
     val scalpHardFloorRatio: String? = null,
     val scalpDailyLossLimitUsdc: String? = null,
     val scalpConsecLossPauseCount: Int? = null,
-    val scalpConsecLossStopCount: Int? = null
+    val scalpConsecLossStopCount: Int? = null,
+    val scalpGapGateEnabled: Boolean? = null,
+    val scalpMinEntryDiffSigma: String? = null,
+    val scalpMinEntryGapAbs: String? = null,
+    val scalpGapGateRemainingLo: Int? = null,
+    val scalpGapGateRemainingHi: Int? = null
 )
 
 /**
@@ -491,7 +496,12 @@ data class CryptoTailStrategyUpdateRequest(
     val scalpHardFloorRatio: String? = null,
     val scalpDailyLossLimitUsdc: String? = null,
     val scalpConsecLossPauseCount: Int? = null,
-    val scalpConsecLossStopCount: Int? = null
+    val scalpConsecLossStopCount: Int? = null,
+    val scalpGapGateEnabled: Boolean? = null,
+    val scalpMinEntryDiffSigma: String? = null,
+    val scalpMinEntryGapAbs: String? = null,
+    val scalpGapGateRemainingLo: Int? = null,
+    val scalpGapGateRemainingHi: Int? = null
 )
 
 /**
@@ -759,6 +769,11 @@ data class CryptoTailStrategyDto(
     val scalpDailyLossLimitUsdc: String? = null,
     val scalpConsecLossPauseCount: Int = 2,
     val scalpConsecLossStopCount: Int = 3,
+    val scalpGapGateEnabled: Boolean = false,
+    val scalpMinEntryDiffSigma: String = "0",
+    val scalpMinEntryGapAbs: String = "0",
+    val scalpGapGateRemainingLo: Int = 0,
+    val scalpGapGateRemainingHi: Int = 0,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )

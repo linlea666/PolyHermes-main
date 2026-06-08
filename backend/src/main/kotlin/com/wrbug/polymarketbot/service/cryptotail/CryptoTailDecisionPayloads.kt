@@ -47,6 +47,32 @@ data class OrderResultPayload(
     val orderType: String? = null
 )
 
+/**
+ * EXIT_CHECK / EXIT_SIGNAL：持仓中退出评估快照（来自 CryptoTailBracketExitService.recordEvent）。
+ * 供复盘因子聚合派生「反转动态/出场归因/MAE-MFE」，与投影器同口径：String? + 安全转换。
+ */
+data class ExitCheckPayload(
+    val entryFillPrice: String? = null,
+    val currentBestBid: String? = null,
+    val currentBestAsk: String? = null,
+    val entryPWin: String? = null,
+    val currentPWin: String? = null,
+    val entrySafeRatio: String? = null,
+    val currentSafeRatio: String? = null,
+    val entryModelSide: String? = null,
+    val currentModelSide: String? = null,
+    val entryGap: String? = null,
+    val currentGap: String? = null,
+    val remainingSeconds: String? = null,
+    val peakBid: String? = null,
+    val drawdownFromPeak: String? = null,
+    val exitReason: String? = null,
+    val realizedPnlIfExit: String? = null,
+    val executableExitDepthUsd: String? = null,
+    val expectedExitPrice: String? = null,
+    val expectedExitSlippage: String? = null
+)
+
 /** SETTLED：链上结算与复盘归因 */
 data class SettledPayload(
     val won: String? = null,

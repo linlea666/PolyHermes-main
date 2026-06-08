@@ -468,7 +468,12 @@ class CryptoTailStrategyService(
                 scalpHardFloorRatio = sc.hardFloorRatio,
                 scalpDailyLossLimitUsdc = sc.dailyLossLimitUsdc,
                 scalpConsecLossPauseCount = sc.consecLossPauseCount,
-                scalpConsecLossStopCount = sc.consecLossStopCount
+                scalpConsecLossStopCount = sc.consecLossStopCount,
+                scalpGapGateEnabled = sc.gapGateEnabled,
+                scalpMinEntryDiffSigma = sc.minEntryDiffSigma,
+                scalpMinEntryGapAbs = sc.minEntryGapAbs,
+                scalpGapGateRemainingLo = sc.gapGateRemainingLo,
+                scalpGapGateRemainingHi = sc.gapGateRemainingHi
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -893,6 +898,11 @@ class CryptoTailStrategyService(
                 scalpDailyLossLimitUsdc = sc.dailyLossLimitUsdc,
                 scalpConsecLossPauseCount = sc.consecLossPauseCount,
                 scalpConsecLossStopCount = sc.consecLossStopCount,
+                scalpGapGateEnabled = sc.gapGateEnabled,
+                scalpMinEntryDiffSigma = sc.minEntryDiffSigma,
+                scalpMinEntryGapAbs = sc.minEntryGapAbs,
+                scalpGapGateRemainingLo = sc.gapGateRemainingLo,
+                scalpGapGateRemainingHi = sc.gapGateRemainingHi,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -2145,7 +2155,12 @@ class CryptoTailStrategyService(
         val hardFloorRatio: BigDecimal,
         val dailyLossLimitUsdc: BigDecimal?,
         val consecLossPauseCount: Int,
-        val consecLossStopCount: Int
+        val consecLossStopCount: Int,
+        val gapGateEnabled: Boolean,
+        val minEntryDiffSigma: BigDecimal,
+        val minEntryGapAbs: BigDecimal,
+        val gapGateRemainingLo: Int,
+        val gapGateRemainingHi: Int
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -2189,8 +2204,8 @@ class CryptoTailStrategyService(
         reverseVelocityStopEnabled = r.scalpReverseVelocityStopEnabled ?: true,
         maxReverseVelocitySigma = r.scalpMaxReverseVelocitySigma?.toSafeBigDecimal() ?: BigDecimal("0.40"),
         reverseVelocityWindowSeconds = r.scalpReverseVelocityWindowSeconds ?: 10,
-        minModelProbAfterEntry = r.scalpMinModelProbAfterEntry?.toSafeBigDecimal() ?: BigDecimal.ZERO,
-        maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        minModelProbAfterEntry = r.scalpMinModelProbAfterEntry?.toSafeBigDecimal() ?: BigDecimal("0.80"),
+        maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: BigDecimal("0.35"),
         catastropheBidFloor = r.scalpCatastropheBidFloor?.toSafeBigDecimal() ?: BigDecimal("0.88"),
         catastropheImmediate = r.scalpCatastropheImmediate ?: true,
         catastropheFloorRatio = r.scalpCatastropheFloorRatio?.toSafeBigDecimal() ?: BigDecimal("0.85"),
@@ -2203,7 +2218,12 @@ class CryptoTailStrategyService(
         hardFloorRatio = r.scalpHardFloorRatio?.toSafeBigDecimal() ?: BigDecimal("0.50"),
         dailyLossLimitUsdc = r.scalpDailyLossLimitUsdc?.takeIf { it.isNotBlank() }?.toSafeBigDecimal(),
         consecLossPauseCount = r.scalpConsecLossPauseCount ?: 0,
-        consecLossStopCount = r.scalpConsecLossStopCount ?: 3
+        consecLossStopCount = r.scalpConsecLossStopCount ?: 3,
+        gapGateEnabled = r.scalpGapGateEnabled ?: false,
+        minEntryDiffSigma = r.scalpMinEntryDiffSigma?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        minEntryGapAbs = r.scalpMinEntryGapAbs?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        gapGateRemainingLo = r.scalpGapGateRemainingLo ?: 0,
+        gapGateRemainingHi = r.scalpGapGateRemainingHi ?: 0
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2248,7 +2268,12 @@ class CryptoTailStrategyService(
         hardFloorRatio = r.scalpHardFloorRatio?.toSafeBigDecimal() ?: e.scalpHardFloorRatio,
         dailyLossLimitUsdc = resolveNullableBigDecimalUpdate(r.scalpDailyLossLimitUsdc, e.scalpDailyLossLimitUsdc),
         consecLossPauseCount = r.scalpConsecLossPauseCount ?: e.scalpConsecLossPauseCount,
-        consecLossStopCount = r.scalpConsecLossStopCount ?: e.scalpConsecLossStopCount
+        consecLossStopCount = r.scalpConsecLossStopCount ?: e.scalpConsecLossStopCount,
+        gapGateEnabled = r.scalpGapGateEnabled ?: e.scalpGapGateEnabled,
+        minEntryDiffSigma = r.scalpMinEntryDiffSigma?.toSafeBigDecimal() ?: e.scalpMinEntryDiffSigma,
+        minEntryGapAbs = r.scalpMinEntryGapAbs?.toSafeBigDecimal() ?: e.scalpMinEntryGapAbs,
+        gapGateRemainingLo = r.scalpGapGateRemainingLo ?: e.scalpGapGateRemainingLo,
+        gapGateRemainingHi = r.scalpGapGateRemainingHi ?: e.scalpGapGateRemainingHi
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2534,6 +2559,11 @@ class CryptoTailStrategyService(
             scalpDailyLossLimitUsdc = e.scalpDailyLossLimitUsdc?.toPlainString(),
             scalpConsecLossPauseCount = e.scalpConsecLossPauseCount,
             scalpConsecLossStopCount = e.scalpConsecLossStopCount,
+            scalpGapGateEnabled = e.scalpGapGateEnabled,
+            scalpMinEntryDiffSigma = e.scalpMinEntryDiffSigma.toPlainString(),
+            scalpMinEntryGapAbs = e.scalpMinEntryGapAbs.toPlainString(),
+            scalpGapGateRemainingLo = e.scalpGapGateRemainingLo,
+            scalpGapGateRemainingHi = e.scalpGapGateRemainingHi,
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )

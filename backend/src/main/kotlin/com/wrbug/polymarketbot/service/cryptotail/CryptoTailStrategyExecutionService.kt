@@ -721,6 +721,30 @@ class CryptoTailStrategyExecutionService(
             }
         }
 
+        // 3.6) 进场价差闸（V87，默认关）：领先优势(diff_sigma/|gap|)不足则拒单，应对"目标价与当前价过近易反转割肉"。
+        // 复用上方 entrySignal（safeRatio=diff_sigma、gap）；价源不可用(entrySignal==null)无法计算领先优势 → 降级放行（不阻断正常进场）。
+        if (strategy.scalpGapGateEnabled && entrySignal != null) {
+            val lo = strategy.scalpGapGateRemainingLo
+            val hi = strategy.scalpGapGateRemainingHi
+            // 窗口语义：remaining >= lo 且（hi<=0 视为无上界）。(0,0)→全周期（与历史一致）；
+            // 仅填 lo（hi=0）不再静默失效，而是"剩余>=lo 全程生效"，避免误配后以为开了实则没生效。
+            val windowActive = remainingSeconds >= lo && (hi <= 0 || remainingSeconds <= hi)
+            if (windowActive) {
+                val minSigma = strategy.scalpMinEntryDiffSigma
+                if (minSigma > BigDecimal.ZERO && entrySignal.safeRatio < minSigma) {
+                    return BarrierEval(false, "SCALP_GAP_TOO_SMALL",
+                        "领先优势不足: diffSigma=${entrySignal.safeRatio.toPlainString()}<${minSigma.toPlainString()} (remaining=${remainingSeconds}s)",
+                        orderbookPayload(orderbook, nowMs).plus("remainingSeconds" to remainingSeconds).plus(scalpSignalPayload(entrySignal)).toJson())
+                }
+                val minGapAbs = strategy.scalpMinEntryGapAbs
+                if (minGapAbs > BigDecimal.ZERO && entrySignal.gap.abs() < minGapAbs) {
+                    return BarrierEval(false, "SCALP_GAP_TOO_SMALL",
+                        "价差过小: |gap|=${entrySignal.gap.abs().toPlainString()}<${minGapAbs.toPlainString()} (remaining=${remainingSeconds}s)",
+                        orderbookPayload(orderbook, nowMs).plus("remainingSeconds" to remainingSeconds).plus(scalpSignalPayload(entrySignal)).toJson())
+                }
+            }
+        }
+
         // 4) 退出流动性深度（确保可退出；null=不检查）
         val minDepth = strategy.scalpMinExitBidDepthUsdc
         if (minDepth != null && minDepth > BigDecimal.ZERO) {

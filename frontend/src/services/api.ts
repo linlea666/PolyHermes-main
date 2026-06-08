@@ -808,6 +808,16 @@ export const apiService = {
       apiClient.post<ApiResponse<import('../types').CryptoTailTradeSnapshotListResponse>>('/crypto-tail-strategy/decision/snapshot/list', data),
     tradeSnapshotExport: (data: import('../types').CryptoTailTradeSnapshotExportRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailTradeSnapshotExportResponse>>('/crypto-tail-strategy/decision/snapshot/export', data),
+    forensicsList: (data: import('../types').ForensicsListRequest) =>
+      apiClient.post<ApiResponse<import('../types').ForensicsListResponse>>('/crypto-tail-strategy/forensics/list', data),
+    forensicsAggregate: (data: import('../types').ForensicsAggregateRequest) =>
+      apiClient.post<ApiResponse<import('../types').ForensicsAggregateResponse>>('/crypto-tail-strategy/forensics/aggregate', data),
+    forensicsAggregate2d: (data: import('../types').ForensicsAggregateRequest) =>
+      apiClient.post<ApiResponse<import('../types').ForensicsAggregateResponse>>('/crypto-tail-strategy/forensics/aggregate2d', data),
+    forensicsBackfill: (data: import('../types').ForensicsBackfillRequest) =>
+      apiClient.post<ApiResponse<import('../types').ForensicsBackfillResponse>>('/crypto-tail-strategy/forensics/backfill', data),
+    forensicsDimensions: () =>
+      apiClient.post<ApiResponse<string[]>>('/crypto-tail-strategy/forensics/dimensions', {}),
     marketOptions: () =>
       apiClient.post<ApiResponse<import('../types').CryptoTailMarketOptionDto[]>>('/crypto-tail-strategy/market-options', {}),
     autoMinSpread: (data: { intervalSeconds: number }) =>

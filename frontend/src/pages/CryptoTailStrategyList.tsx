@@ -132,8 +132,8 @@ const SCALP_DEFAULTS = {
   scalpReverseVelocityStopEnabled: true,
   scalpMaxReverseVelocitySigma: '0.40',
   scalpReverseVelocityWindowSeconds: 10,
-  scalpMinModelProbAfterEntry: '0',
-  scalpMaxDiffRetracePct: '0',
+  scalpMinModelProbAfterEntry: '0.80',
+  scalpMaxDiffRetracePct: '0.35',
   scalpCatastropheBidFloor: '0.88',
   scalpCatastropheImmediate: true,
   scalpCatastropheFloorRatio: '0.85',
@@ -146,7 +146,12 @@ const SCALP_DEFAULTS = {
   scalpHardFloorRatio: '0.50',
   scalpDailyLossLimitUsdc: undefined as string | undefined,
   scalpConsecLossPauseCount: 0,
-  scalpConsecLossStopCount: 3
+  scalpConsecLossStopCount: 3,
+  scalpGapGateEnabled: false,
+  scalpMinEntryDiffSigma: '0',
+  scalpMinEntryGapAbs: '0',
+  scalpGapGateRemainingLo: 0,
+  scalpGapGateRemainingHi: 0
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -191,7 +196,12 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpHardFloorRatio: record.scalpHardFloorRatio ?? SCALP_DEFAULTS.scalpHardFloorRatio,
   scalpDailyLossLimitUsdc: record.scalpDailyLossLimitUsdc ?? SCALP_DEFAULTS.scalpDailyLossLimitUsdc,
   scalpConsecLossPauseCount: record.scalpConsecLossPauseCount ?? SCALP_DEFAULTS.scalpConsecLossPauseCount,
-  scalpConsecLossStopCount: record.scalpConsecLossStopCount ?? SCALP_DEFAULTS.scalpConsecLossStopCount
+  scalpConsecLossStopCount: record.scalpConsecLossStopCount ?? SCALP_DEFAULTS.scalpConsecLossStopCount,
+  scalpGapGateEnabled: record.scalpGapGateEnabled ?? SCALP_DEFAULTS.scalpGapGateEnabled,
+  scalpMinEntryDiffSigma: record.scalpMinEntryDiffSigma ?? SCALP_DEFAULTS.scalpMinEntryDiffSigma,
+  scalpMinEntryGapAbs: record.scalpMinEntryGapAbs ?? SCALP_DEFAULTS.scalpMinEntryGapAbs,
+  scalpGapGateRemainingLo: record.scalpGapGateRemainingLo ?? SCALP_DEFAULTS.scalpGapGateRemainingLo,
+  scalpGapGateRemainingHi: record.scalpGapGateRemainingHi ?? SCALP_DEFAULTS.scalpGapGateRemainingHi
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -389,7 +399,12 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   // 风控（V83）：日亏可空，空发 ''（后端三态显式清空置 NULL）；连亏笔数发数值（0=关）
   scalpDailyLossLimitUsdc: strOrEmpty(v.scalpDailyLossLimitUsdc),
   scalpConsecLossPauseCount: numOrUndef(v.scalpConsecLossPauseCount),
-  scalpConsecLossStopCount: numOrUndef(v.scalpConsecLossStopCount)
+  scalpConsecLossStopCount: numOrUndef(v.scalpConsecLossStopCount),
+  scalpGapGateEnabled: typeof v.scalpGapGateEnabled === 'boolean' ? v.scalpGapGateEnabled : undefined,
+  scalpMinEntryDiffSigma: strOrUndef(v.scalpMinEntryDiffSigma),
+  scalpMinEntryGapAbs: strOrUndef(v.scalpMinEntryGapAbs),
+  scalpGapGateRemainingLo: numOrUndef(v.scalpGapGateRemainingLo),
+  scalpGapGateRemainingHi: numOrUndef(v.scalpGapGateRemainingHi)
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -3621,6 +3636,24 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpEntryRequoteMax" label={t('cryptoTailStrategy.form.scalpEntryRequoteMax')} extra={t('cryptoTailStrategy.form.scalpEntryRequoteMaxHint')}>
                 <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpGapGateSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpGapGateEnabled" label={t('cryptoTailStrategy.form.scalpGapGateEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpGapGateEnabledHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpMinEntryDiffSigma" label={t('cryptoTailStrategy.form.scalpMinEntryDiffSigma')} extra={t('cryptoTailStrategy.form.scalpMinEntryDiffSigmaHint')}>
+                <InputNumber min={0} step={0.1} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpMinEntryGapAbs" label={t('cryptoTailStrategy.form.scalpMinEntryGapAbs')} extra={t('cryptoTailStrategy.form.scalpMinEntryGapAbsHint')}>
+                <InputNumber min={0} step={1} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpGapGateRemainingLo" label={t('cryptoTailStrategy.form.scalpGapGateRemainingLo')} extra={t('cryptoTailStrategy.form.scalpGapGateRemainingHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpGapGateRemainingHi" label={t('cryptoTailStrategy.form.scalpGapGateRemainingHi')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
               </Form.Item>
               <Form.Item style={{ marginBottom: 8 }}>
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpRiskSubsection')}</Typography.Text>

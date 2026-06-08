@@ -1713,6 +1713,11 @@ export interface CryptoTailStrategyDto {
   scalpDailyLossLimitUsdc?: string | null
   scalpConsecLossPauseCount?: number
   scalpConsecLossStopCount?: number
+  scalpGapGateEnabled?: boolean
+  scalpMinEntryDiffSigma?: string
+  scalpMinEntryGapAbs?: string
+  scalpGapGateRemainingLo?: number
+  scalpGapGateRemainingHi?: number
   createdAt: number
   updatedAt: number
 }
@@ -1760,6 +1765,11 @@ export interface CryptoTailScalpParams {
   scalpDailyLossLimitUsdc?: string | null
   scalpConsecLossPauseCount?: number
   scalpConsecLossStopCount?: number
+  scalpGapGateEnabled?: boolean
+  scalpMinEntryDiffSigma?: string
+  scalpMinEntryGapAbs?: string
+  scalpGapGateRemainingLo?: number
+  scalpGapGateRemainingHi?: number
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */
@@ -2201,6 +2211,161 @@ export interface CryptoTailTradeSnapshotExportResponse {
   filename: string
   csv: string
   total: number
+}
+
+/** ===== 成交复盘因子（reversal/方向错误 多维归因） ===== */
+
+/** 复盘因子明细查询请求 */
+export interface ForensicsListRequest {
+  strategyId?: number | null
+  marketSlug?: string | null
+  intervalSeconds?: number | null
+  outcomeCategory?: string | null
+  onlySettled?: boolean
+  startTs?: number | null
+  endTs?: number | null
+  page?: number
+  pageSize?: number
+}
+
+/** 复盘因子明细 DTO（数值以字符串返回） */
+export interface ForensicsDto {
+  id: number
+  strategyId: number
+  accountId?: number | null
+  marketSlug?: string | null
+  intervalSeconds: number
+  periodStartUnix: number
+  triggerId?: number | null
+  mode?: number | null
+  outcomeIndex?: number | null
+  entryTs?: number | null
+  entryRemainingSeconds?: number | null
+  entryOfficialTarget?: string | null
+  entryCurrentPrice?: string | null
+  entryGap?: string | null
+  entryGapAbs?: string | null
+  entryGapPct?: string | null
+  entryDiffSigma?: string | null
+  entryPwin?: string | null
+  entryModelSide?: number | null
+  entryBestBid?: string | null
+  entryBestAsk?: string | null
+  entryFillPrice?: string | null
+  entryWallHour?: number | null
+  entryDow?: number | null
+  entryDiffSigmaBucket?: string | null
+  entryOddsBucket?: string | null
+  entryRemainingBucket?: string | null
+  fillVsBandDev?: string | null
+  requoteCount?: number | null
+  submitLatencyMs?: number | null
+  entrySlippage?: string | null
+  leadReversed?: boolean | null
+  firstReversalRemainingSeconds?: number | null
+  troughSafeRatio?: string | null
+  troughGap?: string | null
+  maxDiffRetracePct?: string | null
+  minBestBid?: string | null
+  peakBestBid?: string | null
+  reversalSampleCount?: number | null
+  recoveredAfterReversal?: boolean | null
+  maeOdds?: string | null
+  mfeOdds?: string | null
+  maeSigma?: string | null
+  mfeSigma?: string | null
+  exitKind?: string | null
+  exitReason?: string | null
+  wasCut?: boolean | null
+  exitPrice?: string | null
+  exitSlippage?: string | null
+  exitExecutableDepthUsd?: string | null
+  holdSeconds?: number | null
+  settled: boolean
+  won?: boolean | null
+  winnerOutcomeIndex?: number | null
+  finalOfficialTarget?: string | null
+  finalCurrentPrice?: string | null
+  finalGap?: string | null
+  realizedPnl?: string | null
+  wouldHaveWonIfHeld?: boolean | null
+  counterfactualHoldPnl?: string | null
+  cutVsHoldDelta?: string | null
+  cfgFingerprint?: string | null
+  cfgGapGateEnabled?: boolean | null
+  directionCorrect?: boolean | null
+  outcomeCategory?: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+/** 复盘因子明细分页响应 */
+export interface ForensicsListResponse {
+  list: ForensicsDto[]
+  total: number
+}
+
+/** 多维分组聚合请求 */
+export interface ForensicsAggregateRequest {
+  dim1: string
+  dim2?: string | null
+  strategyId?: number | null
+  marketSlug?: string | null
+  intervalSeconds?: number | null
+  outcomeCategory?: string | null
+  onlySettled?: boolean
+  startTs?: number | null
+  endTs?: number | null
+}
+
+/** 聚合单组结果 */
+export interface ForensicsAggregateRow {
+  key1?: string | null
+  key2?: string | null
+  count: number
+  wins: number
+  directionCorrect: number
+  cuts: number
+  wouldWin: number
+  reversedCount: number
+  recoveredCount: number
+  winRate: string
+  directionAccuracy: string
+  cutRate: string
+  cutButWouldWinRate: string
+  reversalRate: string
+  recoverRate: string
+  avgDiffSigma?: string | null
+  avgGapAbs?: string | null
+  avgBestAsk?: string | null
+  avgPwin?: string | null
+  avgRetrace?: string | null
+  avgMaeOdds?: string | null
+  avgMfeOdds?: string | null
+  avgFirstReversalRemaining?: string | null
+  avgHoldSeconds?: string | null
+  sumPnl?: string | null
+  avgPnl?: string | null
+  sumCutVsHold?: string | null
+}
+
+/** 聚合响应 */
+export interface ForensicsAggregateResponse {
+  dim1: string
+  dim2?: string | null
+  rows: ForensicsAggregateRow[]
+  allowedDimensions: string[]
+}
+
+/** 回填请求/响应 */
+export interface ForensicsBackfillRequest {
+  strategyId: number
+  startTs?: number | null
+  endTs?: number | null
+}
+
+export interface ForensicsBackfillResponse {
+  processed: number
 }
 
 /** 自动最小价差计算响应 */
