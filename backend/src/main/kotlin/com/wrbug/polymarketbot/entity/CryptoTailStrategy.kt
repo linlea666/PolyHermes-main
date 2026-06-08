@@ -842,6 +842,22 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_smart_stop_min_pwin", nullable = false, precision = 20, scale = 8)
     val scalpSmartStopMinPwin: BigDecimal = BigDecimal("0.70"),
 
+    /**
+     * SCALP 智能硬止损/抗插针旁路的 safeRatio 下限（V82）：取代写死的 SMART_HARD_STOP_MIN_SAFE_RATIO(1.30)。
+     * 旁路实际下限 = max(exitSafeRatio, 此值)。默认 1.30；调低（如 1.10）可避免"safeRatio 差 0.02 被误杀"。
+     * 仅 SCALP_FLIP 消费；BARRIER/TAIL_DIFF 仍用 1.30 常量。
+     */
+    @Column(name = "scalp_smart_stop_min_safe_ratio", nullable = false, precision = 20, scale = 8)
+    val scalpSmartStopMinSafeRatio: BigDecimal = BigDecimal("1.30"),
+
+    /**
+     * SCALP 无条件深底线比例（V82）：bestBid <= 入场价×此值即时市价全清止血，是唯一不可被智能复核豁免的硬线。
+     * 默认 0.50（即 -50%）。调高（如 0.70）更早无条件止血但牺牲抗插针；调低则更能扛插针但单笔最深亏损更大。
+     * 仅 SCALP_FLIP 消费；其余模式仍用 HARD_FLOOR_RATIO(0.50) 常量。
+     */
+    @Column(name = "scalp_hard_floor_ratio", nullable = false, precision = 20, scale = 8)
+    val scalpHardFloorRatio: BigDecimal = BigDecimal("0.50"),
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

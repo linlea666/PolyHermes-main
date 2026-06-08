@@ -408,12 +408,14 @@ class CryptoTailBracketExitService(
         // 仅做绝对价格兜底，比 Smart Hard Stop 的 bypass 阈值更低且不可豁免（forceImmediate + HARD_STOP 走市价扫单）。
         resolveEntryFillPrice(trigger)?.let { entryFill ->
             if (entryFill > BigDecimal.ZERO) {
-                val hardFloor = entryFill.multiply(HARD_FLOOR_RATIO)
+                // SCALP 深底线比例可配（scalpHardFloorRatio，默认 0.50）；其余模式仍用常量 HARD_FLOOR_RATIO。
+                val floorRatio = if (strategy.mode == TradingMode.SCALP_FLIP) strategy.scalpHardFloorRatio else HARD_FLOOR_RATIO
+                val hardFloor = entryFill.multiply(floorRatio)
                 if (bestBid <= hardFloor) {
                     return Decision(
                         ExitKind.HARD_STOP,
                         BigDecimal.ONE,
-                        "HARD_FLOOR: bestBid=${bestBid.toPlainString()}<=entry×${HARD_FLOOR_RATIO.toPlainString()}=${hardFloor.toPlainString()} (entry=${entryFill.toPlainString()}) → 无条件市价全清",
+                        "HARD_FLOOR: bestBid=${bestBid.toPlainString()}<=entry×${floorRatio.toPlainString()}=${hardFloor.toPlainString()} (entry=${entryFill.toPlainString()}) → 无条件市价全清",
                         clearTp1HoldStartedAt = true,
                         forceImmediate = true
                     )
@@ -606,6 +608,37 @@ class CryptoTailBracketExitService(
         val tier = TailDiffTier.fromLabel(trigger.tier)
         val modeLabel = if (trigger.mode == TradingMode.SCALP_FLIP) "SCALP" else "TAIL_DIFF"
         val preset = resolveTailDiffPresetForTrigger(strategy, trigger, tier)
+        // SCALP 抗插针总闸（V82）：进入此处时 bestBid 必 > 入场×深底线（深底线在 decideExit 顶部已无条件拦截）。
+        // 模型强挺（方向未反 + gap 顺 + pWin>=插针容忍 + safeRatio>=可配下限 + 价源新鲜）→ 判为盘口瞬时插针，
+        // 跳过所有亏损类退出（机械止损线/熔断地板/minOdds/反抽），继续持有；止盈(tpLimit)优先照常落袋。
+        // 每 tick 复核：模型一旦真转弱（方向翻/pWin 掉/safeRatio 掉/gap 反）下一 tick 立即按原逻辑止损。
+        // 仅 SCALP_FLIP + enableSmartHardStop 生效；TAIL_DIFF/BARRIER 路径与开关关闭时行为完全不变。
+        if (trigger.mode == TradingMode.SCALP_FLIP && strategy.enableSmartHardStop && holding != null) {
+            val wickBypass = CryptoTailHoldToSettlePolicy.evaluateHardStopBypass(
+                enabled = true,
+                priceReady = holding.priceReady(strategy.maxPriceAgeMs),
+                outcomeIndex = trigger.outcomeIndex,
+                modelSide = holding.modelSide,
+                gap = holding.gap,
+                pWinHolding = holding.pWinHolding,
+                safeRatio = holding.safeRatio,
+                remainingSeconds = remainingSeconds,
+                bypassMinPwin = strategy.scalpSmartStopMinPwin,
+                holdToSettleSeconds = strategy.intervalSeconds,
+                exitSafeRatio = strategy.exitSafeRatio,
+                minSafeRatioFloor = strategy.scalpSmartStopMinSafeRatio
+            )
+            if (wickBypass.bypass) {
+                // 止盈优先：模型强挺但已到止盈线仍应落袋，不被总闸压住。
+                tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
+                return Decision(
+                    null,
+                    BigDecimal.ZERO,
+                    "$modeLabel[${tier?.label ?: "?"}] WICK_GUARD: 模型强挺(pWin=${holding.pWinHolding.toPlainString()}>=${strategy.scalpSmartStopMinPwin.toPlainString()} safeRatio=${holding.safeRatio.toPlainString()}>=max(${strategy.exitSafeRatio.toPlainString()},${strategy.scalpSmartStopMinSafeRatio.toPlainString()}) modelSide=${holding.modelSide}==oi=${trigger.outcomeIndex} gap=${holding.gap.toPlainString()}) bestBid=${bestBid.toPlainString()} → 判盘口插针,跳过价格类退出继续持有(深底线 入场×${strategy.scalpHardFloorRatio.toPlainString()} 无条件即时不可豁免)",
+                    clearTp1HoldStartedAt = true
+                )
+            }
+        }
         if (preset.holdToExpiry) {
             // TOP 不再"无脑持有到结算"：即便 holdToExpiry，仍保留硬危险兜底（minOdds/反抽/价差坍缩/方向翻转），
             // 仅跳过 modelProb/diffSigma 这类较软的模型衰减退出，避免最大仓位在剧烈反转下零保护。
@@ -630,6 +663,7 @@ class CryptoTailBracketExitService(
                     // 插针容忍 pWin 下限：SCALP_FLIP 用 scalpSmartStopMinPwin（默认 0.70，与持有到结算 pWin 解耦）；
                     // TAIL_DIFF 沿用 holdToSettlePwin（行为不变）。其余复核（方向/gap/safeRatio>=max(exitSafeRatio,1.30)/价源新鲜）一致。
                     val bypassMinPwin = if (trigger.mode == TradingMode.SCALP_FLIP) strategy.scalpSmartStopMinPwin else strategy.holdToSettlePwin
+                    val bypassMinSafeRatio = if (trigger.mode == TradingMode.SCALP_FLIP) strategy.scalpSmartStopMinSafeRatio else CryptoTailHoldToSettlePolicy.SMART_HARD_STOP_MIN_SAFE_RATIO
                     val bypass = CryptoTailHoldToSettlePolicy.evaluateHardStopBypass(
                         enabled = true,
                         priceReady = holding.priceReady(strategy.maxPriceAgeMs),
@@ -641,7 +675,8 @@ class CryptoTailBracketExitService(
                         remainingSeconds = remainingSeconds,
                         bypassMinPwin = bypassMinPwin,
                         holdToSettleSeconds = strategy.intervalSeconds,
-                        exitSafeRatio = strategy.exitSafeRatio
+                        exitSafeRatio = strategy.exitSafeRatio,
+                        minSafeRatioFloor = bypassMinSafeRatio
                     )
                     if (bypass.bypass) {
                         return Decision(

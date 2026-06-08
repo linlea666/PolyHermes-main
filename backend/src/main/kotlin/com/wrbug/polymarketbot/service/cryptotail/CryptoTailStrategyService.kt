@@ -458,7 +458,9 @@ class CryptoTailStrategyService(
                 scalpCatastropheImmediate = sc.catastropheImmediate,
                 scalpRequireUnderlyingAgreement = sc.requireUnderlyingAgreement,
                 scalpEntryMinPwin = sc.entryMinPwin,
-                scalpSmartStopMinPwin = sc.smartStopMinPwin
+                scalpSmartStopMinPwin = sc.smartStopMinPwin,
+                scalpSmartStopMinSafeRatio = sc.smartStopMinSafeRatio,
+                scalpHardFloorRatio = sc.hardFloorRatio
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -875,6 +877,8 @@ class CryptoTailStrategyService(
                 scalpRequireUnderlyingAgreement = sc.requireUnderlyingAgreement,
                 scalpEntryMinPwin = sc.entryMinPwin,
                 scalpSmartStopMinPwin = sc.smartStopMinPwin,
+                scalpSmartStopMinSafeRatio = sc.smartStopMinSafeRatio,
+                scalpHardFloorRatio = sc.hardFloorRatio,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -1945,7 +1949,9 @@ class CryptoTailStrategyService(
         val catastropheImmediate: Boolean,
         val requireUnderlyingAgreement: Boolean,
         val entryMinPwin: BigDecimal,
-        val smartStopMinPwin: BigDecimal
+        val smartStopMinPwin: BigDecimal,
+        val smartStopMinSafeRatio: BigDecimal,
+        val hardFloorRatio: BigDecimal
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -1995,7 +2001,9 @@ class CryptoTailStrategyService(
         catastropheImmediate = r.scalpCatastropheImmediate ?: true,
         requireUnderlyingAgreement = r.scalpRequireUnderlyingAgreement ?: true,
         entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.90"),
-        smartStopMinPwin = r.scalpSmartStopMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.70")
+        smartStopMinPwin = r.scalpSmartStopMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.70"),
+        smartStopMinSafeRatio = r.scalpSmartStopMinSafeRatio?.toSafeBigDecimal() ?: BigDecimal("1.30"),
+        hardFloorRatio = r.scalpHardFloorRatio?.toSafeBigDecimal() ?: BigDecimal("0.50")
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2032,7 +2040,9 @@ class CryptoTailStrategyService(
         catastropheImmediate = r.scalpCatastropheImmediate ?: e.scalpCatastropheImmediate,
         requireUnderlyingAgreement = r.scalpRequireUnderlyingAgreement ?: e.scalpRequireUnderlyingAgreement,
         entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: e.scalpEntryMinPwin,
-        smartStopMinPwin = r.scalpSmartStopMinPwin?.toSafeBigDecimal() ?: e.scalpSmartStopMinPwin
+        smartStopMinPwin = r.scalpSmartStopMinPwin?.toSafeBigDecimal() ?: e.scalpSmartStopMinPwin,
+        smartStopMinSafeRatio = r.scalpSmartStopMinSafeRatio?.toSafeBigDecimal() ?: e.scalpSmartStopMinSafeRatio,
+        hardFloorRatio = r.scalpHardFloorRatio?.toSafeBigDecimal() ?: e.scalpHardFloorRatio
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2069,6 +2079,10 @@ class CryptoTailStrategyService(
         if (sc.entryMinPwin < zero || sc.entryMinPwin > one) return false
         // 智能硬止损插针容忍 pWin ∈ [0,1]
         if (sc.smartStopMinPwin < zero || sc.smartStopMinPwin > one) return false
+        // 抗插针 safeRatio 下限 >= 0
+        if (sc.smartStopMinSafeRatio < zero) return false
+        // 深底线比例 ∈ (0,1]：0 会让深底线恒触发，须 > 0
+        if (sc.hardFloorRatio <= zero || sc.hardFloorRatio > one) return false
         return true
     }
 
@@ -2297,6 +2311,8 @@ class CryptoTailStrategyService(
             scalpRequireUnderlyingAgreement = e.scalpRequireUnderlyingAgreement,
             scalpEntryMinPwin = e.scalpEntryMinPwin.toPlainString(),
             scalpSmartStopMinPwin = e.scalpSmartStopMinPwin.toPlainString(),
+            scalpSmartStopMinSafeRatio = e.scalpSmartStopMinSafeRatio.toPlainString(),
+            scalpHardFloorRatio = e.scalpHardFloorRatio.toPlainString(),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )

@@ -250,7 +250,9 @@ data class CryptoTailStrategyCreateRequest(
     val scalpCatastropheImmediate: Boolean? = null,
     val scalpRequireUnderlyingAgreement: Boolean? = null,
     val scalpEntryMinPwin: String? = null,
-    val scalpSmartStopMinPwin: String? = null
+    val scalpSmartStopMinPwin: String? = null,
+    val scalpSmartStopMinSafeRatio: String? = null,
+    val scalpHardFloorRatio: String? = null
 )
 
 /**
@@ -475,7 +477,9 @@ data class CryptoTailStrategyUpdateRequest(
     val scalpCatastropheImmediate: Boolean? = null,
     val scalpRequireUnderlyingAgreement: Boolean? = null,
     val scalpEntryMinPwin: String? = null,
-    val scalpSmartStopMinPwin: String? = null
+    val scalpSmartStopMinPwin: String? = null,
+    val scalpSmartStopMinSafeRatio: String? = null,
+    val scalpHardFloorRatio: String? = null
 )
 
 /**
@@ -735,6 +739,8 @@ data class CryptoTailStrategyDto(
     val scalpRequireUnderlyingAgreement: Boolean = true,
     val scalpEntryMinPwin: String = "0.90",
     val scalpSmartStopMinPwin: String = "0.70",
+    val scalpSmartStopMinSafeRatio: String = "1.30",
+    val scalpHardFloorRatio: String = "0.50",
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )

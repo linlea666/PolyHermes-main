@@ -138,7 +138,9 @@ const SCALP_DEFAULTS = {
   scalpCatastropheImmediate: true,
   scalpRequireUnderlyingAgreement: true,
   scalpEntryMinPwin: '0.90',
-  scalpSmartStopMinPwin: '0.70'
+  scalpSmartStopMinPwin: '0.70',
+  scalpSmartStopMinSafeRatio: '1.30',
+  scalpHardFloorRatio: '0.50'
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -175,7 +177,9 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpCatastropheImmediate: record.scalpCatastropheImmediate ?? SCALP_DEFAULTS.scalpCatastropheImmediate,
   scalpRequireUnderlyingAgreement: record.scalpRequireUnderlyingAgreement ?? SCALP_DEFAULTS.scalpRequireUnderlyingAgreement,
   scalpEntryMinPwin: record.scalpEntryMinPwin ?? SCALP_DEFAULTS.scalpEntryMinPwin,
-  scalpSmartStopMinPwin: record.scalpSmartStopMinPwin ?? SCALP_DEFAULTS.scalpSmartStopMinPwin
+  scalpSmartStopMinPwin: record.scalpSmartStopMinPwin ?? SCALP_DEFAULTS.scalpSmartStopMinPwin,
+  scalpSmartStopMinSafeRatio: record.scalpSmartStopMinSafeRatio ?? SCALP_DEFAULTS.scalpSmartStopMinSafeRatio,
+  scalpHardFloorRatio: record.scalpHardFloorRatio ?? SCALP_DEFAULTS.scalpHardFloorRatio
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -364,7 +368,9 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpCatastropheImmediate: typeof v.scalpCatastropheImmediate === 'boolean' ? v.scalpCatastropheImmediate : undefined,
   scalpRequireUnderlyingAgreement: typeof v.scalpRequireUnderlyingAgreement === 'boolean' ? v.scalpRequireUnderlyingAgreement : undefined,
   scalpEntryMinPwin: strOrUndef(v.scalpEntryMinPwin),
-  scalpSmartStopMinPwin: strOrUndef(v.scalpSmartStopMinPwin)
+  scalpSmartStopMinPwin: strOrUndef(v.scalpSmartStopMinPwin),
+  scalpSmartStopMinSafeRatio: strOrUndef(v.scalpSmartStopMinSafeRatio),
+  scalpHardFloorRatio: strOrUndef(v.scalpHardFloorRatio)
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -3581,6 +3587,12 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpSmartStopMinPwin" label={t('cryptoTailStrategy.form.scalpSmartStopMinPwin')} extra={t('cryptoTailStrategy.form.scalpSmartStopMinPwinHint')}>
                 <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpSmartStopMinSafeRatio" label={t('cryptoTailStrategy.form.scalpSmartStopMinSafeRatio')} extra={t('cryptoTailStrategy.form.scalpSmartStopMinSafeRatioHint')}>
+                <InputNumber min={0} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpHardFloorRatio" label={t('cryptoTailStrategy.form.scalpHardFloorRatio')} extra={t('cryptoTailStrategy.form.scalpHardFloorRatioHint')}>
+                <InputNumber min={0.01} max={1} step={0.05} style={{ width: '100%' }} stringMode />
               </Form.Item>
             </>
           )}
