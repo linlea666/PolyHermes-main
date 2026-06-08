@@ -144,14 +144,14 @@ class CryptoTailExitOrderReconciler(
         val fullyFilled = sizeMatched > BigDecimal.ZERO && originalSize > BigDecimal.ZERO && sizeMatched >= originalSize
 
         if (fullyFilled || st == "FILLED" || st == "MATCHED") {
-            val fillAmount = sizeMatched.multiply(price).setScale(8, RoundingMode.HALF_UP)
+            val fillAmount = realFillAmount(exit, sizeMatched, price)
             finalizeExit(exit, "success", sizeMatched, fillAmount, null, periodStartUnix)
             syncTriggerAfterExitFinalized(trigger.id!!)
             return
         }
         if (st.contains("CANCEL") || st == "EXPIRED") {
             if (sizeMatched > BigDecimal.ZERO) {
-                val fillAmount = sizeMatched.multiply(price).setScale(8, RoundingMode.HALF_UP)
+                val fillAmount = realFillAmount(exit, sizeMatched, price)
                 finalizeExit(exit, "success", sizeMatched, fillAmount, "已撤/过期，按部分成交结算", periodStartUnix)
             } else {
                 finalizeExit(exit, "cancelled", null, null, "已撤/过期且零成交", periodStartUnix)
@@ -174,7 +174,7 @@ class CryptoTailExitOrderReconciler(
                 if (after.isSuccessful) after.body()?.sizeMatched?.toSafeBigDecimal() ?: sizeMatched else sizeMatched
             } catch (e: Exception) { sizeMatched }
             if (afterMatched > BigDecimal.ZERO) {
-                val fillAmount = afterMatched.multiply(price).setScale(8, RoundingMode.HALF_UP)
+                val fillAmount = realFillAmount(exit, afterMatched, price)
                 finalizeExit(exit, "success", afterMatched, fillAmount, "MAKER到期撤单，按部分成交结算", periodStartUnix)
             } else {
                 finalizeExit(exit, "cancelled", null, null, "MAKER到期撤单且零成交", periodStartUnix)
@@ -185,7 +185,7 @@ class CryptoTailExitOrderReconciler(
 
         // 未达撤单时点：保持 pending；如果有部分成交，刷新快照（不写终态）
         if (sizeMatched > BigDecimal.ZERO && (exit.filledSize ?: BigDecimal.ZERO).compareTo(sizeMatched) != 0) {
-            val fillAmount = sizeMatched.multiply(price).setScale(8, RoundingMode.HALF_UP)
+            val fillAmount = realFillAmount(exit, sizeMatched, price)
             exitRepository.save(exit.copy(filledSize = sizeMatched, filledAmount = fillAmount))
         }
     }
@@ -244,6 +244,34 @@ class CryptoTailExitOrderReconciler(
         logger.info("阶梯退出对账定夺: exitId=${exit.id} kind=${exit.exitKind} orderId=${exit.orderId} status=$status filled=${filledSize?.toPlainString()} reason=$reason")
     }
 
+    /**
+     * 计算退出单真实成交额（USDC），区分挂单/吃单的成交价语义：
+     *  - MAKER（GTC/GTC_POST_ONLY）：按自身挂单价被动成交，order 限价即真实成交价 → sizeMatched×limitPrice；
+     *  - TAKER（FAK）：吃对手盘，成交价＝对手盘价，≠我方激进限价（紧急退出限价被压到 MIN_PRICE=0.01）：
+     *      ① 优先用下单回执捕获的权威成交额（exit.filledAmount，且份额一致）；
+     *      ② 否则用决策时 bestBid 作保守近似；
+     *      绝不用 order 限价估值——否则市价扫单会被错记成 1¢ 贱卖（phantom 巨亏，trigger 166 即此因）。
+     */
+    private fun realFillAmount(
+        exit: CryptoTailStrategyExit,
+        sizeMatched: BigDecimal,
+        orderLimitPrice: BigDecimal
+    ): BigDecimal {
+        val isMaker = (exit.orderType ?: "").uppercase().let { it == "GTC" || it == "GTC_POST_ONLY" }
+        if (isMaker) {
+            return sizeMatched.multiply(orderLimitPrice).setScale(8, RoundingMode.HALF_UP)
+        }
+        val captured = exit.filledAmount
+        val capturedSize = exit.filledSize
+        if (captured != null && captured > BigDecimal.ZERO &&
+            capturedSize != null && capturedSize.compareTo(sizeMatched) == 0
+        ) {
+            return captured.setScale(8, RoundingMode.HALF_UP)
+        }
+        val proxyPrice = exit.bestBidAtDecision?.takeIf { it > BigDecimal.ZERO } ?: orderLimitPrice
+        return sizeMatched.multiply(proxyPrice).setScale(8, RoundingMode.HALF_UP)
+    }
+
     private fun isStopLossKind(kind: String): Boolean =
         kind == "STOP" ||
             kind == "HARD_STOP" ||
@@ -291,7 +319,7 @@ class CryptoTailExitOrderReconciler(
             (exit.filledSize ?: BigDecimal.ZERO) to (exit.exitPrice ?: BigDecimal.ZERO)
         }
         if (matched > BigDecimal.ZERO) {
-            val fillAmount = matched.multiply(price).setScale(8, RoundingMode.HALF_UP)
+            val fillAmount = realFillAmount(exit, matched, price)
             finalizeExit(exit, "success", matched, fillAmount, "抢占撤单：按部分成交结算", periodStartUnix)
         } else {
             finalizeExit(exit, "cancelled", null, null, "抢占撤单：零成交", periodStartUnix)

@@ -1415,12 +1415,24 @@ class CryptoTailBracketExitService(
 
         var orderId: String? = null
         var failReason: String? = null
+        // FAK 即时成交回执：吃单成交价＝对手盘价（≠我方激进限价，紧急退出限价被 Fix4 压到 MIN_PRICE=0.01），
+        // 必须以撮合返回的真实成交量入账，否则对账阶段用 0.01 限价估值会把市价扫单错记成 1¢ 贱卖（phantom 巨亏）。
+        var immediateFilledSize: BigDecimal? = null
+        var immediateFilledAmount: BigDecimal? = null
         try {
             val resp = ctx.clobApi.createOrder(orderRequest)
             if (resp.isSuccessful && resp.body() != null) {
                 val body = resp.body()!!
                 if (body.success && body.orderId != null) {
                     orderId = body.orderId
+                    val a = body.makingAmount?.toSafeBigDecimal()
+                    val b = body.takingAmount?.toSafeBigDecimal()
+                    if (a != null && b != null && a > BigDecimal.ZERO && b > BigDecimal.ZERO) {
+                        // 二元市场价格∈(0,1)，故 USDC=份额×价格<份额：较大者为成交份额(filledSize)，较小者为成交USDC(filledAmount)。
+                        // 该不变式对买卖两侧 making/taking 字段映射均成立，规避字段语义歧义。
+                        immediateFilledSize = a.max(b)
+                        immediateFilledAmount = a.min(b)
+                    }
                 } else {
                     failReason = body.errorMsg ?: body.getErrorMessage()
                 }
@@ -1437,7 +1449,8 @@ class CryptoTailBracketExitService(
         if (orderId != null) {
             saveExit(
                 strategy, trigger, kind, targetSize, exitPrice, recordOrderType, "pending",
-                pwinHolding, bestBid, remainingSeconds, reason, null, orderId
+                pwinHolding, bestBid, remainingSeconds, reason, null, orderId,
+                immediateFilledSize, immediateFilledAmount
             )
             val submittedType = when (kind) {
                 ExitKind.TP1, ExitKind.TP2 -> "TAKE_PROFIT_SUBMITTED"
@@ -1509,7 +1522,9 @@ class CryptoTailBracketExitService(
         remainingSeconds: Int,
         decisionReason: String,
         failReason: String?,
-        orderId: String?
+        orderId: String?,
+        filledSize: BigDecimal? = null,
+        filledAmount: BigDecimal? = null
     ): CryptoTailStrategyExit {
         val now = System.currentTimeMillis()
         val record = CryptoTailStrategyExit(
@@ -1517,8 +1532,8 @@ class CryptoTailBracketExitService(
             strategyId = strategy.id!!,
             exitKind = kind.name,
             targetSize = targetSize,
-            filledSize = null,
-            filledAmount = null,
+            filledSize = filledSize,
+            filledAmount = filledAmount,
             exitPrice = exitPrice,
             orderId = orderId,
             orderType = orderType,
