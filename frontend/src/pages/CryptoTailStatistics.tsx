@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Card, Row, Col, Statistic, message, DatePicker, Space, Button, Typography, Select, Segmented, Table, Empty } from 'antd'
+import { Card, Row, Col, Statistic, message, DatePicker, Space, Button, Typography, Select, Segmented, Table, Empty, Alert, Tag } from 'antd'
 import { ArrowUpOutlined, ArrowDownOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useMediaQuery } from 'react-responsive'
@@ -10,7 +10,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { apiService } from '../services/api'
 import { useAccountStore } from '../store/accountStore'
 import { formatUSDC, formatNumber } from '../utils'
-import type { CryptoTailStatsResponse, CryptoTailStatsMarket, CryptoTailStatsRequest } from '../types'
+import type { CryptoTailStatsResponse, CryptoTailStatsMarket, CryptoTailStatsTrade, CryptoTailStatsRequest } from '../types'
 
 const { RangePicker } = DatePicker
 const { Title } = Typography
@@ -170,6 +170,63 @@ const CryptoTailStatistics: React.FC = () => {
     }
   ]
 
+  const exitStatusColor = (s?: string | null): string => {
+    switch (s) {
+      case 'FULLY_EXITED': return 'green'
+      case 'HELD_TO_SETTLE': return 'orange'
+      case 'PARTIAL_EXIT': return 'gold'
+      case 'OPEN': return 'blue'
+      default: return 'default'
+    }
+  }
+
+  const tradeColumns: ColumnsType<CryptoTailStatsTrade> = [
+    {
+      title: t('cryptoTailStatistics.tradeTriggerId'),
+      dataIndex: 'triggerId',
+      key: 'triggerId',
+      render: (v: number) => `#${v}`
+    },
+    {
+      title: t('cryptoTailStatistics.market'),
+      dataIndex: 'marketTitle',
+      key: 'market',
+      render: (_: string, r) => r.marketTitle || r.marketSlugPrefix
+    },
+    {
+      title: t('cryptoTailStatistics.tradeRealizedPnl'),
+      dataIndex: 'realizedPnl',
+      key: 'realizedPnl',
+      align: 'right',
+      render: (v: string) => <span style={{ color: pnlColor(v) }}>${formatUSDC(v)}</span>
+    },
+    {
+      title: t('cryptoTailStatistics.tradeExitStatus'),
+      dataIndex: 'exitStatus',
+      key: 'exitStatus',
+      render: (v?: string | null) => v ? <Tag color={exitStatusColor(v)}>{v}</Tag> : '-'
+    },
+    {
+      title: t('cryptoTailStatistics.tradeSettleSource'),
+      dataIndex: 'settleSource',
+      key: 'settleSource',
+      render: (v?: string | null) => {
+        if (!v) return '-'
+        const reconciled = v.includes('RECONCILED')
+        return <Tag color={reconciled ? 'gold' : 'default'}>{v}</Tag>
+      }
+    },
+    {
+      title: t('cryptoTailStatistics.tradeWon'),
+      dataIndex: 'won',
+      key: 'won',
+      render: (v?: boolean | null) => v == null ? '-' : (v ? <Tag color="green">{t('cryptoTailStatistics.tradeWonYes')}</Tag> : <Tag color="red">{t('cryptoTailStatistics.tradeWonNo')}</Tag>)
+    }
+  ]
+
+  const alerts = data?.alerts || []
+  const trades = data?.trades || []
+
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
@@ -276,6 +333,21 @@ const CryptoTailStatistics: React.FC = () => {
           : <div ref={chartRef} style={{ width: '100%', height: isMobile ? 260 : 340 }} />}
       </Card>
 
+      {alerts.length > 0 && (
+        <Card style={{ marginTop: 16 }} title={t('cryptoTailStatistics.alertsTitle')}>
+          <Space direction="vertical" style={{ width: '100%' }} size={8}>
+            {alerts.map((a, idx) => (
+              <Alert
+                key={`${a.triggerId}-${a.type}-${idx}`}
+                type={a.severity === 'warning' ? 'warning' : 'info'}
+                showIcon
+                message={<span>{t(`cryptoTailStatistics.alertType.${a.type}`, a.type)}: {a.message}</span>}
+              />
+            ))}
+          </Space>
+        </Card>
+      )}
+
       <Card style={{ marginTop: 16 }} title={t('cryptoTailStatistics.byMarketTitle')}>
         <Table
           rowKey="marketSlugPrefix"
@@ -285,6 +357,19 @@ const CryptoTailStatistics: React.FC = () => {
           pagination={false}
           size={isMobile ? 'small' : 'middle'}
           scroll={{ x: isMobile ? 600 : undefined }}
+          locale={{ emptyText: <Empty description={t('cryptoTailStatistics.empty')} /> }}
+        />
+      </Card>
+
+      <Card style={{ marginTop: 16 }} title={t('cryptoTailStatistics.tradesTitle')}>
+        <Table
+          rowKey="triggerId"
+          dataSource={trades}
+          columns={tradeColumns}
+          loading={loading}
+          pagination={{ pageSize: isMobile ? 10 : 20, showSizeChanger: !isMobile }}
+          size={isMobile ? 'small' : 'middle'}
+          scroll={{ x: isMobile ? 700 : undefined }}
           locale={{ emptyText: <Empty description={t('cryptoTailStatistics.empty')} /> }}
         />
       </Card>

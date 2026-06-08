@@ -76,8 +76,17 @@ data class TailDiffExitPreset(
         /**
          * 真熔断是否即时放行：true=灾难线/回撤触发时跳过 exitConfirmTicks 确认，立即砍仓（最快止血，牺牲防插针）；
          * false（默认）=与现有 HARD_STOP 一致仍走确认。仅在 catastropheBidFloor/maxDrawdownPct 至少一项启用时有意义。
+         *
+         * 注意（WS2）：SCALP_FLIP 引入"模型门控"后，catastropheImmediate 仅在"模型已翻转/转弱(真反转)"时生效；
+         * 当模型仍强挺（判为盘口插针）时一律改走 exitConfirmTicks 短确认，给反弹机会，不再即时砍仓。
          */
-        val catastropheImmediate: Boolean = false
+        val catastropheImmediate: Boolean = false,
+        /**
+         * 真熔断·相对地板比例（WS2，SCALP_FLIP 专用）：>0 时灾难地板 = entryFillPrice × 此比例，
+         * 替代绝对线 catastropheBidFloor，使不同入场价下熔断阈值口径一致（避免绝对线在低入场价时形同虚设）。
+         * 默认 0 = 关闭（沿用绝对线 catastropheBidFloor，TAIL_DIFF 行为不变）。应设在深底线 scalpHardFloorRatio 之上。
+         */
+        val catastropheFloorRatio: BigDecimal = BigDecimal.ZERO
     )
 
     /**
@@ -115,7 +124,8 @@ data class TailDiffExitPreset(
             "max_reverse_velocity_sigma" to dynamicExit.maxReverseVelocitySigma.toPlainString(),
             "catastrophe_bid_floor" to dynamicExit.catastropheBidFloor.toPlainString(),
             "max_drawdown_pct" to dynamicExit.maxDrawdownPct.toPlainString(),
-            "catastrophe_immediate" to dynamicExit.catastropheImmediate
+            "catastrophe_immediate" to dynamicExit.catastropheImmediate,
+            "catastrophe_floor_ratio" to dynamicExit.catastropheFloorRatio.toPlainString()
         ),
         "execution" to buildMap {
             execution.tpSlippage?.let { put("tp_slippage", it.toPlainString()) }
@@ -188,7 +198,8 @@ class TailDiffExitPresetResolver {
                 maxReverseVelocitySigma = dynamicRaw.pick("max_reverse_velocity_sigma", "maxReverseVelocitySigma").asBigDecimal(default.dynamicExit.maxReverseVelocitySigma),
                 catastropheBidFloor = dynamicRaw.pick("catastrophe_bid_floor", "catastropheBidFloor").asBigDecimal(default.dynamicExit.catastropheBidFloor),
                 maxDrawdownPct = dynamicRaw.pick("max_drawdown_pct", "maxDrawdownPct").asBigDecimal(default.dynamicExit.maxDrawdownPct),
-                catastropheImmediate = dynamicRaw.pick("catastrophe_immediate", "catastropheImmediate").asBool(default.dynamicExit.catastropheImmediate)
+                catastropheImmediate = dynamicRaw.pick("catastrophe_immediate", "catastropheImmediate").asBool(default.dynamicExit.catastropheImmediate),
+                catastropheFloorRatio = dynamicRaw.pick("catastrophe_floor_ratio", "catastropheFloorRatio").asBigDecimal(default.dynamicExit.catastropheFloorRatio)
             ),
             execution = TailDiffExitPreset.Execution(
                 tpSlippage = executionRaw.pick("tp_slippage", "tpSlippage").asBigDecimalOrNull() ?: default.execution.tpSlippage,
@@ -259,6 +270,7 @@ class TailDiffExitPresetResolver {
         if (!nonNeg(dyn.pick("max_reverse_velocity_sigma", "maxReverseVelocitySigma"))) return false
         if (!unit(dyn.pick("catastrophe_bid_floor", "catastropheBidFloor"))) return false
         if (!unit(dyn.pick("max_drawdown_pct", "maxDrawdownPct"))) return false
+        if (!unit(dyn.pick("catastrophe_floor_ratio", "catastropheFloorRatio"))) return false
         if (!nonNeg(exec.pick("tp_slippage", "tpSlippage")) || !nonNeg(exec.pick("stop_slippage", "stopSlippage"))) return false
         if (!unit(exec.pick("worst_price", "worstPrice"))) return false
         return true

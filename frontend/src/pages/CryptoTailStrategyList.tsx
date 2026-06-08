@@ -136,6 +136,9 @@ const SCALP_DEFAULTS = {
   scalpMaxDiffRetracePct: '0',
   scalpCatastropheBidFloor: '0.88',
   scalpCatastropheImmediate: true,
+  scalpCatastropheFloorRatio: '0.85',
+  scalpWsFreshnessSkipRestMs: 500,
+  scalpEntryRequoteMax: 2,
   scalpRequireUnderlyingAgreement: true,
   scalpEntryMinPwin: '0.90',
   scalpSmartStopMinPwin: '0.70',
@@ -178,6 +181,9 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpMaxDiffRetracePct: record.scalpMaxDiffRetracePct ?? SCALP_DEFAULTS.scalpMaxDiffRetracePct,
   scalpCatastropheBidFloor: record.scalpCatastropheBidFloor ?? SCALP_DEFAULTS.scalpCatastropheBidFloor,
   scalpCatastropheImmediate: record.scalpCatastropheImmediate ?? SCALP_DEFAULTS.scalpCatastropheImmediate,
+  scalpCatastropheFloorRatio: record.scalpCatastropheFloorRatio ?? SCALP_DEFAULTS.scalpCatastropheFloorRatio,
+  scalpWsFreshnessSkipRestMs: record.scalpWsFreshnessSkipRestMs ?? SCALP_DEFAULTS.scalpWsFreshnessSkipRestMs,
+  scalpEntryRequoteMax: record.scalpEntryRequoteMax ?? SCALP_DEFAULTS.scalpEntryRequoteMax,
   scalpRequireUnderlyingAgreement: record.scalpRequireUnderlyingAgreement ?? SCALP_DEFAULTS.scalpRequireUnderlyingAgreement,
   scalpEntryMinPwin: record.scalpEntryMinPwin ?? SCALP_DEFAULTS.scalpEntryMinPwin,
   scalpSmartStopMinPwin: record.scalpSmartStopMinPwin ?? SCALP_DEFAULTS.scalpSmartStopMinPwin,
@@ -372,6 +378,9 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpMaxDiffRetracePct: strOrUndef(v.scalpMaxDiffRetracePct),
   scalpCatastropheBidFloor: strOrUndef(v.scalpCatastropheBidFloor),
   scalpCatastropheImmediate: typeof v.scalpCatastropheImmediate === 'boolean' ? v.scalpCatastropheImmediate : undefined,
+  scalpCatastropheFloorRatio: strOrUndef(v.scalpCatastropheFloorRatio),
+  scalpWsFreshnessSkipRestMs: numOrUndef(v.scalpWsFreshnessSkipRestMs),
+  scalpEntryRequoteMax: numOrUndef(v.scalpEntryRequoteMax),
   scalpRequireUnderlyingAgreement: typeof v.scalpRequireUnderlyingAgreement === 'boolean' ? v.scalpRequireUnderlyingAgreement : undefined,
   scalpEntryMinPwin: strOrUndef(v.scalpEntryMinPwin),
   scalpSmartStopMinPwin: strOrUndef(v.scalpSmartStopMinPwin),
@@ -3595,6 +3604,9 @@ const CryptoTailStrategyList: React.FC = () => {
               <Form.Item name="scalpCatastropheImmediate" label={t('cryptoTailStrategy.form.scalpCatastropheImmediate')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpCatastropheImmediateHint')}>
                 <Switch />
               </Form.Item>
+              <Form.Item name="scalpCatastropheFloorRatio" label={t('cryptoTailStrategy.form.scalpCatastropheFloorRatio')} extra={t('cryptoTailStrategy.form.scalpCatastropheFloorRatioHint')}>
+                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
               <Form.Item name="scalpSmartStopMinPwin" label={t('cryptoTailStrategy.form.scalpSmartStopMinPwin')} extra={t('cryptoTailStrategy.form.scalpSmartStopMinPwinHint')}>
                 <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
               </Form.Item>
@@ -3603,6 +3615,12 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpHardFloorRatio" label={t('cryptoTailStrategy.form.scalpHardFloorRatio')} extra={t('cryptoTailStrategy.form.scalpHardFloorRatioHint')}>
                 <InputNumber min={0.01} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpWsFreshnessSkipRestMs" label={t('cryptoTailStrategy.form.scalpWsFreshnessSkipRestMs')} extra={t('cryptoTailStrategy.form.scalpWsFreshnessSkipRestMsHint')}>
+                <InputNumber min={0} step={50} precision={0} style={{ width: '100%' }} addonAfter="ms" />
+              </Form.Item>
+              <Form.Item name="scalpEntryRequoteMax" label={t('cryptoTailStrategy.form.scalpEntryRequoteMax')} extra={t('cryptoTailStrategy.form.scalpEntryRequoteMaxHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item style={{ marginBottom: 8 }}>
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpRiskSubsection')}</Typography.Text>

@@ -248,6 +248,9 @@ data class CryptoTailStrategyCreateRequest(
     val scalpMaxDiffRetracePct: String? = null,
     val scalpCatastropheBidFloor: String? = null,
     val scalpCatastropheImmediate: Boolean? = null,
+    val scalpCatastropheFloorRatio: String? = null,
+    val scalpWsFreshnessSkipRestMs: Int? = null,
+    val scalpEntryRequoteMax: Int? = null,
     val scalpRequireUnderlyingAgreement: Boolean? = null,
     val scalpEntryMinPwin: String? = null,
     val scalpSmartStopMinPwin: String? = null,
@@ -478,6 +481,9 @@ data class CryptoTailStrategyUpdateRequest(
     val scalpMaxDiffRetracePct: String? = null,
     val scalpCatastropheBidFloor: String? = null,
     val scalpCatastropheImmediate: Boolean? = null,
+    val scalpCatastropheFloorRatio: String? = null,
+    val scalpWsFreshnessSkipRestMs: Int? = null,
+    val scalpEntryRequoteMax: Int? = null,
     val scalpRequireUnderlyingAgreement: Boolean? = null,
     val scalpEntryMinPwin: String? = null,
     val scalpSmartStopMinPwin: String? = null,
@@ -742,6 +748,9 @@ data class CryptoTailStrategyDto(
     val scalpMaxDiffRetracePct: String = "0",
     val scalpCatastropheBidFloor: String = "0.88",
     val scalpCatastropheImmediate: Boolean = true,
+    val scalpCatastropheFloorRatio: String = "0.85",
+    val scalpWsFreshnessSkipRestMs: Int = 500,
+    val scalpEntryRequoteMax: Int = 2,
     val scalpRequireUnderlyingAgreement: Boolean = true,
     val scalpEntryMinPwin: String = "0.90",
     val scalpSmartStopMinPwin: String = "0.70",
@@ -1025,11 +1034,46 @@ data class CryptoTailStatsMarket(
     val avgPnl: String = "0"
 )
 
+/**
+ * 逐笔结算明细（WS4 看板对账）：暴露 exitStatus / settleSource / 实现盈亏，供前端核对幽灵盈利类不一致。
+ * settleSource 含 RECONCILED = WS1 链上对账修正生效；won=null 表示按全退口径结算（非满仓判赢）。
+ */
+data class CryptoTailStatsTrade(
+    val triggerId: Long = 0L,
+    val strategyId: Long = 0L,
+    val marketSlugPrefix: String = "",
+    val marketTitle: String = "",
+    val mode: Int = 0,
+    val outcomeIndex: Int? = null,
+    val settledAt: Long? = null,
+    val realizedPnl: String = "0",
+    val exitStatus: String? = null,
+    val settleSource: String? = null,
+    val won: Boolean? = null,
+    val remainingSize: String? = null
+)
+
+/**
+ * 一致性告警（WS4）：severity = info/warning；type 标识类别，供前端按类着色与 i18n。
+ *  - RECONCILED：WS1 对账修正已生效（链上漏记卖出被纠正，防幽灵盈利）。
+ *  - HELD_TO_SETTLE_WIN：持有到结算判赢，建议核对链上是否有漏记卖出（潜在幽灵盈利）。
+ *  - PNL_SNAPSHOT_MISMATCH：trigger 与快照实现盈亏偏差超阈值。
+ */
+data class CryptoTailStatsAlert(
+    val triggerId: Long = 0L,
+    val strategyId: Long = 0L,
+    val type: String = "",
+    val severity: String = "warning",
+    val message: String = ""
+)
+
 /** 加密价差盈亏统计概览响应 */
 data class CryptoTailStatsResponse(
     val summary: CryptoTailStatsSummary = CryptoTailStatsSummary(),
     val buckets: List<CryptoTailStatsBucket> = emptyList(),
-    val byMarket: List<CryptoTailStatsMarket> = emptyList()
+    val byMarket: List<CryptoTailStatsMarket> = emptyList(),
+    val trades: List<CryptoTailStatsTrade> = emptyList(),
+    val alerts: List<CryptoTailStatsAlert> = emptyList()
 )
 
 /**

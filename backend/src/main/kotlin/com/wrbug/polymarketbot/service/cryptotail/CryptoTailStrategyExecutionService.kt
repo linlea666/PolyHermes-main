@@ -356,14 +356,17 @@ class CryptoTailStrategyExecutionService(
     private fun orderbookRefreshPayload(
         preRefreshOrderbook: OrderbookQualitySnapshot?,
         refreshedOrderbook: OrderbookQualitySnapshot?,
-        orderbookRefreshed: Boolean
+        orderbookRefreshed: Boolean,
+        restSkipped: Boolean = false
     ): Map<String, Any> = mapOf(
         "preRefreshBestBid" to (preRefreshOrderbook?.bestBid?.toPlainString() ?: ""),
         "preRefreshBestAsk" to (preRefreshOrderbook?.bestAsk?.toPlainString() ?: ""),
         "refreshedBestBid" to (refreshedOrderbook?.bestBid?.toPlainString() ?: ""),
         "refreshedBestAsk" to (refreshedOrderbook?.bestAsk?.toPlainString() ?: ""),
         "refreshedSpread" to (refreshedOrderbook?.spread?.toPlainString() ?: ""),
-        "orderbookRefreshed" to orderbookRefreshed
+        // orderbookRefreshed=发单前真做了 REST 重拉；restSkipped=WS3 因 WS 快照够新跳过 REST、直接复用 WS 快照复检(并非未刷新)
+        "orderbookRefreshed" to orderbookRefreshed,
+        "restSkipped" to restSkipped
     )
 
     private fun avgFillPrice(filledSize: BigDecimal?, filledAmount: BigDecimal?): BigDecimal? {
@@ -913,7 +916,8 @@ class CryptoTailStrategyExecutionService(
                     strategy.scalpMinOddsAfterEntry > BigDecimal.ZERO ||
                     strategy.scalpMinModelProbAfterEntry > BigDecimal.ZERO ||
                     strategy.scalpMaxDiffRetracePct > BigDecimal.ZERO ||
-                    strategy.scalpCatastropheBidFloor > BigDecimal.ZERO,
+                    strategy.scalpCatastropheBidFloor > BigDecimal.ZERO ||
+                    strategy.scalpCatastropheFloorRatio > BigDecimal.ZERO,
                 minDiffSigmaAfterEntry = if (strategy.scalpUnderlyingStopEnabled) strategy.scalpUnderlyingStopSigma else BigDecimal.ZERO,
                 maxDiffRetracePct = strategy.scalpMaxDiffRetracePct,
                 minModelProbAfterEntry = strategy.scalpMinModelProbAfterEntry,
@@ -921,7 +925,8 @@ class CryptoTailStrategyExecutionService(
                 maxReverseVelocitySigma = if (strategy.scalpReverseVelocityStopEnabled) strategy.scalpMaxReverseVelocitySigma else BigDecimal.ZERO,
                 catastropheBidFloor = strategy.scalpCatastropheBidFloor,
                 maxDrawdownPct = BigDecimal.ZERO,
-                catastropheImmediate = strategy.scalpCatastropheImmediate
+                catastropheImmediate = strategy.scalpCatastropheImmediate,
+                catastropheFloorRatio = strategy.scalpCatastropheFloorRatio
             ),
             execution = TailDiffExitPreset.Execution()
         )
@@ -984,7 +989,8 @@ class CryptoTailStrategyExecutionService(
         val pricing: CryptoTailFakPricingPolicy.Result? = null,
         val submitLatencyMs: Long? = null,
         val postFailBestAsk: BigDecimal? = null,
-        val orderbookRefreshed: Boolean = false
+        val orderbookRefreshed: Boolean = false,
+        val restSkipped: Boolean = false
     )
 
     private fun orderbookPayload(orderbook: OrderbookQualitySnapshot?, nowMs: Long = System.currentTimeMillis()): Map<String, Any> {
@@ -1698,6 +1704,7 @@ class CryptoTailStrategyExecutionService(
         orderbookRefreshed: Boolean = false,
         preRefreshOrderbook: OrderbookQualitySnapshot? = null,
         refreshedOrderbook: OrderbookQualitySnapshot? = null,
+        restSkipped: Boolean = false,
         tokenId: String? = null
     ) {
         if (metrics == null) return
@@ -1748,7 +1755,7 @@ class CryptoTailStrategyExecutionService(
             "effectiveAmountUsdc" to (amountOverrideUsdc?.toPlainString() ?: strategy.amountValue.toPlainString())
         ).plus(metricsDiagnostics(metrics))
             .plus(pricingPayload(pricing, orderbookRefreshed))
-            .plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, orderbookRefreshed))
+            .plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, orderbookRefreshed, restSkipped))
             .toJson()
         val scalingNote = if (scaling != null && scaling.useProbe) " [放量闸:小额 ${strategy.probeAmountUsdc.toPlainString()}]" else ""
         recordDecisionOncePerPeriod(
@@ -1774,6 +1781,7 @@ class CryptoTailStrategyExecutionService(
         orderbookRefreshed: Boolean = false,
         preRefreshOrderbook: OrderbookQualitySnapshot? = null,
         refreshedOrderbook: OrderbookQualitySnapshot? = null,
+        restSkipped: Boolean = false,
         tokenId: String? = null
     ) {
         if (metrics == null) return
@@ -1826,7 +1834,7 @@ class CryptoTailStrategyExecutionService(
             "effectiveAmountUsdc" to strategy.amountValue.toPlainString()
         ).plus(metricsDiagnostics(metrics))
             .plus(pricingPayload(pricing, orderbookRefreshed))
-            .plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, orderbookRefreshed))
+            .plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, orderbookRefreshed, restSkipped))
             .toJson()
         recordDecisionOncePerPeriod(
             strategy, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
@@ -2111,6 +2119,50 @@ class CryptoTailStrategyExecutionService(
         }
     }
 
+    /**
+     * 是否可跳过发单前 REST 盘口重拉（WS3）：仅 SCALP_FLIP，且 scalpWsFreshnessSkipRestMs>0、
+     * WS 快照存在、含 bestAsk、quoteAgeMs<=阈值 时返回 true（用 WS 快照复检进场闸即可，省一次 REST 往返延迟）。
+     * 任一不满足返回 false（照常 REST 重拉，零回归）。
+     */
+    private fun canSkipPreSubmitRest(
+        strategy: CryptoTailStrategy,
+        preRefreshOrderbook: OrderbookQualitySnapshot?
+    ): Boolean {
+        if (strategy.mode != TradingMode.SCALP_FLIP) return false
+        if (strategy.scalpWsFreshnessSkipRestMs <= 0) return false
+        val ob = preRefreshOrderbook ?: return false
+        if (ob.bestAsk == null) return false
+        return ob.quoteAgeMs(System.currentTimeMillis()) <= strategy.scalpWsFreshnessSkipRestMs
+    }
+
+    /**
+     * 进场最终限价（WS3，fast/slow 两路共用）：
+     *  - 概率/EV 路径（pricing 非空，BARRIER/BRACKET/TAIL_DIFF）→ 直接用 pricing.finalLimit（行为不变）。
+     *  - SCALP_FLIP → 在原 computeBuyPrice(min(ask+滑点, scalpMaxFillPrice)) 基础上，叠加"EV 安全上沿"作*追价上限*：
+     *    finalLimit = base.min(max(evSafeLimit, executableAsk))。即始终允许以已通过进场闸的当前 ask 成交（不否决），
+     *    但向上追价不超过 EV 安全价，避免盘口上跳时追到 -EV。信号/价源不可用 → 回退 base（与旧行为一致，绝不臆造）。
+     *  - 其余（LEGACY）→ computeBuyPrice。
+     */
+    private fun computeEntryLimitPrice(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        pricing: CryptoTailFakPricingPolicy.Result?,
+        triggerPrice: BigDecimal,
+        effectiveBestBid: BigDecimal,
+        effectiveBestAsk: BigDecimal?
+    ): BigDecimal {
+        pricing?.let { return it.finalLimit }
+        val base = computeBuyPrice(strategy, triggerPrice, effectiveBestAsk)
+        if (strategy.mode != TradingMode.SCALP_FLIP) return base
+        val nowSeconds = System.currentTimeMillis() / 1000
+        val remainingSeconds = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toInt()
+        val signal = computeScalpEntrySignal(strategy, periodStartUnix, outcomeIndex, remainingSeconds) ?: return base
+        val ev = computeFakPricing(strategy, effectiveBestBid, effectiveBestAsk, signal.pWin)
+        val chaseCeil = ev.evSafeLimit.max(ev.executableAsk)
+        return base.min(chaseCeil)
+    }
+
     private suspend fun buildRetryFakOrderAttempt(
         strategy: CryptoTailStrategy,
         clobApi: PolymarketClobApi,
@@ -2156,6 +2208,61 @@ class CryptoTailStrategyExecutionService(
             limitPrice = pricing.finalLimit,
             metrics = eval.metrics,
             pricing = pricing,
+            orderbook = refreshedOrderbook,
+            orderbookRefreshed = true
+        )
+    }
+
+    /**
+     * SCALP_FLIP 有界 re-quote 单次重试（WS3）：FAK 零成交后重拉盘口 + 复检 SCALP 进场闸 + 按 EV 安全上沿重定价 + 重签。
+     * 与 [buildRetryFakOrderAttempt] 并列（SCALP 不走概率闸/EV 否决，故独立）；闸口不过/越窗/越期则放弃重试。
+     * FAK 成交即止无挂单，重试不会重复成交。
+     */
+    private suspend fun buildScalpRetryFakOrderAttempt(
+        strategy: CryptoTailStrategy,
+        clobApi: PolymarketClobApi,
+        tokenId: String,
+        amountUsdc: BigDecimal,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        triggerPrice: BigDecimal,
+        bestAsk: BigDecimal?,
+        privateKey: String,
+        makerAddress: String,
+        owner: String,
+        signatureType: Int,
+        settleAtUnix: Long
+    ): FakOrderAttempt? {
+        val nowSeconds = System.currentTimeMillis() / 1000
+        if (nowSeconds >= settleAtUnix) return null
+        val refreshedOrderbook = orderbookSnapshotFetcher.fetch(clobApi, tokenId) ?: return null
+        val eval = evaluateScalpEntryGates(
+            strategy, periodStartUnix, outcomeIndex,
+            refreshedOrderbook.bestBid ?: triggerPrice, refreshedOrderbook.bestAsk ?: bestAsk, refreshedOrderbook
+        )
+        if (!eval.pass) {
+            recordBarrierDecision(strategy, periodStartUnix, outcomeIndex, eval, tokenId, stage = "REQUOTE")
+            return null
+        }
+        val limit = computeEntryLimitPrice(
+            strategy, periodStartUnix, outcomeIndex, null,
+            triggerPrice, refreshedOrderbook.bestBid ?: triggerPrice, refreshedOrderbook.bestAsk ?: bestAsk
+        )
+        val size = computeSize(amountUsdc, limit)
+        val signedOrder = orderSigningService.createAndSignOrder(
+            privateKey = privateKey,
+            makerAddress = makerAddress,
+            tokenId = tokenId,
+            side = "BUY",
+            price = limit.toPlainString(),
+            size = size,
+            signatureType = signatureType
+        )
+        return FakOrderAttempt(
+            orderRequest = NewOrderRequest(order = signedOrder, owner = owner, orderType = "FAK"),
+            limitPrice = limit,
+            metrics = null,
+            pricing = null,
             orderbook = refreshedOrderbook,
             orderbookRefreshed = true
         )
@@ -2341,15 +2448,22 @@ class CryptoTailStrategyExecutionService(
             // 根据模式确定下单价格（FAK 吃单）
             // LEGACY 仍走极简进场（不做发单前 REST 复核）。SCALP_FLIP 与概率/尾盘模式一致：发单前刷新 REST 盘口并复检进场闸，
             // 杜绝"门槛判定→实际成交"1~3s 内盘口塌陷导致跌破价格下限的接飞刀成交（根因：进场判定与执行用了两个时点的盘口）。
+            // WS3：SCALP 若 WS 快照足够新（quoteAgeMs<=scalpWsFreshnessSkipRestMs）则跳过 REST 重拉，直接用 WS 快照复检进场闸，
+            // 削减 100~300ms 决策→执行延迟，减少盘口上跳零成交；WS 不够新/缺 ask 仍走 REST，零成交后由有界 re-quote 重拉。
+            val restSkipped = canSkipPreSubmitRest(strategy, preRefreshOrderbook)
             val refreshedOrderbook = if (strategy.mode != TradingMode.LEGACY_SPREAD) {
-                orderbookSnapshotFetcher.fetch(ctx.clobApi, tokenId) ?: run {
-                    recordBarrierDecision(
-                        strategy,
-                        periodStartUnix,
-                        outcomeIndex,
-                        BarrierEval(false, "ORDERBOOK_STALE", "发单前 REST 订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
-                    )
-                    return
+                if (restSkipped) {
+                    preRefreshOrderbook
+                } else {
+                    orderbookSnapshotFetcher.fetch(ctx.clobApi, tokenId) ?: run {
+                        recordBarrierDecision(
+                            strategy,
+                            periodStartUnix,
+                            outcomeIndex,
+                            BarrierEval(false, "ORDERBOOK_STALE", "发单前 REST 订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
+                        )
+                        return
+                    }
                 }
             } else {
                 null
@@ -2357,7 +2471,9 @@ class CryptoTailStrategyExecutionService(
             val preSubmit = resolvePreSubmitEval(strategy, periodStartUnix, outcomeIndex, triggerPrice, bestAsk, preRefreshOrderbook, refreshedOrderbook, tokenId)
             if (preSubmit is PreSubmitOutcome.Abort) return
             val preSubmitEval = (preSubmit as PreSubmitOutcome.Proceed).metricsEval
-            val orderbookRefreshed = refreshedOrderbook != null
+            // orderbookRefreshed 仅在真做了发单前 REST 重拉时为 true；WS3 跳过 REST(复用够新 WS 快照)时为 false，
+            // 由 restSkipped 单独标记，避免把"复用 WS 快照"误标成"REST 重拉"（纯诊断字段，无逻辑分支依赖）。
+            val orderbookRefreshed = refreshedOrderbook != null && !restSkipped
             val effectiveBestBid = refreshedOrderbook?.bestBid ?: triggerPrice
             val effectiveBestAsk = refreshedOrderbook?.bestAsk ?: bestAsk
             val effectiveMetrics = preSubmitEval?.metrics ?: metrics
@@ -2370,14 +2486,14 @@ class CryptoTailStrategyExecutionService(
                 recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, orderbookRefreshed, tokenId)
                 return
             }
-            val price = pricing?.finalLimit ?: computeBuyPrice(strategy, triggerPrice, effectiveBestAsk)
+            val price = computeEntryLimitPrice(strategy, periodStartUnix, outcomeIndex, pricing, triggerPrice, effectiveBestBid, effectiveBestAsk)
             if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, price, orderbookRefreshed, tokenId)) {
                 return
             }
             if (strategy.mode == TradingMode.BARRIER_HOLD) {
-                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, scaling, amountOverrideUsdc, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, tokenId)
+                recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, scaling, amountOverrideUsdc, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, restSkipped, tokenId)
             } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
-                recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, tokenId)
+                recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, restSkipped, tokenId)
             }
             val priceStr = price.toPlainString()
             val size = computeSize(amountUsdc, price)
@@ -2396,8 +2512,28 @@ class CryptoTailStrategyExecutionService(
                 orderType = "FAK"
             )
             val retryMetrics = effectiveMetrics
-            val retryBuilder: (suspend () -> FakOrderAttempt?)? =
-                if (strategy.mode != TradingMode.LEGACY_SPREAD && retryMetrics != null) {
+            val settleAtUnix = periodStartUnix + strategy.intervalSeconds
+            val retryBuilder: (suspend () -> FakOrderAttempt?)? = when {
+                strategy.mode == TradingMode.SCALP_FLIP && strategy.scalpEntryRequoteMax > 0 -> {
+                    {
+                        buildScalpRetryFakOrderAttempt(
+                            strategy = strategy,
+                            clobApi = ctx.clobApi,
+                            tokenId = tokenId,
+                            amountUsdc = amountUsdc,
+                            periodStartUnix = periodStartUnix,
+                            outcomeIndex = outcomeIndex,
+                            triggerPrice = triggerPrice,
+                            bestAsk = bestAsk,
+                            privateKey = ctx.decryptedPrivateKey,
+                            makerAddress = ctx.account.proxyAddress,
+                            owner = ctx.account.apiKey!!,
+                            signatureType = ctx.signatureType,
+                            settleAtUnix = settleAtUnix
+                        )
+                    }
+                }
+                strategy.mode != TradingMode.LEGACY_SPREAD && retryMetrics != null -> {
                     {
                         buildRetryFakOrderAttempt(
                             strategy = strategy,
@@ -2410,12 +2546,12 @@ class CryptoTailStrategyExecutionService(
                             makerAddress = ctx.account.proxyAddress,
                             owner = ctx.account.apiKey!!,
                             signatureType = ctx.signatureType,
-                            settleAtUnix = periodStartUnix + strategy.intervalSeconds
+                            settleAtUnix = settleAtUnix
                         )
                     }
-                } else {
-                    null
                 }
+                else -> null
+            }
             submitOrderAndSaveRecord(
                 ctx.clobApi,
                 strategy,
@@ -2430,7 +2566,8 @@ class CryptoTailStrategyExecutionService(
                 finalLimitPrice = price,
                 retryOrderBuilder = retryBuilder,
                 metrics = effectiveMetrics,
-                orderResultContext = OrderResultContext(preRefreshOrderbook, refreshedOrderbook, pricing, orderbookRefreshed = orderbookRefreshed)
+                orderResultContext = OrderResultContext(preRefreshOrderbook, refreshedOrderbook, pricing, orderbookRefreshed = orderbookRefreshed, restSkipped = restSkipped),
+                maxRetries = if (strategy.mode == TradingMode.SCALP_FLIP) strategy.scalpEntryRequoteMax else 1
             )
             return
         }
@@ -2452,7 +2589,8 @@ class CryptoTailStrategyExecutionService(
         finalLimitPrice: BigDecimal? = null,
         retryOrderBuilder: (suspend () -> FakOrderAttempt?)? = null,
         metrics: BarrierMetrics? = null,
-        orderResultContext: OrderResultContext = OrderResultContext()
+        orderResultContext: OrderResultContext = OrderResultContext(),
+        maxRetries: Int = 1
     ) {
         val firstSubmitStarted = System.currentTimeMillis()
         var result = submitFakAttempt(clobApi, orderRequest)
@@ -2460,22 +2598,23 @@ class CryptoTailStrategyExecutionService(
         var usedLimitPrice = finalLimitPrice
         var usedMetrics = metrics
         var retryCount = 0
-        if (result.retryable && retryOrderBuilder != null) {
-            val retryAttempt = retryOrderBuilder()
-            if (retryAttempt != null) {
-                retryCount = 1
-                usedLimitPrice = retryAttempt.limitPrice
-                usedMetrics = retryAttempt.metrics ?: usedMetrics
-                val retryStarted = System.currentTimeMillis()
-                result = submitFakAttempt(clobApi, retryAttempt.orderRequest)
-                activeContext = OrderResultContext(
-                    preRefreshOrderbook = orderResultContext.preRefreshOrderbook,
-                    preSubmitOrderbook = retryAttempt.orderbook,
-                    pricing = retryAttempt.pricing,
-                    submitLatencyMs = System.currentTimeMillis() - retryStarted,
-                    orderbookRefreshed = retryAttempt.orderbookRefreshed
-                )
-            }
+        // 有界 re-quote：零成交(可重试)时重拉盘口+复检闸+重定价+重签提交，最多 maxRetries 次。
+        // 默认 maxRetries=1 与旧单次重试行为一致；SCALP 传 scalpEntryRequoteMax 放开多次以捕捉秒级盘口上跳。
+        // FAK 成交即止无挂单，builder 返回 null（越期/闸不过）即停，绝不会重复成交。
+        while (result.retryable && retryOrderBuilder != null && retryCount < maxRetries) {
+            val retryAttempt = retryOrderBuilder() ?: break
+            retryCount++
+            usedLimitPrice = retryAttempt.limitPrice
+            usedMetrics = retryAttempt.metrics ?: usedMetrics
+            val retryStarted = System.currentTimeMillis()
+            result = submitFakAttempt(clobApi, retryAttempt.orderRequest)
+            activeContext = OrderResultContext(
+                preRefreshOrderbook = orderResultContext.preRefreshOrderbook,
+                preSubmitOrderbook = retryAttempt.orderbook,
+                pricing = retryAttempt.pricing,
+                submitLatencyMs = System.currentTimeMillis() - retryStarted,
+                orderbookRefreshed = retryAttempt.orderbookRefreshed
+            )
         }
         val postFailBestAsk = if (result.status != "success" && tokenId != null) fetchBestAsk(clobApi, tokenId) else null
         activeContext = activeContext.copy(postFailBestAsk = postFailBestAsk)
@@ -2754,15 +2893,20 @@ class CryptoTailStrategyExecutionService(
         val clobApi = retrofitFactory.createClobApi(account.apiKey, apiSecret, apiPassphrase, account.walletAddress)
         val signatureType = orderSigningService.getSignatureTypeForWalletType(account.walletType)
 
+        val restSkipped = canSkipPreSubmitRest(strategy, preRefreshOrderbook)
         val refreshedOrderbook = if (strategy.mode != TradingMode.LEGACY_SPREAD) {
-            orderbookSnapshotFetcher.fetch(clobApi, tokenId) ?: run {
-                recordBarrierDecision(
-                    strategy,
-                    periodStartUnix,
-                    outcomeIndex,
-                    BarrierEval(false, "ORDERBOOK_STALE", "发单前 REST 订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
-                )
-                return
+            if (restSkipped) {
+                preRefreshOrderbook
+            } else {
+                orderbookSnapshotFetcher.fetch(clobApi, tokenId) ?: run {
+                    recordBarrierDecision(
+                        strategy,
+                        periodStartUnix,
+                        outcomeIndex,
+                        BarrierEval(false, "ORDERBOOK_STALE", "发单前 REST 订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
+                    )
+                    return
+                }
             }
         } else {
             null
@@ -2770,7 +2914,8 @@ class CryptoTailStrategyExecutionService(
         val preSubmit = resolvePreSubmitEval(strategy, periodStartUnix, outcomeIndex, triggerPrice, bestAsk, preRefreshOrderbook, refreshedOrderbook, tokenId)
         if (preSubmit is PreSubmitOutcome.Abort) return
         val preSubmitEval = (preSubmit as PreSubmitOutcome.Proceed).metricsEval
-        val orderbookRefreshed = refreshedOrderbook != null
+        // orderbookRefreshed 仅在真做了发单前 REST 重拉时为 true；WS3 跳过 REST(复用够新 WS 快照)时为 false，由 restSkipped 单独标记。
+        val orderbookRefreshed = refreshedOrderbook != null && !restSkipped
         val effectiveBestBid = refreshedOrderbook?.bestBid ?: triggerPrice
         val effectiveBestAsk = refreshedOrderbook?.bestAsk ?: bestAsk
         val effectiveMetrics = preSubmitEval?.metrics ?: metrics
@@ -2783,14 +2928,14 @@ class CryptoTailStrategyExecutionService(
             recordEvSafeLimitRejected(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, orderbookRefreshed, tokenId)
             return
         }
-        val price = pricing?.finalLimit ?: computeBuyPrice(strategy, triggerPrice, effectiveBestAsk)
+        val price = computeEntryLimitPrice(strategy, periodStartUnix, outcomeIndex, pricing, triggerPrice, effectiveBestBid, effectiveBestAsk)
         if (!validateFinalLimitInvariant(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, pricing, price, orderbookRefreshed, tokenId)) {
             return
         }
         if (strategy.mode == TradingMode.BARRIER_HOLD) {
-            recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, null, null, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, tokenId)
+            recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, null, null, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, restSkipped, tokenId)
         } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
-            recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, tokenId)
+            recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, restSkipped, tokenId)
         }
         // 根据模式确定下单价格
         val priceStr = price.toPlainString()
@@ -2829,8 +2974,28 @@ class CryptoTailStrategyExecutionService(
             orderType = "FAK"
         )
         val retryMetrics = effectiveMetrics
-        val retryBuilder: (suspend () -> FakOrderAttempt?)? =
-            if (strategy.mode != TradingMode.LEGACY_SPREAD && retryMetrics != null) {
+        val settleAtUnix = periodStartUnix + strategy.intervalSeconds
+        val retryBuilder: (suspend () -> FakOrderAttempt?)? = when {
+            strategy.mode == TradingMode.SCALP_FLIP && strategy.scalpEntryRequoteMax > 0 -> {
+                {
+                    buildScalpRetryFakOrderAttempt(
+                        strategy = strategy,
+                        clobApi = clobApi,
+                        tokenId = tokenId,
+                        amountUsdc = amountUsdc,
+                        periodStartUnix = periodStartUnix,
+                        outcomeIndex = outcomeIndex,
+                        triggerPrice = triggerPrice,
+                        bestAsk = bestAsk,
+                        privateKey = decryptedKey,
+                        makerAddress = account.proxyAddress,
+                        owner = account.apiKey!!,
+                        signatureType = signatureType,
+                        settleAtUnix = settleAtUnix
+                    )
+                }
+            }
+            strategy.mode != TradingMode.LEGACY_SPREAD && retryMetrics != null -> {
                 {
                     buildRetryFakOrderAttempt(
                         strategy = strategy,
@@ -2843,12 +3008,12 @@ class CryptoTailStrategyExecutionService(
                         makerAddress = account.proxyAddress,
                         owner = account.apiKey!!,
                         signatureType = signatureType,
-                        settleAtUnix = periodStartUnix + strategy.intervalSeconds
+                        settleAtUnix = settleAtUnix
                     )
                 }
-            } else {
-                null
             }
+            else -> null
+        }
         submitOrderAndSaveRecord(
             clobApi,
             strategy,
@@ -2861,7 +3026,8 @@ class CryptoTailStrategyExecutionService(
             finalLimitPrice = price,
             retryOrderBuilder = retryBuilder,
             metrics = effectiveMetrics,
-            orderResultContext = OrderResultContext(preRefreshOrderbook, refreshedOrderbook, pricing, orderbookRefreshed = orderbookRefreshed)
+            orderResultContext = OrderResultContext(preRefreshOrderbook, refreshedOrderbook, pricing, orderbookRefreshed = orderbookRefreshed, restSkipped = restSkipped),
+            maxRetries = if (strategy.mode == TradingMode.SCALP_FLIP) strategy.scalpEntryRequoteMax else 1
         )
     }
 
@@ -3002,6 +3168,7 @@ class CryptoTailStrategyExecutionService(
                     "refreshedBestAsk" to (orderResultContext.preSubmitOrderbook?.bestAsk?.toPlainString() ?: ""),
                     "refreshedSpread" to (orderResultContext.preSubmitOrderbook?.spread?.toPlainString() ?: ""),
                     "orderbookRefreshed" to orderResultContext.orderbookRefreshed,
+                    "restSkipped" to orderResultContext.restSkipped,
                     "orderBookAgeMs" to (orderResultContext.preSubmitOrderbook?.quoteAgeMs() ?: ""),
                     "evSafeMaxPrice" to (orderResultContext.pricing?.evSafeLimit?.toPlainString() ?: ""),
                     "submitLatencyMs" to (orderResultContext.submitLatencyMs ?: ""),

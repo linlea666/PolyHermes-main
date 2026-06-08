@@ -865,7 +865,21 @@
     "market": "市場",
     "settledCount": "結算筆數",
     "empty": "暫無已結算數據",
-    "fetchFailed": "獲取統計失敗"
+    "fetchFailed": "獲取統計失敗",
+    "alertsTitle": "對賬告警",
+    "alertType": {
+      "RECONCILED": "鏈上對賬修正",
+      "HELD_TO_SETTLE_WIN": "滿倉判贏存疑",
+      "PNL_SNAPSHOT_MISMATCH": "盈虧快照不一致"
+    },
+    "tradesTitle": "逐筆對賬",
+    "tradeTriggerId": "觸發",
+    "tradeRealizedPnl": "已實現盈虧",
+    "tradeExitStatus": "退出狀態",
+    "tradeSettleSource": "結算來源",
+    "tradeWon": "盈虧",
+    "tradeWonYes": "盈",
+    "tradeWonNo": "虧"
   },
   "orderList": {
     "title": "訂單管理",
@@ -1986,6 +2000,10 @@
       "scalpSmartStopMinSafeRatioHint": "抗插針複核要求的最低安全比，實際下限取 max(退出安全比, 此值)。預設 1.30；調低（如 1.10）可避免\"safeRatio 差一點點被誤殺\"，但放得越鬆越容易在真走弱時還硬扛。僅在\"智能硬止損\"開啟時生效",
       "scalpHardFloorRatio": "無條件深兜底比例",
       "scalpHardFloorRatioHint": "bestBid ≤ 入場價×此值時，無視模型/確認/抑制窗，立即市價全清止血——唯一不可被抗插針複核豁免的硬線。預設 0.50（即 -50%）。調高（如 0.70）更早無條件止血但犧牲抗插針能力；調低更能扛插針但單筆最深虧損更大",
+      "scalpWsFreshnessSkipRestMs": "WS 夠新時跳過發單前 REST（ms）",
+      "scalpEntryRequoteMax": "進場重報價最大次數",
+      "scalpWsFreshnessSkipRestMsHint": "當 WebSocket 盤口快照比此毫秒數更新時，跳過發單前的 REST 重拉以縮短決策到下單的延遲。預設 500；0=始終走 REST 重拉。",
+      "scalpEntryRequoteMaxHint": "FAK 進場單未成交（盤口跳走）時，重拉盤口、複核進場門檻並重新報價，最多重試此次數（有界，避免重複成交）。預設 2；0=不重試。",
       "scalpRiskSubsection": "快進快出風控",
       "scalpDailyLossLimitUsdc": "當日虧損熔斷（USDC）",
       "scalpDailyLossLimitHint": "當日已實現虧損達到此值即攔截進場（熔斷到日終），留空=不限制（回退全域日虧閾值）",
@@ -2029,6 +2047,8 @@
       "scalpCatastropheBidFloorHint": "持倉 bestBid 跌破此值即發無地板市價止損（最深兜底，應低於止損地板 0.90）；0=不啟用。專封急跌確認延遲放大虧損",
       "scalpCatastropheImmediate": "熔斷即時砍",
       "scalpCatastropheImmediateHint": "開啟=跌破地板時跳過連續確認 tick 立即市價砍（對漸跌有效，單拍跳空仍有限）；僅在地板>0 時生效",
+      "scalpCatastropheFloorRatio": "熔斷相對地板（×入場價）",
+      "scalpCatastropheFloorRatioHint": "大於 0 時，熔斷地板取入場成交價×此比例（如 0.85=-15%），替代絕對盤口地板，並內建模型門控：模型已翻向則立即市價砍；模型仍強挺則判為插針、等待數個確認 tick。預設 0.85；0=回退絕對盤口地板。預設即生效，無需開啟智能硬止損。",
       "scalpEnableSmartHardStop": "智能硬止損（防插針誤殺）",
       "scalpEnableSmartHardStopHint": "開啟=止損線命中時，若底層模型仍站我方（方向未反、gap 順向、pWin≥下方閾值、安全比≥max(0.80,1.30)、價源新鮮）則判為盤口插針、繼續持有；任一不滿足才真止損。開啟後機械止損/熔斷地板會被模型複核豁免，唯一不可豁免硬底線為入場價×0.50（程式內建）。建議開啟。",
       "scalpHoldToSettlePwin": "持有到結算 pWin 閾值",

@@ -865,7 +865,21 @@
     "market": "Market",
     "settledCount": "Settled",
     "empty": "No settled data",
-    "fetchFailed": "Failed to load statistics"
+    "fetchFailed": "Failed to load statistics",
+    "alertsTitle": "Reconciliation Alerts",
+    "alertType": {
+      "RECONCILED": "On-chain reconciled",
+      "HELD_TO_SETTLE_WIN": "Held-to-settle win",
+      "PNL_SNAPSHOT_MISMATCH": "P&L snapshot mismatch"
+    },
+    "tradesTitle": "Per-trade Reconciliation",
+    "tradeTriggerId": "Trigger",
+    "tradeRealizedPnl": "Realized P&L",
+    "tradeExitStatus": "Exit Status",
+    "tradeSettleSource": "Settle Source",
+    "tradeWon": "Won",
+    "tradeWonYes": "Win",
+    "tradeWonNo": "Loss"
   },
   "orderList": {
     "title": "Order Management",
@@ -1986,6 +2000,10 @@
       "scalpSmartStopMinSafeRatioHint": "Minimum safe-ratio required by the wick-tolerance check; the effective floor is max(exit safe-ratio, this value). Default 1.30; lowering it (e.g. 1.10) avoids being stopped out when safeRatio is just barely short, but the looser it is the more it holds through genuine weakening. Effective only when 'Smart Hard Stop' is on",
       "scalpHardFloorRatio": "Unconditional Deep Floor Ratio",
       "scalpHardFloorRatioHint": "When bestBid ≤ entry price × this value, immediately market-sell the whole position regardless of model/confirmation/backoff — the only hard line that the wick-tolerance check can never bypass. Default 0.50 (i.e. -50%). Higher (e.g. 0.70) bails earlier unconditionally but sacrifices wick tolerance; lower holds through wicks better but allows a deeper worst-case loss per trade",
+      "scalpWsFreshnessSkipRestMs": "Skip pre-submit REST when WS fresh (ms)",
+      "scalpEntryRequoteMax": "Max entry re-quote retries",
+      "scalpWsFreshnessSkipRestMsHint": "When the WebSocket orderbook snapshot is fresher than this many ms, skip the pre-submit REST re-fetch to cut decision-to-order latency. Default 500; 0 = always re-fetch via REST.",
+      "scalpEntryRequoteMaxHint": "When a FAK entry order is not filled (orderbook jumped away), re-fetch the book, re-check entry gates and re-quote up to this many times (bounded, avoids duplicate fills). Default 2; 0 = no retry.",
       "scalpRiskSubsection": "Scalp risk control",
       "scalpDailyLossLimitUsdc": "Daily loss circuit breaker (USDC)",
       "scalpDailyLossLimitHint": "Block new entries once today's realized loss reaches this value (halt until end of day). Empty = unlimited (falls back to global daily loss limit)",
@@ -2029,6 +2047,8 @@
       "scalpCatastropheBidFloorHint": "When bestBid breaks below this value, fire a floorless market stop (deepest backstop; should be below stop floor 0.90); 0 = disabled. Targets loss amplification from confirmation delay during fast crashes",
       "scalpCatastropheImmediate": "Catastrophe immediate cut",
       "scalpCatastropheImmediateHint": "On = skip confirm ticks and market-cut immediately when the floor breaks (effective for gradual drops; limited against single-tick gaps); only applies when floor > 0",
+      "scalpCatastropheFloorRatio": "Catastrophe relative floor (×entry)",
+      "scalpCatastropheFloorRatioHint": "When > 0, the catastrophe floor is entry fill price × this ratio (e.g. 0.85 = -15%) instead of the absolute bid floor, and it is model-gated: if the model already flipped it cuts immediately; if the model still holds strong it treats the drop as a wick and waits a few confirm ticks. Default 0.85; 0 = fall back to the absolute bid floor. Works by default, no need to enable smart hard stop.",
       "scalpEnableSmartHardStop": "Smart hard stop (anti-wick)",
       "scalpEnableSmartHardStopHint": "On = when the stop line is hit, if the underlying model still favors the position (direction not flipped, gap aligned, pWin ≥ the threshold below, safe ratio ≥ max(0.80,1.30), price fresh), treat it as an orderbook wick and keep holding; otherwise stop for real. Once on, the mechanical stop / catastrophe floor become bypassable by the model; the only non-bypassable hard floor is entry×0.50 (built into code). Recommended on.",
       "scalpHoldToSettlePwin": "Hold-to-settle pWin threshold",

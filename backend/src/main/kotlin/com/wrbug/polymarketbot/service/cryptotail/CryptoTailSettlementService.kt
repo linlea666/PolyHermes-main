@@ -64,6 +64,13 @@ class CryptoTailSettlementService(
      */
     private val BRACKET_DUST_THRESHOLD: BigDecimal = BigDecimal("0.01")
 
+    /**
+     * 对账等待上限：当本仓"曾发起过退出"但 Data-API activity 暂不可用时，最多推迟结算重试这么久；
+     * 超过则回退 DB 口径并在日志标注"对账存疑"，避免 activity 长时间不可用造成永久卡死。
+     * 与结算轮询 10s 节拍配合，5 分钟约 30 次重试，足够覆盖 Data-API 短时抖动。
+     */
+    private val RECONCILE_MAX_WAIT_MS: Long = 5 * 60 * 1000L
+
     private val settlementScopeJob = SupervisorJob()
     private val settlementScope = CoroutineScope(Dispatchers.IO + settlementScopeJob)
 
@@ -359,8 +366,80 @@ class CryptoTailSettlementService(
             return false
         }
 
-        // 情况 B：周期已结束 + 还有 remainingSize → 链上 condition 结算 + 合并 exits
+        // 周期已结束 + 仍有 remainingSize → 进入情况 B。
+        // 【WS1 幽灵盈利根因修复】DB 成交退出行可能因 FAK 回执假阴性（"no orders found"/抢占撤单复查零成交）
+        // 漏记真实盘口卖出，导致 effectiveRemaining 偏大、按满仓走链上判赢虚增利润（trig 195：日志+0.42 实亏~4.69）。
+        // 该风险仅存在于"本仓曾发起过退出"(有 exit 行，含 cancelled/failed) 的场景；据此精准触发对账，
+        // 正常持有到结算的赢单(无 exit 行)不增加任何 API 调用、行为零变化。
+        // 权威源用 Data-API 的 TRADE/SELL 成交记录（不可变历史，不受赎回混淆，优于结算时刻的 positions 余额）。
         val conditionId = resolveConditionId(strategy, trigger) ?: return false
+        var reconciledExitedSize = sumExitFilledSize
+        var reconciledExitedAmount = sumExitFilledAmount
+        var reconciledExitCount = 0
+        var reconciled = false
+        val hasAnyExitRows = exitRepository.findByTriggerIdOrderByCreatedAtAsc(triggerId).isNotEmpty()
+        if (hasAnyExitRows) {
+            val activitySell = fetchActivitySellFills(trigger, strategy, conditionId)
+            if (activitySell == null) {
+                // 方案A（保守，禁止假数据）：拉不到真实卖出成交则先不结算、下一轮重试；
+                // 超过 RECONCILE_MAX_WAIT_MS 仍失败才回退 DB 口径并标"对账存疑"，避免永久卡死。
+                if (now - periodEndMs <= RECONCILE_MAX_WAIT_MS) {
+                    logger.warn("阶梯结算对账待定: triggerId=$triggerId 有退出尝试但 activity 暂不可用，推迟结算等待重试")
+                    return false
+                }
+                logger.warn("阶梯结算对账超时回退: triggerId=$triggerId activity 长时间不可用，按 DB 口径结算并标存疑")
+            } else if (activitySell.size > sumExitFilledSize.add(BRACKET_DUST_THRESHOLD)) {
+                // DB 漏记真实卖出 → 以链上 activity 为权威，防满仓判赢
+                reconciledExitedSize = activitySell.size
+                reconciledExitedAmount = activitySell.amount
+                reconciledExitCount = activitySell.count
+                reconciled = true
+                logger.warn(
+                    "阶梯结算对账修正(防幽灵盈利): triggerId=$triggerId DB卖出size=${sumExitFilledSize.toPlainString()} " +
+                        "< 链上卖出size=${activitySell.size.toPlainString()}(amount=${activitySell.amount.toPlainString()}, count=${activitySell.count}) → 以activity为准"
+                )
+            }
+        }
+
+        val effectiveRemainingRecon = originalSize.subtract(reconciledExitedSize).max(BigDecimal.ZERO)
+        val avgEntryPrice = originalCost.divide(originalSize, pnlScale, RoundingMode.HALF_UP)
+        val entryFeeAdj = feeAdjustment(strategy, trigger, originalCost)
+        // 对账修正后的卖出按 taker（FAK）计费；未修正时沿用 DB 按笔 maker/taker 细分。
+        // 统一用 effectiveExitBreakdown 既推导计入 PnL 的退出费用、又作结算日志 exitFeeBreakdown 来源，
+        // 确保对账修正后日志细分与实际费用口径一致（修复"日志显示 DB 空口径而误导复盘"）。
+        val effectiveExitBreakdown = if (reconciled) {
+            reconciledTakerBreakdown(strategy, reconciledExitedAmount, reconciledExitCount)
+        } else {
+            exitBreakdown
+        }
+        val exitFeeAdj = effectiveExitBreakdown.totalAdjustment
+
+        // 对账后实际已全部卖出（含漏记）：无链上残余，按"全部盘口退出"口径结算，不再满仓判赢
+        if (effectiveRemainingRecon <= BRACKET_DUST_THRESHOLD) {
+            val grossPnl = reconciledExitedAmount.subtract(originalCost).setScale(pnlScale, RoundingMode.HALF_UP)
+            val pnl = grossPnl.add(entryFeeAdj).add(exitFeeAdj).setScale(pnlScale, RoundingMode.HALF_UP)
+            val updated = trigger.copy(
+                conditionId = conditionId,
+                resolved = true,
+                winnerOutcomeIndex = null,
+                realizedPnl = pnl,
+                settledAt = now,
+                remainingSize = BigDecimal.ZERO,
+                exitStatus = ExitStatus.FULLY_EXITED.name
+            )
+            triggerRepository.save(updated)
+            recordBracketSettled(strategy, updated, won = null, grossPnl, pnl, entryFeeAdj.add(exitFeeAdj),
+                source = if (reconciled) "ONCHAIN_RECONCILED" else "EXITS_ONLY",
+                reconciledExitedSize, reconciledExitedAmount, BigDecimal.ZERO,
+                exitBreakdown = effectiveExitBreakdown, entryFeeAdj = entryFeeAdj)
+            logger.info(
+                "阶梯结算(对账后全部退出): triggerId=$triggerId pnl=${pnl.toPlainString()} reconciled=$reconciled " +
+                    "exitedAmount=${reconciledExitedAmount.toPlainString()} cost=${originalCost.toPlainString()}"
+            )
+            return true
+        }
+
+        // 情况 B：周期已结束 + 仍有真实链上残余 → 链上 condition 结算 + 合并已卖出部分
         val (_, payouts) = blockchainService.getCondition(conditionId).getOrNull() ?: return false
         if (payouts.isEmpty()) return false
         val winnerIndex = payouts.indexOfFirst { it == java.math.BigInteger.ONE }
@@ -368,18 +447,14 @@ class CryptoTailSettlementService(
         val won = trigger.outcomeIndex == winnerIndex
 
         // 残余成本按入场均价比例分摊
-        val avgEntryPrice = originalCost.divide(originalSize, pnlScale, RoundingMode.HALF_UP)
-        val remainingCost = effectiveRemaining.multiply(avgEntryPrice).setScale(pnlScale, RoundingMode.HALF_UP)
-        val onChainGross = if (won) effectiveRemaining.subtract(remainingCost) else remainingCost.negate()
+        val remainingCost = effectiveRemainingRecon.multiply(avgEntryPrice).setScale(pnlScale, RoundingMode.HALF_UP)
+        val onChainGross = if (won) effectiveRemainingRecon.subtract(remainingCost) else remainingCost.negate()
 
-        // exits 部分 PnL：sumExitFilledAmount(USDC收入) - exits 对应的入场成本
+        // exits 部分 PnL：reconciledExitedAmount(USDC收入) - exits 对应的入场成本
         val exitsCost = originalCost.subtract(remainingCost).max(BigDecimal.ZERO)
-        val exitsGross = sumExitFilledAmount.subtract(exitsCost)
+        val exitsGross = reconciledExitedAmount.subtract(exitsCost)
         val grossPnl = onChainGross.add(exitsGross).setScale(pnlScale, RoundingMode.HALF_UP)
 
-        // 入场费 + exits 按笔费用（区分 maker/taker + 每笔 gas）
-        val entryFeeAdj = feeAdjustment(strategy, trigger, originalCost)
-        val exitFeeAdj = exitBreakdown.totalAdjustment
         val pnl = grossPnl.add(entryFeeAdj).add(exitFeeAdj).setScale(pnlScale, RoundingMode.HALF_UP)
 
         val updated = trigger.copy(
@@ -388,19 +463,44 @@ class CryptoTailSettlementService(
             winnerOutcomeIndex = winnerIndex,
             realizedPnl = pnl,
             settledAt = now,
-            remainingSize = effectiveRemaining,
+            remainingSize = effectiveRemainingRecon,
             exitStatus = ExitStatus.HELD_TO_SETTLE.name
         )
         triggerRepository.save(updated)
         recordBracketSettled(strategy, updated, won, grossPnl, pnl, entryFeeAdj.add(exitFeeAdj),
-            source = "EXITS+ONCHAIN", sumExitFilledSize, sumExitFilledAmount, effectiveRemaining,
-            exitBreakdown = exitBreakdown, entryFeeAdj = entryFeeAdj)
+            source = if (reconciled) "EXITS+ONCHAIN_RECONCILED" else "EXITS+ONCHAIN",
+            reconciledExitedSize, reconciledExitedAmount, effectiveRemainingRecon,
+            exitBreakdown = effectiveExitBreakdown, entryFeeAdj = entryFeeAdj)
         logger.info(
-            "阶梯结算(残余链上+盘口): triggerId=$triggerId pnl=${pnl.toPlainString()} won=$won " +
-                "remaining=${effectiveRemaining.toPlainString()} sumExits=${sumExitFilledAmount.toPlainString()} " +
-                "exitCount=${exitBreakdown.exitCount} maker=${exitBreakdown.makerCount} taker=${exitBreakdown.takerCount}"
+            "阶梯结算(残余链上+盘口): triggerId=$triggerId pnl=${pnl.toPlainString()} won=$won reconciled=$reconciled " +
+                "remaining=${effectiveRemainingRecon.toPlainString()} exitedAmount=${reconciledExitedAmount.toPlainString()} " +
+                "exitCount=${effectiveExitBreakdown.exitCount} maker=${effectiveExitBreakdown.makerCount} taker=${effectiveExitBreakdown.takerCount}"
         )
         return true
+    }
+
+    /**
+     * 对账修正路径的退出费用细分：漏记的盘口卖出均为 FAK(taker)，按总卖出额扣 taker 手续费 + 一次 gas
+     * （无法从 activity 精确还原链上 gas 笔数，保守计一次）。totalAdjustment 即实际计入 PnL 的退出费用，
+     * 同时作为结算日志 exitFeeBreakdown 来源，保证日志细分与 PnL 口径一致（避免对账修正后日志仍显示 DB 空口径而误导复盘）。
+     * 与 feeAdjustment/computeExitFeeBreakdown 的 taker 口径一致（成本×takerFeeBps/10000）。
+     */
+    private fun reconciledTakerBreakdown(
+        strategy: CryptoTailStrategy,
+        exitedAmount: BigDecimal,
+        fillCount: Int
+    ): ExitFeeBreakdown {
+        val takerFee = exitedAmount.multiply(BigDecimal(strategy.takerFeeBps))
+            .divide(BigDecimal(10000), pnlScale, RoundingMode.HALF_UP)
+        val count = fillCount.coerceAtLeast(1)
+        return ExitFeeBreakdown(
+            exitCount = count,
+            makerCount = 0,
+            takerCount = count,
+            makerRebateTotal = BigDecimal.ZERO,
+            takerFeeTotal = takerFee,
+            gasTotal = strategy.gasCostUsdc.setScale(pnlScale, RoundingMode.HALF_UP)
+        )
     }
 
     /** 阶梯模式结算决策日志（与 BARRIER 的 SETTLED 同 type，payload 携带阶梯特有字段 + V53 exitFeeBreakdown） */
@@ -532,6 +632,75 @@ class CryptoTailSettlementService(
         val price: BigDecimal,
         val source: String
     )
+
+    /**
+     * WS1 对账：周期内从盘口卖出的真实成交合计（Data-API activity SELL）。
+     * size=卖出份额合计，amount=卖出 USDC 收入合计，count=匹配的成交笔数。
+     * 注意区分调用方语义：返回 null = 拉取失败（应推迟重试，禁止臆造）；返回 size=0 = 拉取成功但无卖出。
+     */
+    private data class ActivitySellFill(
+        val size: BigDecimal,
+        val amount: BigDecimal,
+        val count: Int
+    )
+
+    /**
+     * 通过 Data API activity 接口聚合该触发对应的真实盘口卖出（SELL）成交，作为退出对账的权威源。
+     * 与 fetchActivityFill(BUY) 同源同账户，仅 side=SELL；用于发现 DB 退出行因 FAK 回执假阴性漏记的真实卖出。
+     * @return null 表示拉取失败（账户缺失/接口异常/非 2xx）；非 null 即拉取成功（可能 size=0 表示无卖出）。
+     */
+    private suspend fun fetchActivitySellFills(
+        trigger: CryptoTailStrategyTrigger,
+        strategy: CryptoTailStrategy,
+        conditionId: String
+    ): ActivitySellFill? {
+        val account = accountRepository.findById(strategy.accountId).orElse(null) ?: run {
+            logger.warn("阶梯结算对账未拉取 SELL activity: 账户不存在, triggerId=${trigger.id}, accountId=${strategy.accountId}")
+            return null
+        }
+        val user = account.proxyAddress
+        // 卖出发生在入场之后、周期结束前后；窗口取入场前 60s 到周期结束后 600s，覆盖尾盘与略晚的退出成交
+        val start = trigger.createdAt / 1000 - 60
+        val end = (trigger.periodStartUnix + strategy.intervalSeconds) + 600
+        return try {
+            val dataApi = retrofitFactory.createDataApi()
+            val response = dataApi.getUserActivity(
+                user = user,
+                type = listOf("TRADE"),
+                start = start,
+                end = end,
+                limit = 100,
+                sortBy = "TIMESTAMP",
+                sortDirection = "DESC",
+                side = "SELL"
+            )
+            if (!response.isSuccessful || response.body() == null) {
+                logger.warn("阶梯结算对账拉取 SELL activity 失败: triggerId=${trigger.id}, code=${response.code()}")
+                return null
+            }
+            val sells = response.body()!!.filter { a ->
+                a.type == "TRADE" &&
+                    a.conditionId == conditionId &&
+                    a.outcomeIndex != null && a.outcomeIndex == trigger.outcomeIndex &&
+                    a.side?.uppercase() == "SELL" &&
+                    a.price != null && a.price > 0 &&
+                    a.size != null && a.size > 0
+            }
+            var size = BigDecimal.ZERO
+            var amount = BigDecimal.ZERO
+            for (s in sells) {
+                val sz = s.size!!.toSafeBigDecimal()
+                val amt = s.usdcSize?.toSafeBigDecimal()?.takeIf { it.gt(BigDecimal.ZERO) }
+                    ?: s.price!!.toSafeBigDecimal().multi(sz)
+                size = size.add(sz)
+                amount = amount.add(amt.setScale(pnlScale, RoundingMode.HALF_UP))
+            }
+            ActivitySellFill(size, amount.setScale(pnlScale, RoundingMode.HALF_UP), sells.size)
+        } catch (e: Exception) {
+            logger.warn("阶梯结算对账拉取 SELL activity 异常: triggerId=${trigger.id}, error=${e.message}")
+            null
+        }
+    }
 
     /**
      * 通过 Data API activity 接口获取该触发对应的实际成交价、成交量与投入金额（比 CLOB getOrder 更准确）。

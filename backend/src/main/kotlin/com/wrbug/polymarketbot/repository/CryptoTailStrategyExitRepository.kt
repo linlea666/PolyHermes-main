@@ -29,4 +29,11 @@ interface CryptoTailStrategyExitRepository : JpaRepository<CryptoTailStrategyExi
     @Query("SELECT COALESCE(SUM(e.filledSize), 0) FROM CryptoTailStrategyExit e " +
         "WHERE e.triggerId = :triggerId AND e.status = 'success'")
     fun sumFilledSizeByTriggerId(@Param("triggerId") triggerId: Long): BigDecimal?
+
+    /**
+     * WS4 对账告警：给定 trigger 集合中"曾有退出行(含 cancelled/failed)"的 triggerId 去重列表。
+     * 用于把 HELD_TO_SETTLE 判赢告警收敛到"持有到结算且有过退出尝试"的幽灵盈利嫌疑单，避免对正常持有赢单刷屏。
+     */
+    @Query("SELECT DISTINCT e.triggerId FROM CryptoTailStrategyExit e WHERE e.triggerId IN :triggerIds")
+    fun findDistinctTriggerIdsWithExitsByTriggerIdIn(@Param("triggerIds") triggerIds: Collection<Long>): List<Long>
 }

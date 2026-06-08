@@ -825,6 +825,29 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_catastrophe_immediate", nullable = false)
     val scalpCatastropheImmediate: Boolean = true,
 
+    /**
+     * 熔断相对地板比例（V84/WS2）：>0 时熔断地板 = 入场价×此比例，替代绝对线 scalp_catastrophe_bid_floor，
+     * 使不同入场价下熔断口径一致。默认 0.85（≈入场 -15%）；须 > scalp_hard_floor_ratio(0.50) 深底线。
+     * 0=关闭（沿用绝对线）。配合"熔断模型门控"：模型仍强挺时跌破地板只走短确认，模型翻转才即时砍。
+     */
+    @Column(name = "scalp_catastrophe_floor_ratio", nullable = false, precision = 20, scale = 8)
+    val scalpCatastropheFloorRatio: BigDecimal = BigDecimal("0.85"),
+
+    /**
+     * 进场 WS 快照"够新跳过 REST 重拉"阈值（毫秒，V85/WS3）：>0 且 WS 盘口 quoteAgeMs<=此值时，
+     * 跳过发单前的 REST 订单簿重拉（直接用 WS 快照复检进场闸），降低决策→执行 100~300ms 延迟、减少盘口上跳零成交。
+     * 0=关闭（始终 REST 重拉，与旧行为一致）。仅 SCALP_FLIP 消费。
+     */
+    @Column(name = "scalp_ws_freshness_skip_rest_ms", nullable = false)
+    val scalpWsFreshnessSkipRestMs: Int = 500,
+
+    /**
+     * 进场有界 re-quote 重试次数（V85/WS3）：FAK 零成交(可重试)后，重新拉盘口+复检闸+按 EV 安全上沿重定价+重签提交，
+     * 最多重试这么多次，捕捉秒级盘口上跳。FAK 为成交即止无挂单，重试不会重复成交。0=关闭。仅 SCALP_FLIP 消费。
+     */
+    @Column(name = "scalp_entry_requote_max", nullable = false)
+    val scalpEntryRequoteMax: Int = 2,
+
     /** 进场实时方向确认：true=要求标的模型方向(modelSide)与买入侧一致且 pWin 达标，过滤"下跌穿越"飞刀；价源不可用时降级放行 */
     @Column(name = "scalp_require_underlying_agreement", nullable = false)
     val scalpRequireUnderlyingAgreement: Boolean = true,

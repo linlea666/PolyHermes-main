@@ -5,6 +5,7 @@ import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.entity.CryptoTailStrategyTrigger
 import com.wrbug.polymarketbot.entity.CryptoTailTradeSnapshot
 import com.wrbug.polymarketbot.enums.ErrorCode
+import com.wrbug.polymarketbot.enums.ExitStatus
 import com.wrbug.polymarketbot.enums.SpreadMode
 import com.wrbug.polymarketbot.enums.SpreadDirection
 import com.wrbug.polymarketbot.repository.CryptoTailDecisionEventRepository
@@ -457,6 +458,9 @@ class CryptoTailStrategyService(
                 scalpMaxDiffRetracePct = sc.maxDiffRetracePct,
                 scalpCatastropheBidFloor = sc.catastropheBidFloor,
                 scalpCatastropheImmediate = sc.catastropheImmediate,
+                scalpCatastropheFloorRatio = sc.catastropheFloorRatio,
+                scalpWsFreshnessSkipRestMs = sc.wsFreshnessSkipRestMs,
+                scalpEntryRequoteMax = sc.entryRequoteMax,
                 scalpRequireUnderlyingAgreement = sc.requireUnderlyingAgreement,
                 scalpEntryMinPwin = sc.entryMinPwin,
                 scalpSmartStopMinPwin = sc.smartStopMinPwin,
@@ -878,6 +882,9 @@ class CryptoTailStrategyService(
                 scalpMaxDiffRetracePct = sc.maxDiffRetracePct,
                 scalpCatastropheBidFloor = sc.catastropheBidFloor,
                 scalpCatastropheImmediate = sc.catastropheImmediate,
+                scalpCatastropheFloorRatio = sc.catastropheFloorRatio,
+                scalpWsFreshnessSkipRestMs = sc.wsFreshnessSkipRestMs,
+                scalpEntryRequoteMax = sc.entryRequoteMax,
                 scalpRequireUnderlyingAgreement = sc.requireUnderlyingAgreement,
                 scalpEntryMinPwin = sc.entryMinPwin,
                 scalpSmartStopMinPwin = sc.smartStopMinPwin,
@@ -1018,6 +1025,19 @@ class CryptoTailStrategyService(
             val zone = ZoneId.systemDefault()
             val granularity = request.granularity.lowercase()
 
+            // WS4 对账：按 strategyId:periodStartUnix 索引快照，取 settleSource / 快照实现盈亏用于逐笔明细与一致性告警。
+            // 按策略批量加载（策略数小），避免逐 trigger N+1 查询。
+            val snapshotMap = HashMap<String, CryptoTailTradeSnapshot>()
+            strategyIds.forEach { sid ->
+                tradeSnapshotRepository.findAllByStrategyIdOrderByPeriodStartUnixAsc(sid).forEach { snap ->
+                    snapshotMap["$sid:${snap.periodStartUnix}"] = snap
+                }
+            }
+            val trades = ArrayList<CryptoTailStatsTrade>()
+            val alerts = ArrayList<CryptoTailStatsAlert>()
+            // HELD_TO_SETTLE 判赢候选：先收集，循环后按"是否有退出行"批量过滤，仅对有退出尝试的幽灵盈利嫌疑单告警。
+            val heldWinCandidates = ArrayList<Pair<Long, Long>>()
+
             var totalPnl = BigDecimal.ZERO
             var winCount = 0L
             var maxProfit = BigDecimal.ZERO
@@ -1062,6 +1082,53 @@ class CryptoTailStrategyService(
                 if (!marketTitles.containsKey(prefix)) {
                     t.marketTitle?.takeIf { it.isNotBlank() }?.let { marketTitles[prefix] = it }
                 }
+
+                // WS4 逐笔明细 + 一致性告警
+                val triggerId = t.id ?: 0L
+                val snap = snapshotMap["${t.strategyId}:${t.periodStartUnix}"]
+                val settleSource = snap?.settleSource
+                trades.add(
+                    CryptoTailStatsTrade(
+                        triggerId = triggerId,
+                        strategyId = t.strategyId,
+                        marketSlugPrefix = prefix,
+                        marketTitle = marketTitles[prefix] ?: (t.marketTitle ?: prefix),
+                        mode = t.mode.value,
+                        outcomeIndex = t.outcomeIndex,
+                        settledAt = t.settledAt,
+                        realizedPnl = pnl.toPlainString(),
+                        exitStatus = t.exitStatus,
+                        settleSource = settleSource,
+                        won = t.winnerOutcomeIndex?.let { w -> t.outcomeIndex == w },
+                        remainingSize = t.remainingSize?.toPlainString()
+                    )
+                )
+                if (settleSource != null && settleSource.contains("RECONCILED")) {
+                    alerts.add(CryptoTailStatsAlert(triggerId, t.strategyId, "RECONCILED", "info",
+                        "链上对账修正已生效(settleSource=$settleSource)，已防止满仓判赢的幽灵盈利"))
+                }
+                if (t.exitStatus == ExitStatus.HELD_TO_SETTLE.name && isWin && triggerId > 0L) {
+                    heldWinCandidates.add(triggerId to t.strategyId)
+                }
+                val snapPnl = snap?.realizedPnl
+                if (snapPnl != null && (pnl.subtract(snapPnl)).abs() > BigDecimal("0.01")) {
+                    alerts.add(CryptoTailStatsAlert(triggerId, t.strategyId, "PNL_SNAPSHOT_MISMATCH", "warning",
+                        "trigger 盈亏=${pnl.toPlainString()} 与快照盈亏=${snapPnl.toPlainString()} 偏差超阈值"))
+                }
+            }
+
+            // HELD_TO_SETTLE 判赢告警收敛：仅保留"曾有退出行(含 cancelled/failed)"的候选——这类才是 FAK 回执假阴性漏记卖出
+            // 导致满仓判赢的幽灵盈利嫌疑；纯持有到结算的正常赢单(无退出行)不告警，避免刷屏淹没真实信号。
+            if (heldWinCandidates.isNotEmpty()) {
+                val idsWithExits = exitRepository
+                    .findDistinctTriggerIdsWithExitsByTriggerIdIn(heldWinCandidates.map { it.first })
+                    .toSet()
+                heldWinCandidates.forEach { (tid, sid) ->
+                    if (tid in idsWithExits) {
+                        alerts.add(CryptoTailStatsAlert(tid, sid, "HELD_TO_SETTLE_WIN", "warning",
+                            "持有到结算判赢但曾有退出尝试，建议核对链上是否有漏记卖出(triggerId=$tid)"))
+                    }
+                }
             }
 
             val settledCount = triggers.size.toLong()
@@ -1099,7 +1166,7 @@ class CryptoTailStrategyService(
                 )
             }.sortedByDescending { it.totalPnl.toSafeBigDecimal() }
 
-            Result.success(CryptoTailStatsResponse(summary = summary, buckets = bucketList, byMarket = marketList))
+            Result.success(CryptoTailStatsResponse(summary = summary, buckets = bucketList, byMarket = marketList, trades = trades, alerts = alerts))
         } catch (e: Exception) {
             logger.error("查询统计概览失败: ${e.message}", e)
             Result.failure(e)
@@ -2068,6 +2135,9 @@ class CryptoTailStrategyService(
         val maxDiffRetracePct: BigDecimal,
         val catastropheBidFloor: BigDecimal,
         val catastropheImmediate: Boolean,
+        val catastropheFloorRatio: BigDecimal,
+        val wsFreshnessSkipRestMs: Int,
+        val entryRequoteMax: Int,
         val requireUnderlyingAgreement: Boolean,
         val entryMinPwin: BigDecimal,
         val smartStopMinPwin: BigDecimal,
@@ -2123,6 +2193,9 @@ class CryptoTailStrategyService(
         maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: BigDecimal.ZERO,
         catastropheBidFloor = r.scalpCatastropheBidFloor?.toSafeBigDecimal() ?: BigDecimal("0.88"),
         catastropheImmediate = r.scalpCatastropheImmediate ?: true,
+        catastropheFloorRatio = r.scalpCatastropheFloorRatio?.toSafeBigDecimal() ?: BigDecimal("0.85"),
+        wsFreshnessSkipRestMs = r.scalpWsFreshnessSkipRestMs ?: 500,
+        entryRequoteMax = r.scalpEntryRequoteMax ?: 2,
         requireUnderlyingAgreement = r.scalpRequireUnderlyingAgreement ?: true,
         entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.90"),
         smartStopMinPwin = r.scalpSmartStopMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.70"),
@@ -2165,6 +2238,9 @@ class CryptoTailStrategyService(
         maxDiffRetracePct = r.scalpMaxDiffRetracePct?.toSafeBigDecimal() ?: e.scalpMaxDiffRetracePct,
         catastropheBidFloor = r.scalpCatastropheBidFloor?.toSafeBigDecimal() ?: e.scalpCatastropheBidFloor,
         catastropheImmediate = r.scalpCatastropheImmediate ?: e.scalpCatastropheImmediate,
+        catastropheFloorRatio = r.scalpCatastropheFloorRatio?.toSafeBigDecimal() ?: e.scalpCatastropheFloorRatio,
+        wsFreshnessSkipRestMs = r.scalpWsFreshnessSkipRestMs ?: e.scalpWsFreshnessSkipRestMs,
+        entryRequoteMax = r.scalpEntryRequoteMax ?: e.scalpEntryRequoteMax,
         requireUnderlyingAgreement = r.scalpRequireUnderlyingAgreement ?: e.scalpRequireUnderlyingAgreement,
         entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: e.scalpEntryMinPwin,
         smartStopMinPwin = r.scalpSmartStopMinPwin?.toSafeBigDecimal() ?: e.scalpSmartStopMinPwin,
@@ -2205,6 +2281,12 @@ class CryptoTailStrategyService(
         if (sc.maxDiffRetracePct < zero || sc.maxDiffRetracePct >= one) return false
         // 熔断地板（0=关闭）∈ [0,1]
         if (sc.catastropheBidFloor < zero || sc.catastropheBidFloor > one) return false
+        // 熔断相对地板比例（0=关闭）∈ [0,1]；启用时须高于深底线 hardFloorRatio，避免熔断线低于无条件深底线形同虚设
+        if (sc.catastropheFloorRatio < zero || sc.catastropheFloorRatio > one) return false
+        if (sc.catastropheFloorRatio > zero && sc.catastropheFloorRatio <= sc.hardFloorRatio) return false
+        // 进场执行（V85）：WS 跳过 REST 阈值毫秒 >= 0（0=关）；有界 re-quote 次数 >= 0（0=关）
+        if (sc.wsFreshnessSkipRestMs < 0) return false
+        if (sc.entryRequoteMax < 0) return false
         // 进场标的胜率下限 ∈ [0,1]
         if (sc.entryMinPwin < zero || sc.entryMinPwin > one) return false
         // 智能硬止损插针容忍 pWin ∈ [0,1]
@@ -2441,6 +2523,9 @@ class CryptoTailStrategyService(
             scalpMaxDiffRetracePct = e.scalpMaxDiffRetracePct.toPlainString(),
             scalpCatastropheBidFloor = e.scalpCatastropheBidFloor.toPlainString(),
             scalpCatastropheImmediate = e.scalpCatastropheImmediate,
+            scalpCatastropheFloorRatio = e.scalpCatastropheFloorRatio.toPlainString(),
+            scalpWsFreshnessSkipRestMs = e.scalpWsFreshnessSkipRestMs,
+            scalpEntryRequoteMax = e.scalpEntryRequoteMax,
             scalpRequireUnderlyingAgreement = e.scalpRequireUnderlyingAgreement,
             scalpEntryMinPwin = e.scalpEntryMinPwin.toPlainString(),
             scalpSmartStopMinPwin = e.scalpSmartStopMinPwin.toPlainString(),

@@ -1702,6 +1702,9 @@ export interface CryptoTailStrategyDto {
   scalpMaxDiffRetracePct?: string
   scalpCatastropheBidFloor?: string
   scalpCatastropheImmediate?: boolean
+  scalpCatastropheFloorRatio?: string
+  scalpWsFreshnessSkipRestMs?: number
+  scalpEntryRequoteMax?: number
   scalpRequireUnderlyingAgreement?: boolean
   scalpEntryMinPwin?: string
   scalpSmartStopMinPwin?: string
@@ -1746,6 +1749,9 @@ export interface CryptoTailScalpParams {
   scalpMaxDiffRetracePct?: string
   scalpCatastropheBidFloor?: string
   scalpCatastropheImmediate?: boolean
+  scalpCatastropheFloorRatio?: string
+  scalpWsFreshnessSkipRestMs?: number
+  scalpEntryRequoteMax?: number
   scalpRequireUnderlyingAgreement?: boolean
   scalpEntryMinPwin?: string
   scalpSmartStopMinPwin?: string
@@ -2387,11 +2393,38 @@ export interface CryptoTailStatsMarket {
   avgPnl: string
 }
 
+/** 盈亏统计概览：逐笔结算明细（WS4 看板对账） */
+export interface CryptoTailStatsTrade {
+  triggerId: number
+  strategyId: number
+  marketSlugPrefix: string
+  marketTitle: string
+  mode: number
+  outcomeIndex?: number | null
+  settledAt?: number | null
+  realizedPnl: string
+  exitStatus?: string | null
+  settleSource?: string | null
+  won?: boolean | null
+  remainingSize?: string | null
+}
+
+/** 盈亏统计概览：一致性告警（WS4） */
+export interface CryptoTailStatsAlert {
+  triggerId: number
+  strategyId: number
+  type: string
+  severity: string
+  message: string
+}
+
 /** 盈亏统计概览响应 */
 export interface CryptoTailStatsResponse {
   summary: CryptoTailStatsSummary
   buckets: CryptoTailStatsBucket[]
   byMarket: CryptoTailStatsMarket[]
+  trades?: CryptoTailStatsTrade[]
+  alerts?: CryptoTailStatsAlert[]
 }
 
 /**

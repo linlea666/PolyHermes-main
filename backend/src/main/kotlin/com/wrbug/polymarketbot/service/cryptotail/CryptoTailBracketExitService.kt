@@ -642,7 +642,7 @@ class CryptoTailBracketExitService(
         if (preset.holdToExpiry) {
             // TOP 不再"无脑持有到结算"：即便 holdToExpiry，仍保留硬危险兜底（minOdds/反抽/价差坍缩/方向翻转），
             // 仅跳过 modelProb/diffSigma 这类较软的模型衰减退出，避免最大仓位在剧烈反转下零保护。
-            dynamicExitDecision(preset, trigger, holding, bestBid, tier, hardOnly = true)?.let { return it }
+            dynamicExitDecision(strategy, preset, trigger, holding, bestBid, remainingSeconds, tier, hardOnly = true)?.let { return it }
             // 高信念单上行封顶：升到 tp_limit（如 0.99）即落袋，避免为贪最后 1 分而承担尾盘反转风险。
             // tp_limit.enabled=false（TOP 默认）时返回 null → 行为不变，仍持有到结算。
             tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
@@ -659,7 +659,11 @@ class CryptoTailBracketExitService(
                 // 价源新鲜 → 判为插针，继续持有（实测 139/140/158/161 被插针误杀但持有必赢）；任一不满足才真止损。
                 // 复用 BARRIER 的 Smart Hard Stop 策略；SCALP/TAIL_DIFF 整笔仅约 1 分钟，全程视为"临近结算"，
                 // 故 holdToSettleSeconds 传 intervalSeconds 放开 NOT_NEAR_SETTLE 闸（否则只覆盖剩余<=holdToSettleSeconds 的插针）。
-                if (strategy.enableSmartHardStop && holding != null) {
+                // 【WS2-A 根因修复】机械止损线(入场×0.95/最低0.90)远高于熔断地板(入场×0.85)，会先于熔断无门控砸出，
+                // 使 WS2 熔断模型门控在默认配置下形同虚设。故 SCALP 在已冻结的 catastropheFloorRatio>0(新建默认0.85)时，
+                // 机械止损同样启用抗插针模型门控、不再依赖 enableSmartHardStop；ratio=0(存量)仍仅 enableSmartHardStop 生效，零回归。
+                val scalpModelGateOn = trigger.mode == TradingMode.SCALP_FLIP && preset.dynamicExit.catastropheFloorRatio > BigDecimal.ZERO
+                if ((strategy.enableSmartHardStop || scalpModelGateOn) && holding != null) {
                     // 插针容忍 pWin 下限：SCALP_FLIP 用 scalpSmartStopMinPwin（默认 0.70，与持有到结算 pWin 解耦）；
                     // TAIL_DIFF 沿用 holdToSettlePwin（行为不变）。其余复核（方向/gap/safeRatio>=max(exitSafeRatio,1.30)/价源新鲜）一致。
                     val bypassMinPwin = if (trigger.mode == TradingMode.SCALP_FLIP) strategy.scalpSmartStopMinPwin else strategy.holdToSettlePwin
@@ -698,7 +702,7 @@ class CryptoTailBracketExitService(
             }
         }
         // 3) DynamicExit：modelProb / diffSigma / bestBid / 价差坍缩 / 反抽 / 方向翻转 任一触发即退出
-        dynamicExitDecision(preset, trigger, holding, bestBid, tier, hardOnly = false)?.let { return it }
+        dynamicExitDecision(strategy, preset, trigger, holding, bestBid, remainingSeconds, tier, hardOnly = false)?.let { return it }
         // 4) TpLimit
         tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
         return Decision(null, BigDecimal.ZERO, "$modeLabel[${tier?.label ?: "?"}] 继续持有 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
@@ -758,44 +762,93 @@ class CryptoTailBracketExitService(
      * 两个阈值默认 0=关闭 → 旧配置零回归。仅做"价格/回撤"硬危险判定，与模型信念无关，专封尾部风险。
      */
     private fun catastropheExitDecision(
+        strategy: CryptoTailStrategy,
         cfg: TailDiffExitPreset.DynamicExit,
         trigger: CryptoTailStrategyTrigger,
+        holding: HoldingState?,
         bestBid: BigDecimal,
+        remainingSeconds: Int,
         label: String
     ): Decision? {
         val modeLabel = if (trigger.mode == TradingMode.SCALP_FLIP) "SCALP" else "TAIL_DIFF"
-        if (cfg.catastropheBidFloor > BigDecimal.ZERO && bestBid <= cfg.catastropheBidFloor) {
-            return Decision(
-                ExitKind.HARD_STOP,
-                BigDecimal.ONE,
-                "$modeLabel[$label] Catastrophe: bestBid=${bestBid.toPlainString()}<=catastropheBidFloor=${cfg.catastropheBidFloor.toPlainString()} → 无地板市价止损${if (cfg.catastropheImmediate) "(即时)" else ""}",
-                clearTp1HoldStartedAt = true,
-                forceImmediate = cfg.catastropheImmediate
+        val isScalp = trigger.mode == TradingMode.SCALP_FLIP
+        val entry = resolveEntryFillPrice(trigger)
+
+        // 地板判定：SCALP 且 catastropheFloorRatio>0 → 相对地板=入场价×比例；否则沿用绝对线 catastropheBidFloor。
+        // 比例取自入场冻结的退出预设(cfg)，与 catastropheBidFloor/catastropheImmediate 同口径，确保策略表中途修改不影响在途持仓。
+        val relativeFloor: BigDecimal? = if (isScalp && cfg.catastropheFloorRatio > BigDecimal.ZERO &&
+            entry != null && entry > BigDecimal.ZERO
+        ) {
+            entry.multiply(cfg.catastropheFloorRatio)
+        } else null
+        val effectiveFloor = relativeFloor ?: cfg.catastropheBidFloor
+        val floorTriggered = effectiveFloor > BigDecimal.ZERO && bestBid <= effectiveFloor
+
+        // 相对回撤触发（SCALP 冻结为 0，主要服务 TAIL_DIFF）
+        var drawdown: BigDecimal? = null
+        if (!floorTriggered && cfg.maxDrawdownPct > BigDecimal.ZERO && entry != null && entry > BigDecimal.ZERO) {
+            drawdown = entry.subtract(bestBid).divide(entry, 8, RoundingMode.HALF_UP)
+        }
+        val drawdownTriggered = drawdown != null && drawdown >= cfg.maxDrawdownPct
+
+        if (!floorTriggered && !drawdownTriggered) return null
+
+        // 【WS2 熔断模型门控】仅 SCALP_FLIP 且处于模型门控制度(enableSmartHardStop 开 或 已冻结 catastropheFloorRatio>0)：
+        //  跌破熔断地板后先用底层模型复核——
+        //  - 模型仍强挺(方向未反+pWin/safeRatio 达标+价源新鲜) → 判为盘口瞬时插针 → 不即时，改走 exitConfirmTicks 短确认，给反弹机会；
+        //  - 模型已翻转/转弱 → 判为真反转 → 按 catastropheImmediate 配置即时砍仓止血。
+        //  ratio>0(新建默认0.85)即生效，不依赖 enableSmartHardStop；ratio=0 且未开 enableSmartHardStop(存量) → 沿用旧"立即砸出"，零回归。
+        //  与机械止损旁路同制度同口径，避免一处门控一处裸砸。TAIL_DIFF 行为完全不变。
+        val modelGateOn = isScalp && (strategy.enableSmartHardStop || cfg.catastropheFloorRatio > BigDecimal.ZERO)
+        var modelHolds = false
+        if (modelGateOn && holding != null) {
+            val bypass = CryptoTailHoldToSettlePolicy.evaluateHardStopBypass(
+                enabled = true,
+                priceReady = holding.priceReady(strategy.maxPriceAgeMs),
+                outcomeIndex = trigger.outcomeIndex,
+                modelSide = holding.modelSide,
+                gap = holding.gap,
+                pWinHolding = holding.pWinHolding,
+                safeRatio = holding.safeRatio,
+                remainingSeconds = remainingSeconds,
+                bypassMinPwin = strategy.scalpSmartStopMinPwin,
+                holdToSettleSeconds = strategy.intervalSeconds,
+                exitSafeRatio = strategy.exitSafeRatio,
+                minSafeRatioFloor = strategy.scalpSmartStopMinSafeRatio
             )
+            modelHolds = bypass.bypass
         }
-        if (cfg.maxDrawdownPct > BigDecimal.ZERO) {
-            val entry = resolveEntryFillPrice(trigger)
-            if (entry != null && entry > BigDecimal.ZERO) {
-                val drawdown = entry.subtract(bestBid).divide(entry, 8, RoundingMode.HALF_UP)
-                if (drawdown >= cfg.maxDrawdownPct) {
-                    return Decision(
-                        ExitKind.HARD_STOP,
-                        BigDecimal.ONE,
-                        "$modeLabel[$label] Catastrophe: drawdown=${drawdown.toPlainString()}>=maxDrawdownPct=${cfg.maxDrawdownPct.toPlainString()} (entry=${entry.toPlainString()}, bid=${bestBid.toPlainString()}) → 无地板市价止损${if (cfg.catastropheImmediate) "(即时)" else ""}",
-                        clearTp1HoldStartedAt = true,
-                        forceImmediate = cfg.catastropheImmediate
-                    )
-                }
-            }
+        // 模型强挺=插针 → 短确认(forceImmediate=false)；否则真反转 → 按配置即时
+        val immediate = if (modelHolds) false else cfg.catastropheImmediate
+        val gateTag = if (modelGateOn && holding != null) {
+            if (modelHolds) "模型强挺→插针,走${strategy.exitConfirmTicks}tick短确认" else "模型转弱/翻转→真反转"
+        } else "无模型门控"
+        val floorDesc = if (relativeFloor != null) {
+            "relFloor=入场×${cfg.catastropheFloorRatio.toPlainString()}=${effectiveFloor.toPlainString()}"
+        } else {
+            "catastropheBidFloor=${effectiveFloor.toPlainString()}"
         }
-        return null
+        val reason = if (floorTriggered) {
+            "$modeLabel[$label] Catastrophe: bestBid=${bestBid.toPlainString()}<=$floorDesc ($gateTag) → 无地板市价止损${if (immediate) "(即时)" else ""}"
+        } else {
+            "$modeLabel[$label] Catastrophe: drawdown=${drawdown?.toPlainString()}>=maxDrawdownPct=${cfg.maxDrawdownPct.toPlainString()} (entry=${entry?.toPlainString()}, bid=${bestBid.toPlainString()}, $gateTag) → 无地板市价止损${if (immediate) "(即时)" else ""}"
+        }
+        return Decision(
+            ExitKind.HARD_STOP,
+            BigDecimal.ONE,
+            reason,
+            clearTp1HoldStartedAt = true,
+            forceImmediate = immediate
+        )
     }
 
     private fun dynamicExitDecision(
+        strategy: CryptoTailStrategy,
         preset: TailDiffExitPreset,
         trigger: CryptoTailStrategyTrigger,
         holding: HoldingState?,
         bestBid: BigDecimal,
+        remainingSeconds: Int,
         tier: TailDiffTier?,
         hardOnly: Boolean
     ): Decision? {
@@ -806,7 +859,8 @@ class CryptoTailBracketExitService(
         // 崩盘 bestBid<worstPrice 时那条卖单根本成交不了且会短路后续检查；holdToExpiry 又跳过 stop_loss 块，
         // 形成"模型仍自信 + 价格崩破地板"下大仓位零有效止损的裸奔缺口。此处灾难线/回撤任一触发即发
         // 无地板 HARD_STOP（softPriceExit=false → 经 exitConfirmTicks 确认防插针后以 FAK 市价扫单真实止损）。
-        catastropheExitDecision(preset.dynamicExit, trigger, bestBid, label)?.let { return it }
+        // WS2：SCALP 熔断已内建模型门控（模型强挺=插针走短确认，模型翻转=真反转即时），不再纯盘口裸触发。
+        catastropheExitDecision(strategy, preset.dynamicExit, trigger, holding, bestBid, remainingSeconds, label)?.let { return it }
         // 软退出（模型衰减）：仅在非 hardOnly 时评估
         if (!hardOnly && holding.pWinHolding < preset.dynamicExit.minModelProbAfterEntry) {
             return Decision(
