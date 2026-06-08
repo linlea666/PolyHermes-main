@@ -169,7 +169,20 @@ class CryptoTailBracketExitService(
             if (freshRemaining <= DUST_THRESHOLD) return
             if (fresh.exitStatus != ExitStatus.OPEN.name && fresh.exitStatus != ExitStatus.PARTIAL_EXIT.name) return
             val nowMs = System.currentTimeMillis()
-            val intervalMs = strategy.exitPollIntervalMs.coerceAtLeast(500).toLong()
+            // 进场成交后 grace 期：刚成交时链上余额/持仓可能尚未就绪，立即发退出单会报 balance:0 废单（trigger 160）。
+            // grace 期内跳过退出评估（真急跌由 grace 结束后下一 tick 接管；grace 远短于周期，不影响兜底）。
+            val sinceEntryMs = nowMs - fresh.createdAt
+            if (sinceEntryMs in 0 until ENTRY_SETTLE_GRACE_MS) {
+                logger.debug("阶梯退出跳过：进场 grace 期内 triggerId=$triggerId sinceEntry=${sinceEntryMs}ms")
+                return
+            }
+            // 危险区跳过常规节流：bestBid 已明显跌破入场价（<=entry×DANGER_ZONE_RATIO）时价格可能正在崩塌，
+            // 必须立即评估，不被 exitPollIntervalMs 拖到下一个 tick（trigger 150 曾 3s 内从 0.86 跳到 0.70）；
+            // 仍保留 DANGER_ZONE_POLL_MS 最小间隔，防止崩盘期 WS 高频 tick 触发下单风暴。
+            val entryFillForDanger = resolveEntryFillPrice(fresh)
+            val inDangerZone = entryFillForDanger != null && entryFillForDanger > BigDecimal.ZERO &&
+                bestBid <= entryFillForDanger.multiply(DANGER_ZONE_RATIO)
+            val intervalMs = if (inDangerZone) DANGER_ZONE_POLL_MS else strategy.exitPollIntervalMs.coerceAtLeast(500).toLong()
             if (fresh.lastExitCheckAt != null && nowMs - fresh.lastExitCheckAt < intervalMs) return
 
             // 计算 pWin（与进场同源；持仓方向与模型方向不同时取 1-pWin）
@@ -204,8 +217,10 @@ class CryptoTailBracketExitService(
             persistTp1HoldStateIfNeeded(checked, decision)
             if (!applyExitConfirmation(checked, strategy, decision, nowMs)) return
 
-            // V53 失败抑制窗：同 (triggerId, exitKind) 60s 内 placeExitOrder 失败过则跳过本次评估，避免死循环重试
-            if (failBackoffCache.getIfPresent(failBackoffKey(triggerId, decision.kind)) != null) {
+            // V53 失败抑制窗：同 (triggerId, exitKind) 60s 内 placeExitOrder 失败过则跳过本次评估，避免死循环重试。
+            // 但紧急退出（硬止损/熔断/模型反转/深底线）绝不可被抑制——一次 FAK 落空后必须下一 tick 立即重试，
+            // 否则真反转时止损被冻结 60s 骑到归零（trigger 150）。紧急类的成交保证由 placeExitOrder 的市价扫单提供。
+            if (!isEmergencyExit(decision.kind) && failBackoffCache.getIfPresent(failBackoffKey(triggerId, decision.kind)) != null) {
                 logger.debug("阶梯退出跳过：60s 失败抑制窗内 triggerId=$triggerId kind=${decision.kind}")
                 return
             }
@@ -388,6 +403,23 @@ class CryptoTailBracketExitService(
         if (remainingSeconds <= 0) {
             return Decision(null, BigDecimal.ZERO, "周期已结束，等待结算")
         }
+        // 无条件深底线（全模式最高优先级，先于一切模型/预设判定）：
+        // bestBid 跌破 entryFillPrice×HARD_FLOOR_RATIO 时，无视模型/确认/抑制窗，立即市价全清止血。
+        // 仅做绝对价格兜底，比 Smart Hard Stop 的 bypass 阈值更低且不可豁免（forceImmediate + HARD_STOP 走市价扫单）。
+        resolveEntryFillPrice(trigger)?.let { entryFill ->
+            if (entryFill > BigDecimal.ZERO) {
+                val hardFloor = entryFill.multiply(HARD_FLOOR_RATIO)
+                if (bestBid <= hardFloor) {
+                    return Decision(
+                        ExitKind.HARD_STOP,
+                        BigDecimal.ONE,
+                        "HARD_FLOOR: bestBid=${bestBid.toPlainString()}<=entry×${HARD_FLOOR_RATIO.toPlainString()}=${hardFloor.toPlainString()} (entry=${entryFill.toPlainString()}) → 无条件市价全清",
+                        clearTp1HoldStartedAt = true,
+                        forceImmediate = true
+                    )
+                }
+            }
+        }
         // TAIL_DIFF / SCALP_FLIP：使用入场时冻结的退出预设做独立决策；不复用 BRACKET 的 TP/SL/动态退出。
         // 入场快照存于 trigger.exitPresetJson；策略表中途修改预设不影响在途持仓。
         // SCALP_FLIP 复用同一退出引擎：入场按 scalp_* 列冻结一份 preset（hold_to_expiry 恒为 false，
@@ -439,8 +471,8 @@ class CryptoTailBracketExitService(
         if (strategy.stopPrice > BigDecimal.ZERO && bestBid <= strategy.stopPrice) {
             return Decision(ExitKind.STOP, BigDecimal.ONE, "止损: bestBid=${bestBid.toPlainString()}<=stopPrice=${strategy.stopPrice.toPlainString()}")
         }
-        if (holding != null && strategy.emergencyExitOnModelFlip && trigger.entryModelSide != null && holding.modelSide != trigger.entryModelSide) {
-            return Decision(ExitKind.MODEL_FLIP, BigDecimal.ONE, "模型方向反转: entry=${trigger.entryModelSide}, current=${holding.modelSide}")
+        if (holding != null && strategy.emergencyExitOnModelFlip && holding.modelSide != trigger.outcomeIndex) {
+            return Decision(ExitKind.MODEL_FLIP, BigDecimal.ONE, "模型方向反转: current=${holding.modelSide} 背离持仓 outcomeIndex=${trigger.outcomeIndex}")
         }
         if (holding != null && strategy.emergencyExitOnGapFlip) {
             if (trigger.outcomeIndex == 0 && holding.gap <= BigDecimal.ZERO) {
@@ -589,6 +621,35 @@ class CryptoTailBracketExitService(
             val stopLine = entryFillPrice.multiply(BigDecimal.ONE.subtract(preset.stopLoss.offset))
             val effectiveStop = stopLine.max(preset.stopLoss.minPrice)
             if (bestBid <= effectiveStop) {
+                // 防误杀（底层确认门）：bestBid 跌破止损线可能只是 Polymarket 盘口在尾盘薄流动性下的瞬时下插针。
+                // 命中后先用底层模型(gap/pWin/safeRatio，源自结算价源)复核：方向仍站我方 + pWin/safeRatio 达标 +
+                // 价源新鲜 → 判为插针，继续持有（实测 139/140/158/161 被插针误杀但持有必赢）；任一不满足才真止损。
+                // 复用 BARRIER 的 Smart Hard Stop 策略；SCALP/TAIL_DIFF 整笔仅约 1 分钟，全程视为"临近结算"，
+                // 故 holdToSettleSeconds 传 intervalSeconds 放开 NOT_NEAR_SETTLE 闸（否则只覆盖剩余<=holdToSettleSeconds 的插针）。
+                if (strategy.enableSmartHardStop && holding != null) {
+                    val bypass = CryptoTailHoldToSettlePolicy.evaluateHardStopBypass(
+                        enabled = true,
+                        priceReady = holding.priceReady(strategy.maxPriceAgeMs),
+                        outcomeIndex = trigger.outcomeIndex,
+                        modelSide = holding.modelSide,
+                        gap = holding.gap,
+                        pWinHolding = holding.pWinHolding,
+                        safeRatio = holding.safeRatio,
+                        remainingSeconds = remainingSeconds,
+                        holdToSettlePwin = strategy.holdToSettlePwin,
+                        holdToSettleSeconds = strategy.intervalSeconds,
+                        exitSafeRatio = strategy.exitSafeRatio
+                    )
+                    if (bypass.bypass) {
+                        return Decision(
+                            null,
+                            BigDecimal.ZERO,
+                            "$modeLabel[${tier?.label ?: "?"}] StopLoss_BYPASSED_BY_HOLD_TO_SETTLE: bestBid=${bestBid.toPlainString()}<=${effectiveStop.toPlainString()} 但 pWin=${holding.pWinHolding.toPlainString()}>=${strategy.holdToSettlePwin.toPlainString()} modelSide=${holding.modelSide}==oi=${trigger.outcomeIndex} gap=${holding.gap.toPlainString()} safeRatio=${holding.safeRatio.toPlainString()} → 判为插针继续持有",
+                            clearTp1HoldStartedAt = true,
+                            bypassedHardStop = true
+                        )
+                    }
+                }
                 val ratio = preset.stopLoss.ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
                 return Decision(
                     ExitKind.HARD_STOP,
@@ -761,12 +822,15 @@ class CryptoTailBracketExitService(
                 clearTp1HoldStartedAt = true
             )
         }
-        // 方向反转视为反抽
-        if (trigger.entryModelSide != null && holding.modelSide != trigger.entryModelSide) {
+        // 方向反转视为反抽：仅当模型转向"我方对立面"(modelSide != 持仓 outcomeIndex)才退出。
+        // 修正：此前对比 trigger.entryModelSide，当入场快照方向与持仓方向不一致时（如进场瞬间模型恰好翻动），
+        // 会把"模型翻向我方"误判为反转而错误退出（trigger 160：持仓 Down=1，模型 0→1 翻向我方却被卖）。
+        // 改为对比 outcomeIndex（我们真正持有的方向），语义上即"模型现在认为我方会输"才退出。
+        if (holding.modelSide != trigger.outcomeIndex) {
             return Decision(
                 ExitKind.MODEL_FLIP,
                 BigDecimal.ONE,
-                "$modeLabel[$label] DynamicExit: modelSide flip from ${trigger.entryModelSide} to ${holding.modelSide}",
+                "$modeLabel[$label] DynamicExit: modelSide=${holding.modelSide} 背离持仓 outcomeIndex=${trigger.outcomeIndex}",
                 clearTp1HoldStartedAt = true
             )
         }
@@ -1306,6 +1370,13 @@ class CryptoTailBracketExitService(
             strategy.exitFakSlippage to null
         }
         var exitPrice = computeExitPrice(orderType, bestBid, effExitSlippage)
+        // 紧急退出（硬止损/熔断/模型反转/深底线）且非 softPriceExit 时：FAK 限价取 MIN_PRICE 作市价扫单，
+        // 保证只要盘口有买单就成交（FAK 按盘口挂单价、价格-时间优先撮合，限价 0.01 仅定"最差可接受"，
+        // 实际成交价仍是当前最优买价，绝不劣于现状）。这是 trigger 150 在崩盘中 bid-0.02 限价被反复杀单的直接修复。
+        // softPriceExit（裸盘口跌破 minOdds，最易被插针误伤）不走此分支，仍由下方 worstPrice 地板保护。
+        if (isEmergencyExit(kind) && !applyWorstPriceFloor && orderType.uppercase() == "FAK") {
+            exitPrice = MIN_PRICE
+        }
         // worstPrice：FAK 卖出限价不得低于该底线（限价被抬高 → 低于底线时不成交，避免滑点把仓位贱卖）。
         // 仅对 softPriceExit（裸盘口跌破 minOdds）套用——假报价/插针时宁可不成交＝继续持有赢家；
         // 真模型恶化/反转/止损不套地板，确保该割肉时能在市价附近成交，不被地板挡住而骑到归零。
@@ -1404,7 +1475,11 @@ class CryptoTailBracketExitService(
                 strategy, trigger, kind, targetSize, exitPrice, recordOrderType, "failed",
                 pwinHolding, bestBid, remainingSeconds, reason, failReason ?: "unknown", null
             )
-            failBackoffCache.put(failBackoffKey(triggerId, kind), true)
+            // 紧急退出失败不写抑制窗（否则会冻结后续重试，正是 trigger 150 骑到归零的直接原因）；
+            // 仅非紧急（TP/MAKER 挂单被拒等）才写，防"下次 tick 又重挂又被拒"死循环。
+            if (!isEmergencyExit(kind)) {
+                failBackoffCache.put(failBackoffKey(triggerId, kind), true)
+            }
             recordEvent(
                 strategy,
                 trigger,
@@ -1520,5 +1595,26 @@ class CryptoTailBracketExitService(
          * 残余 size <= 0.01 视为已全部退出，避免对 dust 仓再下卖单。
          */
         private val DUST_THRESHOLD: BigDecimal = BigDecimal("0.01")
+
+        /**
+         * 无条件深底线比例：bestBid <= entryFillPrice × 此值时，无视模型/确认/抑制窗，立即市价全清止血。
+         * 比 Smart Hard Stop 的 bypass 阈值更低且不可豁免；取 0.50 以避免误杀深插针(如 bid 插到 0.62 但底层仍站我方)。
+         */
+        private val HARD_FLOOR_RATIO: BigDecimal = BigDecimal("0.50")
+
+        /**
+         * 危险区比例：bestBid <= entryFillPrice × 此值时视为价格可能正在崩塌，跳过常规巡检节流、改用更短的危险区节流，
+         * 以免 exitPollIntervalMs 把退出评估拖到下一个 tick（trigger 150 曾在 3s 内从 0.86 跳到 0.70）。
+         */
+        private val DANGER_ZONE_RATIO: BigDecimal = BigDecimal("0.95")
+
+        /** 危险区最小评估间隔（毫秒）：跳过常规节流后仍保留的最小间隔，防止崩盘期 WS 高频 tick 触发下单风暴。 */
+        private const val DANGER_ZONE_POLL_MS: Long = 500L
+
+        /**
+         * 进场成交后退出评估 grace 期（毫秒）：刚成交时链上余额/持仓可能尚未就绪，立即发退出单会报 balance:0 废单。
+         * grace 期内跳过退出评估；真急跌由 grace 结束后下一 tick 接管（grace 远短于周期，不影响兜底）。
+         */
+        private const val ENTRY_SETTLE_GRACE_MS: Long = 2000L
     }
 }
