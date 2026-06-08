@@ -47,7 +47,8 @@ class CryptoTailOrderbookWsService(
     private val binanceKlineService: BinanceKlineService,
     private val periodPriceProvider: PeriodPriceProvider,
     private val bracketExitService: CryptoTailBracketExitService,
-    private val entrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver
+    private val entrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
+    private val orderbookCache: CryptoTailOrderbookCache
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailOrderbookWsService::class.java)
@@ -58,8 +59,7 @@ class CryptoTailOrderbookWsService(
     /** tokenId -> list of (strategy, periodStartUnix, marketTitle, tokenIds, outcomeIndex) */
     private val tokenToEntries = AtomicReference<Map<String, List<WsBookEntry>>>(emptyMap())
 
-    /** assetId -> 最近一次盘口质量快照；price_change 缺深度时复用 book 快照并标记 depthStale */
-    private val orderbookCache = java.util.concurrent.ConcurrentHashMap<String, OrderbookQualitySnapshot>()
+    /** assetId -> 最近一次盘口质量快照（共享缓存，供执行服务发单前读取最新 WS 帧）；price_change 缺深度时复用 book 快照并标记 depthStale */
 
     private var webSocket: WebSocket? = null
     private val wsUrl = PolymarketConstants.RTDS_WS_URL + "/ws/market"
@@ -257,7 +257,7 @@ class CryptoTailOrderbookWsService(
                         bidLevels = bidLevels.sortedByDescending { it.price },
                         askLevels = askLevels.sortedBy { it.price }
                     )
-                    orderbookCache[assetId] = snapshot
+                    orderbookCache.put(assetId, snapshot)
                     onBestBid(assetId, snapshot)
                 }
             }
@@ -272,7 +272,7 @@ class CryptoTailOrderbookWsService(
                     val bestAskStr = (pc.get("best_ask") as? com.google.gson.JsonPrimitive)?.asString
                     val bestAsk = bestAskStr?.toSafeBigDecimal()
                     if (bestBid != null) {
-                        val prev = orderbookCache[assetId]
+                        val prev = orderbookCache.get(assetId)
                         val nowMs = System.currentTimeMillis()
                         val snapshot = OrderbookQualitySnapshot(
                             tokenId = assetId,
@@ -288,7 +288,7 @@ class CryptoTailOrderbookWsService(
                             depthStale = prev?.depthUpdatedAtMs == null,
                             bidLevels = prev?.bidLevels ?: emptyList()
                         )
-                        orderbookCache[assetId] = snapshot
+                        orderbookCache.put(assetId, snapshot)
                         onBestBid(assetId, snapshot)
                     }
                 }
@@ -296,7 +296,7 @@ class CryptoTailOrderbookWsService(
         }
     }
 
-    fun latestSnapshot(tokenId: String): OrderbookQualitySnapshot? = orderbookCache[tokenId]
+    fun latestSnapshot(tokenId: String): OrderbookQualitySnapshot? = orderbookCache.latestSnapshot(tokenId)
 
     /**
      * TAIL_DIFF 评分预览的实时上下文：取该策略某 outcome 当前已订阅周期 + 最新盘口快照。
@@ -313,7 +313,7 @@ class CryptoTailOrderbookWsService(
         val entry = tokenToEntries.get().values.asSequence().flatten()
             .firstOrNull { it.strategy.id == strategyId && it.outcomeIndex == outcomeIndex }
             ?: return null
-        val snapshot = orderbookCache[entry.tokenId] ?: return null
+        val snapshot = orderbookCache.get(entry.tokenId) ?: return null
         return LivePreviewContext(entry.periodStartUnix, entry.tokenId, snapshot)
     }
 

@@ -97,6 +97,7 @@ class CryptoTailStrategyExecutionService(
     private val calibrationService: CryptoTailCalibrationService,
     private val wickSignalService: CryptoTailWickSignalService,
     private val orderbookSnapshotFetcher: CryptoTailOrderbookSnapshotFetcher,
+    private val orderbookCache: CryptoTailOrderbookCache,
     private val boostService: CryptoTailBoostService,
     private val tailDiffDecisionService: CryptoTailTailDiffDecisionService,
     private val tailDiffEntrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
@@ -366,7 +367,13 @@ class CryptoTailStrategyExecutionService(
         "refreshedSpread" to (refreshedOrderbook?.spread?.toPlainString() ?: ""),
         // orderbookRefreshed=发单前真做了 REST 重拉；restSkipped=WS3 因 WS 快照够新跳过 REST、直接复用 WS 快照复检(并非未刷新)
         "orderbookRefreshed" to orderbookRefreshed,
-        "restSkipped" to restSkipped
+        "restSkipped" to restSkipped,
+        // orderbookSource=本次发单前盘口取数来源：WS_LIVE=实时 WS 帧(WS 主)、REST=REST 兜底重拉、NONE=未刷新(LEGACY)
+        "orderbookSource" to when {
+            restSkipped -> "WS_LIVE"
+            orderbookRefreshed -> "REST"
+            else -> "NONE"
+        }
     )
 
     private fun avgFillPrice(filledSize: BigDecimal?, filledAmount: BigDecimal?): BigDecimal? {
@@ -2120,19 +2127,31 @@ class CryptoTailStrategyExecutionService(
     }
 
     /**
-     * 是否可跳过发单前 REST 盘口重拉（WS3）：仅 SCALP_FLIP，且 scalpWsFreshnessSkipRestMs>0、
-     * WS 快照存在、含 bestAsk、quoteAgeMs<=阈值 时返回 true（用 WS 快照复检进场闸即可，省一次 REST 往返延迟）。
-     * 任一不满足返回 false（照常 REST 重拉，零回归）。
+     * 发单前"WS 主 / REST 兜底"取数（仅 SCALP_FLIP，WS3 根因修复）：
+     * 在执行点实时取 [orderbookCache] 的最新 WS 帧（持续随 WS 消息更新，~ms 级新鲜），
+     * 而非复用判定时冻结、透传下来的旧快照（旧实现量错对象：透传帧经 ~0.5-2s 前置工作后已老化，几乎永远超阈值）。
+     *
+     * 返回非空表示"可用 WS 实时帧跳过发单前 REST"，条件全部满足：
+     *  - mode==SCALP_FLIP 且 scalpWsFreshnessSkipRestMs>0
+     *  - WS 帧存在、含 bestAsk、quoteAgeMs<=阈值
+     *  - 若退出深度门(scalpMinExitBidDepthUsdc)有效，则额外要求深度不陈旧（depthStale=false 且 bidDepthUsd 非空），
+     *    否则回退 REST，避免用 price_change 复用的陈旧 bidDepthUsd 误判深度门。
+     * 任一不满足返回 null（照常 REST 重拉，零回归）。
      */
-    private fun canSkipPreSubmitRest(
+    private fun pickLiveWsOrderbook(
         strategy: CryptoTailStrategy,
-        preRefreshOrderbook: OrderbookQualitySnapshot?
-    ): Boolean {
-        if (strategy.mode != TradingMode.SCALP_FLIP) return false
-        if (strategy.scalpWsFreshnessSkipRestMs <= 0) return false
-        val ob = preRefreshOrderbook ?: return false
-        if (ob.bestAsk == null) return false
-        return ob.quoteAgeMs(System.currentTimeMillis()) <= strategy.scalpWsFreshnessSkipRestMs
+        tokenId: String
+    ): OrderbookQualitySnapshot? {
+        if (strategy.mode != TradingMode.SCALP_FLIP) return null
+        if (strategy.scalpWsFreshnessSkipRestMs <= 0) return null
+        val ws = orderbookCache.latestSnapshot(tokenId) ?: return null
+        if (ws.bestAsk == null) return null
+        if (ws.quoteAgeMs(System.currentTimeMillis()) > strategy.scalpWsFreshnessSkipRestMs) return null
+        val minExitDepth = strategy.scalpMinExitBidDepthUsdc
+        if (minExitDepth != null && minExitDepth > BigDecimal.ZERO) {
+            if (ws.depthStale || ws.bidDepthUsd == null) return null
+        }
+        return ws
     }
 
     /**
@@ -2448,22 +2467,20 @@ class CryptoTailStrategyExecutionService(
             // 根据模式确定下单价格（FAK 吃单）
             // LEGACY 仍走极简进场（不做发单前 REST 复核）。SCALP_FLIP 与概率/尾盘模式一致：发单前刷新 REST 盘口并复检进场闸，
             // 杜绝"门槛判定→实际成交"1~3s 内盘口塌陷导致跌破价格下限的接飞刀成交（根因：进场判定与执行用了两个时点的盘口）。
-            // WS3：SCALP 若 WS 快照足够新（quoteAgeMs<=scalpWsFreshnessSkipRestMs）则跳过 REST 重拉，直接用 WS 快照复检进场闸，
-            // 削减 100~300ms 决策→执行延迟，减少盘口上跳零成交；WS 不够新/缺 ask 仍走 REST，零成交后由有界 re-quote 重拉。
-            val restSkipped = canSkipPreSubmitRest(strategy, preRefreshOrderbook)
+            // WS3（WS 主 / REST 兜底）：SCALP 在执行点实时取最新 WS 帧（quoteAgeMs<=scalpWsFreshnessSkipRestMs）跳过 REST 重拉，
+            // 用这帧最新报价复检进场闸 + 定价，削减 REST 往返延迟、消除双源漂移；WS 不够新/缺 ask/深度门陈旧则走 REST 兜底，
+            // REST 也缺失则 ORDERBOOK_STALE 禁止入场，零成交后由有界 re-quote 重拉。
+            val liveWsOrderbook = pickLiveWsOrderbook(strategy, tokenId)
+            val restSkipped = liveWsOrderbook != null
             val refreshedOrderbook = if (strategy.mode != TradingMode.LEGACY_SPREAD) {
-                if (restSkipped) {
-                    preRefreshOrderbook
-                } else {
-                    orderbookSnapshotFetcher.fetch(ctx.clobApi, tokenId) ?: run {
-                        recordBarrierDecision(
-                            strategy,
-                            periodStartUnix,
-                            outcomeIndex,
-                            BarrierEval(false, "ORDERBOOK_STALE", "发单前 REST 订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
-                        )
-                        return
-                    }
+                liveWsOrderbook ?: orderbookSnapshotFetcher.fetch(ctx.clobApi, tokenId) ?: run {
+                    recordBarrierDecision(
+                        strategy,
+                        periodStartUnix,
+                        outcomeIndex,
+                        BarrierEval(false, "ORDERBOOK_STALE", "发单前 REST 订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
+                    )
+                    return
                 }
             } else {
                 null
@@ -2893,20 +2910,17 @@ class CryptoTailStrategyExecutionService(
         val clobApi = retrofitFactory.createClobApi(account.apiKey, apiSecret, apiPassphrase, account.walletAddress)
         val signatureType = orderSigningService.getSignatureTypeForWalletType(account.walletType)
 
-        val restSkipped = canSkipPreSubmitRest(strategy, preRefreshOrderbook)
+        val liveWsOrderbook = pickLiveWsOrderbook(strategy, tokenId)
+        val restSkipped = liveWsOrderbook != null
         val refreshedOrderbook = if (strategy.mode != TradingMode.LEGACY_SPREAD) {
-            if (restSkipped) {
-                preRefreshOrderbook
-            } else {
-                orderbookSnapshotFetcher.fetch(clobApi, tokenId) ?: run {
-                    recordBarrierDecision(
-                        strategy,
-                        periodStartUnix,
-                        outcomeIndex,
-                        BarrierEval(false, "ORDERBOOK_STALE", "发单前 REST 订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
-                    )
-                    return
-                }
+            liveWsOrderbook ?: orderbookSnapshotFetcher.fetch(clobApi, tokenId) ?: run {
+                recordBarrierDecision(
+                    strategy,
+                    periodStartUnix,
+                    outcomeIndex,
+                    BarrierEval(false, "ORDERBOOK_STALE", "发单前 REST 订单簿快照缺失，禁止入场", orderbookPayload(null).toJson())
+                )
+                return
             }
         } else {
             null
@@ -3169,6 +3183,12 @@ class CryptoTailStrategyExecutionService(
                     "refreshedSpread" to (orderResultContext.preSubmitOrderbook?.spread?.toPlainString() ?: ""),
                     "orderbookRefreshed" to orderResultContext.orderbookRefreshed,
                     "restSkipped" to orderResultContext.restSkipped,
+                    // orderbookSource=本次发单前盘口取数来源：WS_LIVE=实时 WS 帧(WS 主)、REST=REST 兜底重拉、NONE=未刷新(LEGACY)
+                    "orderbookSource" to when {
+                        orderResultContext.restSkipped -> "WS_LIVE"
+                        orderResultContext.orderbookRefreshed -> "REST"
+                        else -> "NONE"
+                    },
                     "orderBookAgeMs" to (orderResultContext.preSubmitOrderbook?.quoteAgeMs() ?: ""),
                     "evSafeMaxPrice" to (orderResultContext.pricing?.evSafeLimit?.toPlainString() ?: ""),
                     "submitLatencyMs" to (orderResultContext.submitLatencyMs ?: ""),
