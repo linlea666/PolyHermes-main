@@ -833,6 +833,15 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_entry_min_pwin", nullable = false, precision = 20, scale = 8)
     val scalpEntryMinPwin: BigDecimal = BigDecimal("0.90"),
 
+    /**
+     * SCALP 智能硬止损"插针容忍 pWin"（V81）：智能硬止损旁路的 pWin 下限，与 holdToSettlePwin 解耦。
+     * 机械硬止损命中时，若模型仍明显站我方（方向未反 + gap 顺 + safeRatio 达标 + 价源新鲜）且 pWin>=此值，
+     * 则判定为盘口插针、放弃本次砍仓继续持有；不需 holdToSettlePwin(0.96) 级的"持有到结算"信心。默认 0.70。
+     * 仅 SCALP_FLIP 退出链路消费；BARRIER 仍用 holdToSettlePwin，TAIL_DIFF 行为不变。
+     */
+    @Column(name = "scalp_smart_stop_min_pwin", nullable = false, precision = 20, scale = 8)
+    val scalpSmartStopMinPwin: BigDecimal = BigDecimal("0.70"),
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

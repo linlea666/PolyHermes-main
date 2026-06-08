@@ -1954,6 +1954,8 @@
       "scalpRequireUnderlyingAgreementHint": "開啟=買入側須與標的模型方向(modelSide)一致且 pWin 達標，過濾\"下跌穿越\"飛刀；標的價源不可用時降級放行並記錄可觀測事件",
       "scalpEntryMinPwin": "進場標的勝率下限 (pWin)",
       "scalpEntryMinPwinHint": "買入側標的模型勝率須 ≥ 此值才放行，建議 0.90；僅在\"進場要求標的方向一致\"開啟時生效",
+      "scalpSmartStopMinPwin": "插針容忍 pWin",
+      "scalpSmartStopMinPwinHint": "智能硬止損命中後，若模型仍明顯站我方（方向未反 + gap 順 + 安全比達標 + 價源新鮮）且持倉勝率 pWin ≥ 此值，則判為盤口瞬時插針、放棄本次砍倉繼續持有；每 tick 複核，真反轉下一 tick 即止損，50% 深兜底始終即時不可豁免。預設 0.70（越低越能容忍插針、越易扛單）；僅在\"智能硬止損\"開啟時生效",
       "scalpConcurrencySubsection": "並發控制",
       "scalpMaxConcurrentSameDirection": "同方向並發上限",
       "scalpMaxConcurrentHint": "同策略同方向未結算敞口上限，留空=不限制（仍受全局並發約束）",

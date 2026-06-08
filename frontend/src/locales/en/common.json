@@ -1954,6 +1954,8 @@
       "scalpRequireUnderlyingAgreementHint": "On = buy side must match underlying model direction (modelSide) with pWin above threshold, filtering 'downward-crossing' falling knives; degrades to pass with an observable event when the underlying price source is unavailable",
       "scalpEntryMinPwin": "Entry Underlying Win-rate Floor (pWin)",
       "scalpEntryMinPwinHint": "Buy side underlying model win-rate must be ≥ this value, recommended 0.90; effective only when 'Require Underlying Direction Agreement' is on",
+      "scalpSmartStopMinPwin": "Wick Tolerance pWin",
+      "scalpSmartStopMinPwinHint": "After a smart hard stop is hit, if the model still clearly favors the position (direction not flipped + gap supportive + safe-ratio met + price source fresh) and holding pWin ≥ this value, treat it as a transient orderbook wick and keep holding instead of selling. Re-checked every tick (a genuine reversal stops on the next tick); the 50% deep floor always fires immediately and cannot be bypassed. Default 0.70 (lower = more wick tolerant / holds longer); effective only when 'Smart Hard Stop' is on",
       "scalpConcurrencySubsection": "Concurrency Control",
       "scalpMaxConcurrentSameDirection": "Max concurrent same-direction",
       "scalpMaxConcurrentHint": "Max open same-direction exposure per strategy; empty = no limit (still bound by global concurrency)",

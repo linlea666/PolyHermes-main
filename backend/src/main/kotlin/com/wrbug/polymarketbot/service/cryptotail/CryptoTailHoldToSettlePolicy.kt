@@ -69,7 +69,9 @@ object CryptoTailHoldToSettlePolicy {
      * @param pWinHolding 当前持仓方向胜率
      * @param safeRatio 当前安全比
      * @param remainingSeconds 距结算剩余秒
-     * @param holdToSettlePwin 持有到结算的 pWin 阈值
+     * @param bypassMinPwin 插针容忍 pWin 下限：判为盘口插针、放弃本次硬止损所需的最低持仓胜率。
+     *        与"持有到结算 pWin"解耦——忽略一次插针只需模型仍明显站我方，不需 0.96 级的持有到结算信心。
+     *        BARRIER 传 holdToSettlePwin（行为不变）；SCALP_FLIP 传 scalpSmartStopMinPwin（默认 0.70）。
      * @param holdToSettleSeconds 持有到结算的剩余秒阈值
      * @param exitSafeRatio 退出安全比阈值（与 SMART_HARD_STOP_MIN_SAFE_RATIO 取较大者作为下限）
      */
@@ -82,7 +84,7 @@ object CryptoTailHoldToSettlePolicy {
         pWinHolding: BigDecimal,
         safeRatio: BigDecimal,
         remainingSeconds: Int,
-        holdToSettlePwin: BigDecimal,
+        bypassMinPwin: BigDecimal,
         holdToSettleSeconds: Int,
         exitSafeRatio: BigDecimal
     ): BypassResult {
@@ -95,8 +97,8 @@ object CryptoTailHoldToSettlePolicy {
         if (!gapSupportsHolding(outcomeIndex, gap)) return BypassResult(false, "GAP_FLIP")
         // 还很长，不是临近结算：必须退出
         if (remainingSeconds > holdToSettleSeconds) return BypassResult(false, "NOT_NEAR_SETTLE")
-        // pWin 明显低于阈值：必须退出
-        if (pWinHolding < holdToSettlePwin) return BypassResult(false, "PWIN_BELOW_THRESHOLD")
+        // pWin 明显低于插针容忍下限：判为真反转，必须退出
+        if (pWinHolding < bypassMinPwin) return BypassResult(false, "PWIN_BELOW_THRESHOLD")
         // safeRatio 低于安全下限：必须退出
         val safeFloor = exitSafeRatio.max(SMART_HARD_STOP_MIN_SAFE_RATIO)
         if (safeRatio < safeFloor) return BypassResult(false, "SAFE_RATIO_BELOW_FLOOR")

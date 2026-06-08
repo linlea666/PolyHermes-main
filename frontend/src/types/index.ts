@@ -1704,6 +1704,7 @@ export interface CryptoTailStrategyDto {
   scalpCatastropheImmediate?: boolean
   scalpRequireUnderlyingAgreement?: boolean
   scalpEntryMinPwin?: string
+  scalpSmartStopMinPwin?: string
   createdAt: number
   updatedAt: number
 }
@@ -1742,6 +1743,7 @@ export interface CryptoTailScalpParams {
   scalpCatastropheImmediate?: boolean
   scalpRequireUnderlyingAgreement?: boolean
   scalpEntryMinPwin?: string
+  scalpSmartStopMinPwin?: string
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */

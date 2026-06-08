@@ -448,7 +448,7 @@ class CryptoTailBracketExitService(
                         pWinHolding = holding.pWinHolding,
                         safeRatio = holding.safeRatio,
                         remainingSeconds = remainingSeconds,
-                        holdToSettlePwin = strategy.holdToSettlePwin,
+                        bypassMinPwin = strategy.holdToSettlePwin,
                         holdToSettleSeconds = strategy.holdToSettleSeconds,
                         exitSafeRatio = strategy.exitSafeRatio
                     )
@@ -456,7 +456,7 @@ class CryptoTailBracketExitService(
                         return Decision(
                             null,
                             BigDecimal.ZERO,
-                            "HARD_STOP_BYPASSED_BY_HOLD_TO_SETTLE: bestBid=${bestBid.toPlainString()}<=hardStopLine=${stopLine.toPlainString()} 但 currentPWin=${holding.pWinHolding.toPlainString()}>=holdToSettlePwin=${strategy.holdToSettlePwin.toPlainString()} safeRatio=${holding.safeRatio.toPlainString()} modelSide=${holding.modelSide} outcomeIndex=${trigger.outcomeIndex} gap=${holding.gap.toPlainString()} remainingSeconds=$remainingSeconds priceReady=true",
+                            "HARD_STOP_BYPASSED_BY_HOLD_TO_SETTLE: bestBid=${bestBid.toPlainString()}<=hardStopLine=${stopLine.toPlainString()} 但 currentPWin=${holding.pWinHolding.toPlainString()}>=bypassMinPwin=${strategy.holdToSettlePwin.toPlainString()} safeRatio=${holding.safeRatio.toPlainString()} modelSide=${holding.modelSide} outcomeIndex=${trigger.outcomeIndex} gap=${holding.gap.toPlainString()} remainingSeconds=$remainingSeconds priceReady=true",
                             clearTp1HoldStartedAt = true,
                             bypassedHardStop = true
                         )
@@ -627,6 +627,9 @@ class CryptoTailBracketExitService(
                 // 复用 BARRIER 的 Smart Hard Stop 策略；SCALP/TAIL_DIFF 整笔仅约 1 分钟，全程视为"临近结算"，
                 // 故 holdToSettleSeconds 传 intervalSeconds 放开 NOT_NEAR_SETTLE 闸（否则只覆盖剩余<=holdToSettleSeconds 的插针）。
                 if (strategy.enableSmartHardStop && holding != null) {
+                    // 插针容忍 pWin 下限：SCALP_FLIP 用 scalpSmartStopMinPwin（默认 0.70，与持有到结算 pWin 解耦）；
+                    // TAIL_DIFF 沿用 holdToSettlePwin（行为不变）。其余复核（方向/gap/safeRatio>=max(exitSafeRatio,1.30)/价源新鲜）一致。
+                    val bypassMinPwin = if (trigger.mode == TradingMode.SCALP_FLIP) strategy.scalpSmartStopMinPwin else strategy.holdToSettlePwin
                     val bypass = CryptoTailHoldToSettlePolicy.evaluateHardStopBypass(
                         enabled = true,
                         priceReady = holding.priceReady(strategy.maxPriceAgeMs),
@@ -636,7 +639,7 @@ class CryptoTailBracketExitService(
                         pWinHolding = holding.pWinHolding,
                         safeRatio = holding.safeRatio,
                         remainingSeconds = remainingSeconds,
-                        holdToSettlePwin = strategy.holdToSettlePwin,
+                        bypassMinPwin = bypassMinPwin,
                         holdToSettleSeconds = strategy.intervalSeconds,
                         exitSafeRatio = strategy.exitSafeRatio
                     )
@@ -644,7 +647,7 @@ class CryptoTailBracketExitService(
                         return Decision(
                             null,
                             BigDecimal.ZERO,
-                            "$modeLabel[${tier?.label ?: "?"}] StopLoss_BYPASSED_BY_HOLD_TO_SETTLE: bestBid=${bestBid.toPlainString()}<=${effectiveStop.toPlainString()} 但 pWin=${holding.pWinHolding.toPlainString()}>=${strategy.holdToSettlePwin.toPlainString()} modelSide=${holding.modelSide}==oi=${trigger.outcomeIndex} gap=${holding.gap.toPlainString()} safeRatio=${holding.safeRatio.toPlainString()} → 判为插针继续持有",
+                            "$modeLabel[${tier?.label ?: "?"}] StopLoss_BYPASSED_BY_HOLD_TO_SETTLE: bestBid=${bestBid.toPlainString()}<=${effectiveStop.toPlainString()} 但 pWin=${holding.pWinHolding.toPlainString()}>=bypassMinPwin=${bypassMinPwin.toPlainString()} modelSide=${holding.modelSide}==oi=${trigger.outcomeIndex} gap=${holding.gap.toPlainString()} safeRatio=${holding.safeRatio.toPlainString()} → 判为插针继续持有",
                             clearTp1HoldStartedAt = true,
                             bypassedHardStop = true
                         )

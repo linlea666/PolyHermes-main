@@ -39,7 +39,7 @@ class CryptoTailHoldToSettlePolicyTest {
         pWinHolding = BigDecimal(pWinHolding),
         safeRatio = BigDecimal(safeRatio),
         remainingSeconds = remainingSeconds,
-        holdToSettlePwin = BigDecimal(holdToSettlePwin),
+        bypassMinPwin = BigDecimal(holdToSettlePwin),
         holdToSettleSeconds = holdToSettleSeconds,
         exitSafeRatio = BigDecimal(exitSafeRatio)
     )
@@ -142,7 +142,7 @@ class CryptoTailHoldToSettlePolicyTest {
             pWinHolding = BigDecimal("0.96"),
             safeRatio = BigDecimal("1.80"),
             remainingSeconds = 80,
-            holdToSettlePwin = BigDecimal("0.95"),
+            bypassMinPwin = BigDecimal("0.95"),
             holdToSettleSeconds = 90,
             exitSafeRatio = BigDecimal("0.80")
         )
@@ -161,7 +161,7 @@ class CryptoTailHoldToSettlePolicyTest {
             pWinHolding = BigDecimal("0.96"),
             safeRatio = BigDecimal("1.80"),
             remainingSeconds = 80,
-            holdToSettlePwin = BigDecimal("0.95"),
+            bypassMinPwin = BigDecimal("0.95"),
             holdToSettleSeconds = 90,
             exitSafeRatio = BigDecimal("0.80")
         )

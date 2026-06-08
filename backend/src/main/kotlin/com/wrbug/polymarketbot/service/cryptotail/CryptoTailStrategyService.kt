@@ -457,7 +457,8 @@ class CryptoTailStrategyService(
                 scalpCatastropheBidFloor = sc.catastropheBidFloor,
                 scalpCatastropheImmediate = sc.catastropheImmediate,
                 scalpRequireUnderlyingAgreement = sc.requireUnderlyingAgreement,
-                scalpEntryMinPwin = sc.entryMinPwin
+                scalpEntryMinPwin = sc.entryMinPwin,
+                scalpSmartStopMinPwin = sc.smartStopMinPwin
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -873,6 +874,7 @@ class CryptoTailStrategyService(
                 scalpCatastropheImmediate = sc.catastropheImmediate,
                 scalpRequireUnderlyingAgreement = sc.requireUnderlyingAgreement,
                 scalpEntryMinPwin = sc.entryMinPwin,
+                scalpSmartStopMinPwin = sc.smartStopMinPwin,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -1942,7 +1944,8 @@ class CryptoTailStrategyService(
         val catastropheBidFloor: BigDecimal,
         val catastropheImmediate: Boolean,
         val requireUnderlyingAgreement: Boolean,
-        val entryMinPwin: BigDecimal
+        val entryMinPwin: BigDecimal,
+        val smartStopMinPwin: BigDecimal
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -1991,7 +1994,8 @@ class CryptoTailStrategyService(
         catastropheBidFloor = r.scalpCatastropheBidFloor?.toSafeBigDecimal() ?: BigDecimal("0.88"),
         catastropheImmediate = r.scalpCatastropheImmediate ?: true,
         requireUnderlyingAgreement = r.scalpRequireUnderlyingAgreement ?: true,
-        entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.90")
+        entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.90"),
+        smartStopMinPwin = r.scalpSmartStopMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.70")
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2027,7 +2031,8 @@ class CryptoTailStrategyService(
         catastropheBidFloor = r.scalpCatastropheBidFloor?.toSafeBigDecimal() ?: e.scalpCatastropheBidFloor,
         catastropheImmediate = r.scalpCatastropheImmediate ?: e.scalpCatastropheImmediate,
         requireUnderlyingAgreement = r.scalpRequireUnderlyingAgreement ?: e.scalpRequireUnderlyingAgreement,
-        entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: e.scalpEntryMinPwin
+        entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: e.scalpEntryMinPwin,
+        smartStopMinPwin = r.scalpSmartStopMinPwin?.toSafeBigDecimal() ?: e.scalpSmartStopMinPwin
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2062,6 +2067,8 @@ class CryptoTailStrategyService(
         if (sc.catastropheBidFloor < zero || sc.catastropheBidFloor > one) return false
         // 进场标的胜率下限 ∈ [0,1]
         if (sc.entryMinPwin < zero || sc.entryMinPwin > one) return false
+        // 智能硬止损插针容忍 pWin ∈ [0,1]
+        if (sc.smartStopMinPwin < zero || sc.smartStopMinPwin > one) return false
         return true
     }
 
@@ -2289,6 +2296,7 @@ class CryptoTailStrategyService(
             scalpCatastropheImmediate = e.scalpCatastropheImmediate,
             scalpRequireUnderlyingAgreement = e.scalpRequireUnderlyingAgreement,
             scalpEntryMinPwin = e.scalpEntryMinPwin.toPlainString(),
+            scalpSmartStopMinPwin = e.scalpSmartStopMinPwin.toPlainString(),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )
