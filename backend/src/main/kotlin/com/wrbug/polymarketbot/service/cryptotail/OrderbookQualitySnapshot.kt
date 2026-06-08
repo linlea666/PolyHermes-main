@@ -13,6 +13,7 @@ data class OrderbookQualitySnapshot(
     val spread: BigDecimal?,
     val quoteUpdatedAtMs: Long,
     val depthUpdatedAtMs: Long?,
+    val askUpdatedAtMs: Long? = null,
     val depthStale: Boolean = false,
     val bidLevels: List<BookLevel> = emptyList(),
     val askLevels: List<BookLevel> = emptyList()
@@ -27,6 +28,9 @@ data class OrderbookQualitySnapshot(
 
     fun depthAgeMs(nowMs: Long = System.currentTimeMillis()): Long? =
         depthUpdatedAtMs?.let { (nowMs - it).coerceAtLeast(0L) }
+
+    fun askAgeMs(nowMs: Long = System.currentTimeMillis()): Long? =
+        askUpdatedAtMs?.let { (nowMs - it).coerceAtLeast(0L) }
 
     fun executableBidDepthUsd(targetSize: BigDecimal): BigDecimal {
         if (targetSize <= BigDecimal.ZERO) return BigDecimal.ZERO
@@ -84,6 +88,7 @@ data class OrderbookQualitySnapshot(
         "askDepthUsd" to (askDepthUsd?.toPlainString() ?: ""),
         "spread" to (spread?.toPlainString() ?: ""),
         "quoteAgeMs" to quoteAgeMs(nowMs),
+        "askAgeMs" to (askAgeMs(nowMs) ?: ""),
         "depthAgeMs" to (depthAgeMs(nowMs) ?: ""),
         "depthStale" to depthStale,
         "bidLevelCount" to bidLevels.size,

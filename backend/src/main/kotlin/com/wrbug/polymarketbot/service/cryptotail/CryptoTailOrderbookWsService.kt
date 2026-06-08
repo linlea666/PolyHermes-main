@@ -253,6 +253,7 @@ class CryptoTailOrderbookWsService(
                         spread = bestAsk?.subtract(bestBid),
                         quoteUpdatedAtMs = nowMs,
                         depthUpdatedAtMs = nowMs,
+                        askUpdatedAtMs = bestAsk?.let { nowMs },
                         depthStale = false,
                         bidLevels = bidLevels.sortedByDescending { it.price },
                         askLevels = askLevels.sortedBy { it.price }
@@ -285,6 +286,7 @@ class CryptoTailOrderbookWsService(
                             spread = (bestAsk ?: prev?.bestAsk)?.subtract(bestBid),
                             quoteUpdatedAtMs = nowMs,
                             depthUpdatedAtMs = prev?.depthUpdatedAtMs,
+                            askUpdatedAtMs = if (bestAsk != null) nowMs else prev?.askUpdatedAtMs,
                             depthStale = prev?.depthUpdatedAtMs == null,
                             bidLevels = prev?.bidLevels ?: emptyList()
                         )

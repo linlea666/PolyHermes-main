@@ -2157,7 +2157,7 @@ class CryptoTailStrategyExecutionService(
      *
      * 返回非空表示"可用 WS 实时帧跳过发单前 REST"，条件全部满足：
      *  - mode==SCALP_FLIP 且 scalpWsFreshnessSkipRestMs>0
-     *  - WS 帧存在、含 bestAsk、quoteAgeMs<=阈值
+     *  - WS 帧存在、含 bestAsk、quoteAgeMs<=阈值、且 ask 本身在新鲜窗口内确有更新(askAgeMs<=阈值)
      *  - 若退出深度门(scalpMinExitBidDepthUsdc)有效，则额外要求深度不陈旧（depthStale=false 且 bidDepthUsd 非空），
      *    否则回退 REST，避免用 price_change 复用的陈旧 bidDepthUsd 误判深度门。
      * 任一不满足返回 null（照常 REST 重拉，零回归）。
@@ -2170,7 +2170,13 @@ class CryptoTailStrategyExecutionService(
         if (strategy.scalpWsFreshnessSkipRestMs <= 0) return null
         val ws = orderbookCache.latestSnapshot(tokenId) ?: return null
         if (ws.bestAsk == null) return null
-        if (ws.quoteAgeMs(System.currentTimeMillis()) > strategy.scalpWsFreshnessSkipRestMs) return null
+        val nowMs = System.currentTimeMillis()
+        if (ws.quoteAgeMs(nowMs) > strategy.scalpWsFreshnessSkipRestMs) return null
+        // ask 陈旧防护：price_change 仅更新买价时会顺延旧 bestAsk，但 quoteUpdatedAtMs 仍被刷新，
+        // 导致帧看似新鲜、ask 却是旧的偏低值。用它定价会使 FAK 限价过低而被 kill。
+        // 因此要求 ask 在新鲜窗口内确有更新（askAgeMs 非空且不超阈值），否则回退 REST 取当前两边盘口。
+        val askAge = ws.askAgeMs(nowMs)
+        if (askAge == null || askAge > strategy.scalpWsFreshnessSkipRestMs) return null
         val minExitDepth = strategy.scalpMinExitBidDepthUsdc
         if (minExitDepth != null && minExitDepth > BigDecimal.ZERO) {
             if (ws.depthStale || ws.bidDepthUsd == null) return null

@@ -52,6 +52,7 @@ class CryptoTailOrderbookSnapshotFetcher {
                 spread = bestAsk?.price?.subtract(bestBid.price),
                 quoteUpdatedAtMs = nowMs,
                 depthUpdatedAtMs = nowMs,
+                askUpdatedAtMs = bestAsk?.let { nowMs },
                 depthStale = false,
                 bidLevels = bidLevels,
                 askLevels = askLevels
