@@ -19,6 +19,8 @@ import com.wrbug.polymarketbot.dto.CryptoTailManualOrderRequest
 import com.wrbug.polymarketbot.dto.CryptoTailManualOrderResponse
 import com.wrbug.polymarketbot.dto.CryptoTailPnlCurveRequest
 import com.wrbug.polymarketbot.dto.CryptoTailPnlCurveResponse
+import com.wrbug.polymarketbot.dto.CryptoTailStatsRequest
+import com.wrbug.polymarketbot.dto.CryptoTailStatsResponse
 import com.wrbug.polymarketbot.dto.CryptoTailCalibrationRequest
 import com.wrbug.polymarketbot.dto.CryptoTailCalibrationResponse
 import com.wrbug.polymarketbot.dto.CryptoTailRecommendSigmaScaleRequest
@@ -169,6 +171,23 @@ class CryptoTailStrategyController(
             )
         } catch (e: Exception) {
             logger.error("查询收益曲线异常: ${e.message}", e)
+            ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+        }
+    }
+
+    @PostMapping("/stats-overview")
+    fun getStatsOverview(@RequestBody request: CryptoTailStatsRequest): ResponseEntity<ApiResponse<CryptoTailStatsResponse>> {
+        return try {
+            val result = cryptoTailStrategyService.getStatsOverview(request)
+            result.fold(
+                onSuccess = { ResponseEntity.ok(ApiResponse.success(it)) },
+                onFailure = { e ->
+                    logger.error("查询统计概览失败: ${e.message}", e)
+                    ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
+                }
+            )
+        } catch (e: Exception) {
+            logger.error("查询统计概览异常: ${e.message}", e)
             ResponseEntity.ok(ApiResponse.error(ErrorCode.SERVER_CRYPTO_TAIL_STRATEGY_TRIGGERS_FETCH_FAILED, e.message, messageSource))
         }
     }

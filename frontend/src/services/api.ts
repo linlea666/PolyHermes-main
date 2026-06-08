@@ -786,6 +786,8 @@ export const apiService = {
       apiClient.post<ApiResponse<import('../types').CryptoTailStrategyExitListResponse>>('/crypto-tail-strategy/exits', data),
     pnlCurve: (data: import('../types').CryptoTailPnlCurveRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailPnlCurveResponse>>('/crypto-tail-strategy/pnl-curve', data),
+    statsOverview: (data: import('../types').CryptoTailStatsRequest) =>
+      apiClient.post<ApiResponse<import('../types').CryptoTailStatsResponse>>('/crypto-tail-strategy/stats-overview', data),
     calibration: (data: import('../types').CryptoTailCalibrationRequest) =>
       apiClient.post<ApiResponse<import('../types').CryptoTailCalibrationResponse>>('/crypto-tail-strategy/calibration', data),
     recommendSigmaScale: (data: import('../types').CryptoTailRecommendSigmaScaleRequest) =>

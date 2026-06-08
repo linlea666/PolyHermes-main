@@ -140,7 +140,10 @@ const SCALP_DEFAULTS = {
   scalpEntryMinPwin: '0.90',
   scalpSmartStopMinPwin: '0.70',
   scalpSmartStopMinSafeRatio: '1.30',
-  scalpHardFloorRatio: '0.50'
+  scalpHardFloorRatio: '0.50',
+  scalpDailyLossLimitUsdc: undefined as string | undefined,
+  scalpConsecLossPauseCount: 0,
+  scalpConsecLossStopCount: 3
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -179,7 +182,10 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpEntryMinPwin: record.scalpEntryMinPwin ?? SCALP_DEFAULTS.scalpEntryMinPwin,
   scalpSmartStopMinPwin: record.scalpSmartStopMinPwin ?? SCALP_DEFAULTS.scalpSmartStopMinPwin,
   scalpSmartStopMinSafeRatio: record.scalpSmartStopMinSafeRatio ?? SCALP_DEFAULTS.scalpSmartStopMinSafeRatio,
-  scalpHardFloorRatio: record.scalpHardFloorRatio ?? SCALP_DEFAULTS.scalpHardFloorRatio
+  scalpHardFloorRatio: record.scalpHardFloorRatio ?? SCALP_DEFAULTS.scalpHardFloorRatio,
+  scalpDailyLossLimitUsdc: record.scalpDailyLossLimitUsdc ?? SCALP_DEFAULTS.scalpDailyLossLimitUsdc,
+  scalpConsecLossPauseCount: record.scalpConsecLossPauseCount ?? SCALP_DEFAULTS.scalpConsecLossPauseCount,
+  scalpConsecLossStopCount: record.scalpConsecLossStopCount ?? SCALP_DEFAULTS.scalpConsecLossStopCount
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -370,7 +376,11 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpEntryMinPwin: strOrUndef(v.scalpEntryMinPwin),
   scalpSmartStopMinPwin: strOrUndef(v.scalpSmartStopMinPwin),
   scalpSmartStopMinSafeRatio: strOrUndef(v.scalpSmartStopMinSafeRatio),
-  scalpHardFloorRatio: strOrUndef(v.scalpHardFloorRatio)
+  scalpHardFloorRatio: strOrUndef(v.scalpHardFloorRatio),
+  // 风控（V83）：日亏可空，空发 ''（后端三态显式清空置 NULL）；连亏笔数发数值（0=关）
+  scalpDailyLossLimitUsdc: strOrEmpty(v.scalpDailyLossLimitUsdc),
+  scalpConsecLossPauseCount: numOrUndef(v.scalpConsecLossPauseCount),
+  scalpConsecLossStopCount: numOrUndef(v.scalpConsecLossStopCount)
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -3593,6 +3603,21 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpHardFloorRatio" label={t('cryptoTailStrategy.form.scalpHardFloorRatio')} extra={t('cryptoTailStrategy.form.scalpHardFloorRatioHint')}>
                 <InputNumber min={0.01} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpRiskSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpDailyLossLimitUsdc" label={t('cryptoTailStrategy.form.scalpDailyLossLimitUsdc')} extra={t('cryptoTailStrategy.form.scalpDailyLossLimitHint')}>
+                <InputNumber min={0} step={1} style={{ width: '100%' }} addonBefore="$" placeholder={t('cryptoTailStrategy.form.scalpDailyLossLimitPlaceholder')} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpConsecLossPauseCount" label={t('cryptoTailStrategy.form.scalpConsecLossPauseCount')} extra={t('cryptoTailStrategy.form.scalpConsecLossPauseCountHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="pauseAfterLossMinutes" label={t('cryptoTailStrategy.form.scalpPauseAfterLossMinutes')} extra={t('cryptoTailStrategy.form.scalpPauseAfterLossMinutesHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="scalpConsecLossStopCount" label={t('cryptoTailStrategy.form.scalpConsecLossStopCount')} extra={t('cryptoTailStrategy.form.scalpConsecLossStopCountHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
               </Form.Item>
             </>
           )}

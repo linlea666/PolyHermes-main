@@ -858,6 +858,22 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_hard_floor_ratio", nullable = false, precision = 20, scale = 8)
     val scalpHardFloorRatio: BigDecimal = BigDecimal("0.50"),
 
+    /** SCALP 专属当日已实现亏损熔断阈值（V83）：当日已实现亏损达此值即拦截进场，null=回退全局 dailyLossLimitUsdc。仅 SCALP_FLIP 消费 */
+    @Column(name = "scalp_daily_loss_limit_usdc", precision = 20, scale = 8)
+    val scalpDailyLossLimitUsdc: BigDecimal? = null,
+
+    /**
+     * SCALP 当日连续亏损暂停笔数（V83）：当日连亏达此笔数后在 pauseAfterLossMinutes 冷却窗内暂停进场（0=关）。仅 SCALP_FLIP 消费。
+     * 默认 0（暂停默认关）：暂停依赖共享的 pauseAfterLossMinutes（默认 0），二者必须同时 >0 才生效；默认保护交由 scalpConsecLossStopCount(=3) 当日停。
+     * 注：V83 迁移 DDL 默认仍为 2，仅 raw insert 生效；经服务/JPA 创建恒以此实体默认(0)为准。
+     */
+    @Column(name = "scalp_consec_loss_pause_count", nullable = false)
+    val scalpConsecLossPauseCount: Int = 0,
+
+    /** SCALP 当日连续亏损停笔数（V83）：当日连亏达此笔数后熔断到日终（0=关）。仅 SCALP_FLIP 消费 */
+    @Column(name = "scalp_consec_loss_stop_count", nullable = false)
+    val scalpConsecLossStopCount: Int = 3,
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

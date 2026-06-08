@@ -138,6 +138,17 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
         @Param("end") end: Long
     ): List<CryptoTailStrategyTrigger>
 
+    /** 统计概览：全策略已结算记录，按结算时间（无则创建时间）在区间内升序（mode/账户/策略过滤在服务层完成） */
+    @Query(
+        "SELECT t FROM CryptoTailStrategyTrigger t WHERE t.resolved = true " +
+            "AND COALESCE(t.settledAt, t.createdAt) >= :start AND COALESCE(t.settledAt, t.createdAt) <= :end " +
+            "ORDER BY COALESCE(t.settledAt, t.createdAt) ASC"
+    )
+    fun findResolvedByTimeRangeOrderBySettledAsc(
+        @Param("start") start: Long,
+        @Param("end") end: Long
+    ): List<CryptoTailStrategyTrigger>
+
     /**
      * 概率模式持仓退出扫描：查找指定策略+周期下所有 OPEN/PARTIAL_EXIT 状态的触发记录。
      * 由 WS onBestBid 回调驱动退出服务评估，BARRIER_HOLD 与 BRACKET_DYNAMIC 共用。

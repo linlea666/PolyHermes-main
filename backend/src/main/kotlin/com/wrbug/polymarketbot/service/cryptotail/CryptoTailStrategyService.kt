@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -460,7 +461,10 @@ class CryptoTailStrategyService(
                 scalpEntryMinPwin = sc.entryMinPwin,
                 scalpSmartStopMinPwin = sc.smartStopMinPwin,
                 scalpSmartStopMinSafeRatio = sc.smartStopMinSafeRatio,
-                scalpHardFloorRatio = sc.hardFloorRatio
+                scalpHardFloorRatio = sc.hardFloorRatio,
+                scalpDailyLossLimitUsdc = sc.dailyLossLimitUsdc,
+                scalpConsecLossPauseCount = sc.consecLossPauseCount,
+                scalpConsecLossStopCount = sc.consecLossStopCount
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -879,6 +883,9 @@ class CryptoTailStrategyService(
                 scalpSmartStopMinPwin = sc.smartStopMinPwin,
                 scalpSmartStopMinSafeRatio = sc.smartStopMinSafeRatio,
                 scalpHardFloorRatio = sc.hardFloorRatio,
+                scalpDailyLossLimitUsdc = sc.dailyLossLimitUsdc,
+                scalpConsecLossPauseCount = sc.consecLossPauseCount,
+                scalpConsecLossStopCount = sc.consecLossStopCount,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -988,6 +995,120 @@ class CryptoTailStrategyService(
             Result.failure(e)
         }
     }
+
+    /**
+     * 加密价差盈亏统计概览：基于 crypto_tail_strategy_trigger.realized_pnl（resolved=true）聚合。
+     *  - summary：六指标（总笔数/总盈亏/胜率/平均盈亏/最大盈利/最大亏损），口径对齐全局统计卡片；
+     *  - buckets：按 day/week/month 分桶的总盈亏时间序列（系统时区）；
+     *  - byMarket：按 marketSlugPrefix 跨策略汇总（SCALP 各市场单独盈亏）。
+     * mode/账户/策略过滤在服务层完成（trigger 冻结了 mode；账户/市场经 strategy 关联）。
+     */
+    fun getStatsOverview(request: CryptoTailStatsRequest): Result<CryptoTailStatsResponse> {
+        return try {
+            val start = request.startDate ?: 0L
+            val end = request.endDate ?: Long.MAX_VALUE
+            var triggers = triggerRepository.findResolvedByTimeRangeOrderBySettledAsc(start, end)
+            request.mode?.let { m -> triggers = triggers.filter { it.mode.value == m } }
+            request.strategyId?.let { sid -> triggers = triggers.filter { it.strategyId == sid } }
+            val strategyIds = triggers.map { it.strategyId }.toSet()
+            val strategyMap = if (strategyIds.isEmpty()) emptyMap()
+            else strategyRepository.findAllById(strategyIds).filter { it.id != null }.associateBy { it.id!! }
+            request.accountId?.let { acc -> triggers = triggers.filter { strategyMap[it.strategyId]?.accountId == acc } }
+
+            val zone = ZoneId.systemDefault()
+            val granularity = request.granularity.lowercase()
+
+            var totalPnl = BigDecimal.ZERO
+            var winCount = 0L
+            var maxProfit = BigDecimal.ZERO
+            var maxLoss = BigDecimal.ZERO
+
+            class Acc(var pnl: BigDecimal = BigDecimal.ZERO, var count: Long = 0L, var win: Long = 0L)
+            val buckets = LinkedHashMap<String, Pair<Long, Acc>>()
+            val markets = LinkedHashMap<String, Acc>()
+            val marketTitles = HashMap<String, String>()
+
+            triggers.forEach { t ->
+                val pnl = t.realizedPnl ?: BigDecimal.ZERO
+                val isWin = t.winnerOutcomeIndex != null && t.outcomeIndex == t.winnerOutcomeIndex
+                totalPnl = totalPnl.add(pnl)
+                if (isWin) winCount++
+                if (pnl > maxProfit) maxProfit = pnl
+                if (pnl < maxLoss) maxLoss = pnl
+
+                val ts = t.settledAt ?: t.createdAt
+                val date = Instant.ofEpochMilli(ts).atZone(zone).toLocalDate()
+                val bucketDate: LocalDate = when (granularity) {
+                    "month" -> date.withDayOfMonth(1)
+                    "week" -> date.minusDays((date.dayOfWeek.value - 1).toLong())
+                    else -> date
+                }
+                val label = when (granularity) {
+                    "month" -> bucketDate.format(DateTimeFormatter.ofPattern("yyyy-MM"))
+                    else -> bucketDate.format(DateTimeFormatter.ISO_LOCAL_DATE)
+                }
+                val bucketStartMs = bucketDate.atStartOfDay(zone).toInstant().toEpochMilli()
+                val bucket = buckets.getOrPut(label) { bucketStartMs to Acc() }.second
+                bucket.pnl = bucket.pnl.add(pnl)
+                bucket.count++
+                if (isWin) bucket.win++
+
+                val prefix = strategyMap[t.strategyId]?.marketSlugPrefix?.takeIf { it.isNotBlank() }
+                    ?: "strategy-${t.strategyId}"
+                val mAcc = markets.getOrPut(prefix) { Acc() }
+                mAcc.pnl = mAcc.pnl.add(pnl)
+                mAcc.count++
+                if (isWin) mAcc.win++
+                if (!marketTitles.containsKey(prefix)) {
+                    t.marketTitle?.takeIf { it.isNotBlank() }?.let { marketTitles[prefix] = it }
+                }
+            }
+
+            val settledCount = triggers.size.toLong()
+            val avgPnl = if (settledCount > 0L) totalPnl.divide(BigDecimal(settledCount), 4, RoundingMode.HALF_UP) else BigDecimal.ZERO
+            val winRatePct = pctString(winCount, settledCount)
+
+            val summary = CryptoTailStatsSummary(
+                totalOrders = settledCount,
+                totalPnl = totalPnl.toPlainString(),
+                winRate = winRatePct,
+                avgPnl = avgPnl.toPlainString(),
+                maxProfit = maxProfit.toPlainString(),
+                maxLoss = maxLoss.toPlainString()
+            )
+
+            val bucketList = buckets.map { (label, pair) ->
+                val (startMs, acc) = pair
+                CryptoTailStatsBucket(
+                    label = label,
+                    startMs = startMs,
+                    pnl = acc.pnl.toPlainString(),
+                    settledCount = acc.count,
+                    winCount = acc.win
+                )
+            }
+
+            val marketList = markets.map { (prefix, acc) ->
+                CryptoTailStatsMarket(
+                    marketSlugPrefix = prefix,
+                    marketTitle = marketTitles[prefix] ?: prefix,
+                    totalPnl = acc.pnl.toPlainString(),
+                    settledCount = acc.count,
+                    winRate = pctString(acc.win, acc.count),
+                    avgPnl = if (acc.count > 0L) acc.pnl.divide(BigDecimal(acc.count), 4, RoundingMode.HALF_UP).toPlainString() else "0"
+                )
+            }.sortedByDescending { it.totalPnl.toSafeBigDecimal() }
+
+            Result.success(CryptoTailStatsResponse(summary = summary, buckets = bucketList, byMarket = marketList))
+        } catch (e: Exception) {
+            logger.error("查询统计概览失败: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /** 胜率百分比字符串（0~100，保留 2 位）；分母为 0 返回 "0" */
+    private fun pctString(win: Long, total: Long): String =
+        if (total > 0L) BigDecimal(win * 100).divide(BigDecimal(total), 2, RoundingMode.HALF_UP).toPlainString() else "0"
 
     fun getTriggerRecords(request: CryptoTailStrategyTriggerListRequest): Result<CryptoTailStrategyTriggerListResponse> {
         return try {
@@ -1951,7 +2072,10 @@ class CryptoTailStrategyService(
         val entryMinPwin: BigDecimal,
         val smartStopMinPwin: BigDecimal,
         val smartStopMinSafeRatio: BigDecimal,
-        val hardFloorRatio: BigDecimal
+        val hardFloorRatio: BigDecimal,
+        val dailyLossLimitUsdc: BigDecimal?,
+        val consecLossPauseCount: Int,
+        val consecLossStopCount: Int
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -2003,7 +2127,10 @@ class CryptoTailStrategyService(
         entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.90"),
         smartStopMinPwin = r.scalpSmartStopMinPwin?.toSafeBigDecimal() ?: BigDecimal("0.70"),
         smartStopMinSafeRatio = r.scalpSmartStopMinSafeRatio?.toSafeBigDecimal() ?: BigDecimal("1.30"),
-        hardFloorRatio = r.scalpHardFloorRatio?.toSafeBigDecimal() ?: BigDecimal("0.50")
+        hardFloorRatio = r.scalpHardFloorRatio?.toSafeBigDecimal() ?: BigDecimal("0.50"),
+        dailyLossLimitUsdc = r.scalpDailyLossLimitUsdc?.takeIf { it.isNotBlank() }?.toSafeBigDecimal(),
+        consecLossPauseCount = r.scalpConsecLossPauseCount ?: 0,
+        consecLossStopCount = r.scalpConsecLossStopCount ?: 3
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2042,7 +2169,10 @@ class CryptoTailStrategyService(
         entryMinPwin = r.scalpEntryMinPwin?.toSafeBigDecimal() ?: e.scalpEntryMinPwin,
         smartStopMinPwin = r.scalpSmartStopMinPwin?.toSafeBigDecimal() ?: e.scalpSmartStopMinPwin,
         smartStopMinSafeRatio = r.scalpSmartStopMinSafeRatio?.toSafeBigDecimal() ?: e.scalpSmartStopMinSafeRatio,
-        hardFloorRatio = r.scalpHardFloorRatio?.toSafeBigDecimal() ?: e.scalpHardFloorRatio
+        hardFloorRatio = r.scalpHardFloorRatio?.toSafeBigDecimal() ?: e.scalpHardFloorRatio,
+        dailyLossLimitUsdc = resolveNullableBigDecimalUpdate(r.scalpDailyLossLimitUsdc, e.scalpDailyLossLimitUsdc),
+        consecLossPauseCount = r.scalpConsecLossPauseCount ?: e.scalpConsecLossPauseCount,
+        consecLossStopCount = r.scalpConsecLossStopCount ?: e.scalpConsecLossStopCount
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2083,6 +2213,9 @@ class CryptoTailStrategyService(
         if (sc.smartStopMinSafeRatio < zero) return false
         // 深底线比例 ∈ (0,1]：0 会让深底线恒触发，须 > 0
         if (sc.hardFloorRatio <= zero || sc.hardFloorRatio > one) return false
+        // 风控（V83）：日亏阈值 >= 0（null=关）；连亏暂停/停笔数 >= 0（0=关）
+        sc.dailyLossLimitUsdc?.let { if (it < zero) return false }
+        if (sc.consecLossPauseCount < 0 || sc.consecLossStopCount < 0) return false
         return true
     }
 
@@ -2313,6 +2446,9 @@ class CryptoTailStrategyService(
             scalpSmartStopMinPwin = e.scalpSmartStopMinPwin.toPlainString(),
             scalpSmartStopMinSafeRatio = e.scalpSmartStopMinSafeRatio.toPlainString(),
             scalpHardFloorRatio = e.scalpHardFloorRatio.toPlainString(),
+            scalpDailyLossLimitUsdc = e.scalpDailyLossLimitUsdc?.toPlainString(),
+            scalpConsecLossPauseCount = e.scalpConsecLossPauseCount,
+            scalpConsecLossStopCount = e.scalpConsecLossStopCount,
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )

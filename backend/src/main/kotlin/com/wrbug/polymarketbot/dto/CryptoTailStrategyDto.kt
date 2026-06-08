@@ -252,7 +252,10 @@ data class CryptoTailStrategyCreateRequest(
     val scalpEntryMinPwin: String? = null,
     val scalpSmartStopMinPwin: String? = null,
     val scalpSmartStopMinSafeRatio: String? = null,
-    val scalpHardFloorRatio: String? = null
+    val scalpHardFloorRatio: String? = null,
+    val scalpDailyLossLimitUsdc: String? = null,
+    val scalpConsecLossPauseCount: Int? = null,
+    val scalpConsecLossStopCount: Int? = null
 )
 
 /**
@@ -479,7 +482,10 @@ data class CryptoTailStrategyUpdateRequest(
     val scalpEntryMinPwin: String? = null,
     val scalpSmartStopMinPwin: String? = null,
     val scalpSmartStopMinSafeRatio: String? = null,
-    val scalpHardFloorRatio: String? = null
+    val scalpHardFloorRatio: String? = null,
+    val scalpDailyLossLimitUsdc: String? = null,
+    val scalpConsecLossPauseCount: Int? = null,
+    val scalpConsecLossStopCount: Int? = null
 )
 
 /**
@@ -741,6 +747,9 @@ data class CryptoTailStrategyDto(
     val scalpSmartStopMinPwin: String = "0.70",
     val scalpSmartStopMinSafeRatio: String = "1.30",
     val scalpHardFloorRatio: String = "0.50",
+    val scalpDailyLossLimitUsdc: String? = null,
+    val scalpConsecLossPauseCount: Int = 2,
+    val scalpConsecLossStopCount: Int = 3,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )
@@ -968,6 +977,59 @@ data class CryptoTailPnlCurveResponse(
     /** 最大回撤 USDC（正数表示回撤幅度） */
     val maxDrawdown: String? = null,
     val curveData: List<CryptoTailPnlCurvePoint> = emptyList()
+)
+
+/**
+ * 加密价差盈亏统计概览请求
+ * @param mode 交易模式过滤（4=SCALP_FLIP 等），null=全部
+ * @param accountId 账户过滤，null=全部
+ * @param strategyId 单策略过滤，null=全部
+ * @param startDate/endDate 结算时间区间（毫秒），null=不限
+ * @param granularity 分桶粒度：day / week / month
+ */
+data class CryptoTailStatsRequest(
+    val mode: Int? = null,
+    val accountId: Long? = null,
+    val strategyId: Long? = null,
+    val startDate: Long? = null,
+    val endDate: Long? = null,
+    val granularity: String = "day"
+)
+
+/** 概览六指标（与全局统计卡片口径对齐；仅统计已结算触发，totalOrders 即已结算笔数；winRate 为 0~100 百分比字符串） */
+data class CryptoTailStatsSummary(
+    val totalOrders: Long = 0L,
+    val totalPnl: String = "0",
+    val winRate: String = "0",
+    val avgPnl: String = "0",
+    val maxProfit: String = "0",
+    val maxLoss: String = "0"
+)
+
+/** 时间分桶（日/周/月）总盈亏 */
+data class CryptoTailStatsBucket(
+    val label: String = "",
+    val startMs: Long = 0L,
+    val pnl: String = "0",
+    val settledCount: Long = 0L,
+    val winCount: Long = 0L
+)
+
+/** 按市场（marketSlugPrefix）跨策略汇总盈亏；winRate 为 0~100 百分比字符串 */
+data class CryptoTailStatsMarket(
+    val marketSlugPrefix: String = "",
+    val marketTitle: String = "",
+    val totalPnl: String = "0",
+    val settledCount: Long = 0L,
+    val winRate: String = "0",
+    val avgPnl: String = "0"
+)
+
+/** 加密价差盈亏统计概览响应 */
+data class CryptoTailStatsResponse(
+    val summary: CryptoTailStatsSummary = CryptoTailStatsSummary(),
+    val buckets: List<CryptoTailStatsBucket> = emptyList(),
+    val byMarket: List<CryptoTailStatsMarket> = emptyList()
 )
 
 /**

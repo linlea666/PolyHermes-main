@@ -1707,6 +1707,9 @@ export interface CryptoTailStrategyDto {
   scalpSmartStopMinPwin?: string
   scalpSmartStopMinSafeRatio?: string
   scalpHardFloorRatio?: string
+  scalpDailyLossLimitUsdc?: string | null
+  scalpConsecLossPauseCount?: number
+  scalpConsecLossStopCount?: number
   createdAt: number
   updatedAt: number
 }
@@ -1748,6 +1751,9 @@ export interface CryptoTailScalpParams {
   scalpSmartStopMinPwin?: string
   scalpSmartStopMinSafeRatio?: string
   scalpHardFloorRatio?: string
+  scalpDailyLossLimitUsdc?: string | null
+  scalpConsecLossPauseCount?: number
+  scalpConsecLossStopCount?: number
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */
@@ -2340,6 +2346,52 @@ export interface CryptoTailPnlCurveResponse {
   winRate: string | null
   maxDrawdown: string | null
   curveData: CryptoTailPnlCurvePoint[]
+}
+
+/** 盈亏统计概览请求 */
+export interface CryptoTailStatsRequest {
+  mode?: number
+  accountId?: number
+  strategyId?: number
+  startDate?: number
+  endDate?: number
+  granularity?: 'day' | 'week' | 'month'
+}
+
+/** 盈亏统计概览：六指标（totalOrders 即已结算笔数；winRate 为 0~100 百分比字符串） */
+export interface CryptoTailStatsSummary {
+  totalOrders: number
+  totalPnl: string
+  winRate: string
+  avgPnl: string
+  maxProfit: string
+  maxLoss: string
+}
+
+/** 盈亏统计概览：时间分桶 */
+export interface CryptoTailStatsBucket {
+  label: string
+  startMs: number
+  pnl: string
+  settledCount: number
+  winCount: number
+}
+
+/** 盈亏统计概览：按市场汇总 */
+export interface CryptoTailStatsMarket {
+  marketSlugPrefix: string
+  marketTitle: string
+  totalPnl: string
+  settledCount: number
+  winRate: string
+  avgPnl: string
+}
+
+/** 盈亏统计概览响应 */
+export interface CryptoTailStatsResponse {
+  summary: CryptoTailStatsSummary
+  buckets: CryptoTailStatsBucket[]
+  byMarket: CryptoTailStatsMarket[]
 }
 
 /**

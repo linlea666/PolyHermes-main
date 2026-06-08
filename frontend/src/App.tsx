@@ -38,6 +38,7 @@ import Announcements from './pages/Announcements'
 import BacktestList from './pages/BacktestList'
 import BacktestDetail from './pages/BacktestDetail'
 import CryptoTailStrategyList from './pages/CryptoTailStrategyList'
+import CryptoTailStatistics from './pages/CryptoTailStatistics'
 import CryptoTailMonitor from './pages/CryptoTailMonitor'
 import CryptoTailDecisionLog from './pages/CryptoTailDecisionLog'
 import { wsManager } from './services/websocket'
@@ -279,6 +280,7 @@ function App() {
           <Route path="/crypto-tail-strategy" element={<ProtectedRoute><CryptoTailStrategyList /></ProtectedRoute>} />
           <Route path="/crypto-tail-monitor" element={<ProtectedRoute><CryptoTailMonitor /></ProtectedRoute>} />
           <Route path="/crypto-tail-decision-log" element={<ProtectedRoute><CryptoTailDecisionLog /></ProtectedRoute>} />
+          <Route path="/crypto-tail-statistics" element={<ProtectedRoute><CryptoTailStatistics /></ProtectedRoute>} />
           <Route path="/copy-trading/statistics/:copyTradingId" element={<ProtectedRoute><CopyTradingStatistics /></ProtectedRoute>} />
           {/* 保留旧路由以保持向后兼容 */}
           <Route path="/copy-trading/orders/buy/:copyTradingId" element={<ProtectedRoute><CopyTradingBuyOrders /></ProtectedRoute>} />

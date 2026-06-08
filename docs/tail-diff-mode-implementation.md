@@ -369,7 +369,7 @@ HYBRID   : 样本足 → HYBRID_STATS（历史）；否则 HYBRID_FALLBACK（Bar
 ## 15. 实盘审查后的增强（P0/P1 + 入场分段 + 退出滑点）
 
 ### 15.1 P0 风控与动态退出补线
-- **TAIL_DIFF 风控参数接线**（`CryptoTailRiskService`）：`tailDiffDailyLossLimitUsdc` 在 TAIL_DIFF 模式覆盖全局日亏限额（为空回退全局）；`tailDiffConsecLossPauseCount/StopCount` 通过 `checkTailDiffConsecutiveLossGate` 生效（此前定义未接线）。
+- **TAIL_DIFF 风控参数接线**（`CryptoTailRiskService`）：`tailDiffDailyLossLimitUsdc` 在 TAIL_DIFF 模式覆盖全局日亏限额（为空回退全局）；`tailDiffConsecLossPauseCount/StopCount` 通过共享的 `checkConsecutiveLossGate`（V83 起 TAIL_DIFF 与 SCALP_FLIP 共用，各传专属笔数）生效（此前定义未接线）。
 - **动态退出条件强制执行**（`CryptoTailBracketExitService.decideTailDiffExit` → `dynamicExitDecision`）：`maxReverseVelocitySigma`（反抽速度过快）与 `maxDiffRetracePct`（价差/σ 回撤过深）此前配置未读取，现已纳入退出判定。
 - **反抽速度状态喂数**：`CryptoTailReverseVelocityTracker` 此前仅在入场评估喂数，持仓期无数据。现于 `computeHoldingState` 内 `observe()`，使持仓期速度退出可触发。
 
