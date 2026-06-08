@@ -1047,8 +1047,15 @@ const CryptoTailStrategyList: React.FC = () => {
         }
       }
       const tailDiffParams = tailDiffOn ? buildTailDiffPayload(v) : {}
-      // SCALP_FLIP：退出复用 BRACKET/TAIL_DIFF 引擎，必须开启持仓退出管理器，否则止盈/止损不评估
-      const scalpParams = scalpOn ? { ...buildScalpPayload(v), enableExitManager: true } : {}
+      // SCALP_FLIP：退出复用 BRACKET/TAIL_DIFF 引擎，必须开启持仓退出管理器，否则止盈/止损不评估。
+      // holdToSettlePwin 仅在 bracketParams 发送，SCALP 需在此补发（enableSmartHardStop/exitPollIntervalMs 已由 barrierParams 无条件发送）。
+      const scalpParams = scalpOn
+        ? {
+            ...buildScalpPayload(v),
+            enableExitManager: true,
+            holdToSettlePwin: v.holdToSettlePwin != null ? String(v.holdToSettlePwin) : undefined
+          }
+        : {}
       // 障碍/阶梯模式：旧价格区间/价差闸不生效，统一存默认值
       const bracketParams = bracketOn ? {
         bracketEntryProb: v.bracketEntryProb != null ? String(v.bracketEntryProb) : undefined,
@@ -2065,7 +2072,18 @@ const CryptoTailStrategyList: React.FC = () => {
             {t('cryptoTailStrategy.form.importConfig')}
           </Button>
         </Space>
-        <Form form={form} layout="vertical" initialValues={{ amountMode: 'RATIO', maxPrice: '1', spreadMode: 'AUTO', spreadDirection: 'MIN', enabled: true }}>
+        <Form
+          form={form}
+          layout="vertical"
+          initialValues={{ amountMode: 'RATIO', maxPrice: '1', spreadMode: 'AUTO', spreadDirection: 'MIN', enabled: true }}
+          onValuesChange={(changed) => {
+            // 新建时切到 SCALP(4)：把退出引擎三参设为本次修复推荐值（智能硬止损=开/pWin=0.96/巡检=1000ms）。
+            // 仅新建生效（editingId 为空）；编辑态由 record 回填，setFieldsValue 不会触发本回调，故不会覆盖已存值。
+            if (changed.mode === 4 && !editingId) {
+              form.setFieldsValue({ enableSmartHardStop: true, holdToSettlePwin: '0.96', exitPollIntervalMs: 1000 })
+            }
+          }}
+        >
           <Form.Item name="accountId" label={t('cryptoTailStrategy.form.selectAccount')} rules={[{ required: true }]}>
             <Select
               placeholder={t('cryptoTailStrategy.form.selectAccount')}
@@ -3518,6 +3536,15 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpStopMinPrice" label={t('cryptoTailStrategy.form.scalpStopMinPrice')} extra={t('cryptoTailStrategy.form.scalpStopMinPriceHint')}>
                 <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="enableSmartHardStop" label={t('cryptoTailStrategy.form.scalpEnableSmartHardStop')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpEnableSmartHardStopHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="holdToSettlePwin" label={t('cryptoTailStrategy.form.scalpHoldToSettlePwin')} extra={t('cryptoTailStrategy.form.scalpHoldToSettlePwinHint')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="exitPollIntervalMs" label={t('cryptoTailStrategy.form.scalpExitPollIntervalMs')} extra={t('cryptoTailStrategy.form.scalpExitPollIntervalMsHint')}>
+                <InputNumber min={500} step={500} style={{ width: '100%' }} addonAfter="ms" />
               </Form.Item>
               <Form.Item name="scalpMinOddsAfterEntry" label={t('cryptoTailStrategy.form.scalpMinOddsAfterEntry')} extra={t('cryptoTailStrategy.form.scalpMinOddsAfterEntryHint')}>
                 <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
