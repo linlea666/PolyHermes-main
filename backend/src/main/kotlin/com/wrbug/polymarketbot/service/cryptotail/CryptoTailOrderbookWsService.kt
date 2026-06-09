@@ -9,6 +9,7 @@ import com.wrbug.polymarketbot.event.CryptoTailStrategyChangedEvent
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.service.binance.BinanceKlineAutoSpreadService
 import com.wrbug.polymarketbot.service.binance.BinanceKlineService
+import com.wrbug.polymarketbot.service.binance.BinanceSpotTickerService
 import com.wrbug.polymarketbot.util.RetrofitFactory
 import com.wrbug.polymarketbot.util.createClient
 import com.wrbug.polymarketbot.util.fromJson
@@ -44,6 +45,7 @@ class CryptoTailOrderbookWsService(
     private val retrofitFactory: RetrofitFactory,
     private val binanceKlineAutoSpreadService: BinanceKlineAutoSpreadService,
     private val binanceKlineService: BinanceKlineService,
+    private val binanceSpotTickerService: BinanceSpotTickerService,
     private val periodPriceProvider: PeriodPriceProvider,
     private val bracketExitService: CryptoTailBracketExitService,
     private val entrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
@@ -520,6 +522,13 @@ class CryptoTailOrderbookWsService(
         try {
             val strategies = strategyRepository.findAllByEnabledTrue()
             binanceKlineService.updateSubscriptions(strategies.map { it.marketSlugPrefix }.toSet())
+            // 现货领先早警(实时 tick)：仅对开启该功能的 SCALP_FLIP 策略订阅 bookTicker，功能关闭时零连接
+            binanceSpotTickerService.updateSubscriptions(
+                strategies.asSequence()
+                    .filter { it.mode == TradingMode.SCALP_FLIP && it.scalpSpotLeadEnabled }
+                    .map { it.marketSlugPrefix }
+                    .toSet()
+            )
             periodEndCountdownJob?.cancel()
             periodEndCountdownJob = null
             val oldTokenIds = tokenToEntries.get().keys.toSet()

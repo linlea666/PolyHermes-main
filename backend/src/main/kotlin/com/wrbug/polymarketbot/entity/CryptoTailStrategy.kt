@@ -1002,6 +1002,54 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_late_scale_out_ratio", nullable = false, precision = 20, scale = 8)
     val scalpLateScaleOutRatio: BigDecimal = BigDecimal.ZERO,
 
+    /**
+     * 现货价"领先早警"信号层总开关（V93）：true 时引入币安/欧意现货同周期 gap 作为 Chainlink 走向的领先早警，
+     * 用于强化 WICK_GUARD 防误扛与尾盘穿价早警减仓。默认 false（零回归）。仅 SCALP_FLIP 消费。
+     * fail-safe：现货价不新鲜/不可用时一律回退旧行为，绝不因缺数据误触发或阻塞。
+     */
+    @Column(name = "scalp_spot_lead_enabled", nullable = false)
+    val scalpSpotLeadEnabled: Boolean = false,
+
+    /** 现货领先价源（V93）：当前仅实现 BINANCE（复用 BinanceKlineService）；OKX/CONSENSUS 为二期预留，未实现时信号置空（fail-safe） */
+    @Column(name = "scalp_spot_lead_source", nullable = false, length = 16)
+    val scalpSpotLeadSource: String = "BINANCE",
+
+    /** 现货领先数据新鲜度上限（毫秒，V93）：现货数据 age 超过此值视为不新鲜→信号置空回退旧行为。<=0 表示不校验 age（仅要求有数据） */
+    @Column(name = "scalp_spot_lead_max_age_ms", nullable = false)
+    val scalpSpotLeadMaxAgeMs: Int = 3000,
+
+    /**
+     * 现货"近翻转"预警阈值（σ，V93）：现货仍站我方但 |现货gap|/(σ√剩余) <= 此值时也判为危险（提前预警）。
+     * 0=不启用近翻转预警，仅"现货已实际穿价"才算危险（最保守）。
+     */
+    @Column(name = "scalp_spot_lead_flip_distance_sigma", nullable = false, precision = 20, scale = 8)
+    val scalpSpotLeadFlipDistanceSigma: BigDecimal = BigDecimal.ZERO,
+
+    /**
+     * 集成点 A（V93）：现货否决 WICK_GUARD 开关。true 时若现货信号新鲜且危险（已穿价/近翻转），
+     * 否决 WICK_GUARD 的"判插针继续持有"，让原有止损照走。仅增加安全、绝不放松持有。默认 false。
+     */
+    @Column(name = "scalp_spot_lead_wick_veto_enabled", nullable = false)
+    val scalpSpotLeadWickVetoEnabled: Boolean = false,
+
+    /**
+     * 集成点 B2（V93）：现货穿价早警提前减仓窗口（距结算剩余秒）。remaining<=此值且现货危险时，
+     * 按 scalpSpotLeadScaleOutRatio 提前一次保护性减仓（复用 FORCE，全局仅一次）。0=关（零回归）。
+     */
+    @Column(name = "scalp_spot_lead_early_stop_seconds", nullable = false)
+    val scalpSpotLeadEarlyStopSeconds: Int = 0,
+
+    /** 集成点 B2 减仓比例（V93）：(0,1]，与 scalpSpotLeadEarlyStopSeconds 同 >0 才生效；1=全清；0=关 */
+    @Column(name = "scalp_spot_lead_scale_out_ratio", nullable = false, precision = 20, scale = 8)
+    val scalpSpotLeadScaleOutRatio: BigDecimal = BigDecimal.ZERO,
+
+    /**
+     * 集成点 B1（V93）：让 V92 尾盘按时间减仓（杠杆4）改为"现货确认危险才减仓"，保住赢单尾部收益。默认 false（沿用 V92 无条件按时间减仓）。
+     * fail-safe：仅当现货信号新鲜且判定为安全时才抑制减仓；现货不新鲜/不可用时仍按 V92 无条件减仓（不削弱最后兜底）。
+     */
+    @Column(name = "scalp_late_scale_out_require_spot_danger", nullable = false)
+    val scalpLateScaleOutRequireSpotDanger: Boolean = false,
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

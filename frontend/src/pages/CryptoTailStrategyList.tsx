@@ -166,7 +166,15 @@ const SCALP_DEFAULTS = {
   scalpEmergencyRetryIntervalMs: 150,
   scalpLateIgnoreWorstPriceSeconds: 0,
   scalpLateScaleOutSeconds: 0,
-  scalpLateScaleOutRatio: '0'
+  scalpLateScaleOutRatio: '0',
+  scalpSpotLeadEnabled: false,
+  scalpSpotLeadSource: 'BINANCE',
+  scalpSpotLeadMaxAgeMs: 3000,
+  scalpSpotLeadFlipDistanceSigma: '0',
+  scalpSpotLeadWickVetoEnabled: false,
+  scalpSpotLeadEarlyStopSeconds: 0,
+  scalpSpotLeadScaleOutRatio: '0',
+  scalpLateScaleOutRequireSpotDanger: false
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -231,7 +239,15 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpEmergencyRetryIntervalMs: record.scalpEmergencyRetryIntervalMs ?? SCALP_DEFAULTS.scalpEmergencyRetryIntervalMs,
   scalpLateIgnoreWorstPriceSeconds: record.scalpLateIgnoreWorstPriceSeconds ?? SCALP_DEFAULTS.scalpLateIgnoreWorstPriceSeconds,
   scalpLateScaleOutSeconds: record.scalpLateScaleOutSeconds ?? SCALP_DEFAULTS.scalpLateScaleOutSeconds,
-  scalpLateScaleOutRatio: record.scalpLateScaleOutRatio ?? SCALP_DEFAULTS.scalpLateScaleOutRatio
+  scalpLateScaleOutRatio: record.scalpLateScaleOutRatio ?? SCALP_DEFAULTS.scalpLateScaleOutRatio,
+  scalpSpotLeadEnabled: record.scalpSpotLeadEnabled ?? SCALP_DEFAULTS.scalpSpotLeadEnabled,
+  scalpSpotLeadSource: record.scalpSpotLeadSource ?? SCALP_DEFAULTS.scalpSpotLeadSource,
+  scalpSpotLeadMaxAgeMs: record.scalpSpotLeadMaxAgeMs ?? SCALP_DEFAULTS.scalpSpotLeadMaxAgeMs,
+  scalpSpotLeadFlipDistanceSigma: record.scalpSpotLeadFlipDistanceSigma ?? SCALP_DEFAULTS.scalpSpotLeadFlipDistanceSigma,
+  scalpSpotLeadWickVetoEnabled: record.scalpSpotLeadWickVetoEnabled ?? SCALP_DEFAULTS.scalpSpotLeadWickVetoEnabled,
+  scalpSpotLeadEarlyStopSeconds: record.scalpSpotLeadEarlyStopSeconds ?? SCALP_DEFAULTS.scalpSpotLeadEarlyStopSeconds,
+  scalpSpotLeadScaleOutRatio: record.scalpSpotLeadScaleOutRatio ?? SCALP_DEFAULTS.scalpSpotLeadScaleOutRatio,
+  scalpLateScaleOutRequireSpotDanger: record.scalpLateScaleOutRequireSpotDanger ?? SCALP_DEFAULTS.scalpLateScaleOutRequireSpotDanger
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -449,7 +465,15 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpEmergencyRetryIntervalMs: numOrUndef(v.scalpEmergencyRetryIntervalMs),
   scalpLateIgnoreWorstPriceSeconds: numOrUndef(v.scalpLateIgnoreWorstPriceSeconds),
   scalpLateScaleOutSeconds: numOrUndef(v.scalpLateScaleOutSeconds),
-  scalpLateScaleOutRatio: strOrUndef(v.scalpLateScaleOutRatio)
+  scalpLateScaleOutRatio: strOrUndef(v.scalpLateScaleOutRatio),
+  scalpSpotLeadEnabled: typeof v.scalpSpotLeadEnabled === 'boolean' ? v.scalpSpotLeadEnabled : undefined,
+  scalpSpotLeadSource: strOrUndef(v.scalpSpotLeadSource),
+  scalpSpotLeadMaxAgeMs: numOrUndef(v.scalpSpotLeadMaxAgeMs),
+  scalpSpotLeadFlipDistanceSigma: strOrUndef(v.scalpSpotLeadFlipDistanceSigma),
+  scalpSpotLeadWickVetoEnabled: typeof v.scalpSpotLeadWickVetoEnabled === 'boolean' ? v.scalpSpotLeadWickVetoEnabled : undefined,
+  scalpSpotLeadEarlyStopSeconds: numOrUndef(v.scalpSpotLeadEarlyStopSeconds),
+  scalpSpotLeadScaleOutRatio: strOrUndef(v.scalpSpotLeadScaleOutRatio),
+  scalpLateScaleOutRequireSpotDanger: typeof v.scalpLateScaleOutRequireSpotDanger === 'boolean' ? v.scalpLateScaleOutRequireSpotDanger : undefined
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -3783,6 +3807,42 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpLateScaleOutRatio" label={t('cryptoTailStrategy.form.scalpLateScaleOutRatio')} extra={t('cryptoTailStrategy.form.scalpLateScaleOutRatioHint')}>
                 <InputNumber min={0} max={1} step={0.1} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpSpotLeadSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('cryptoTailStrategy.form.scalpSpotLeadSubsectionHint')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadEnabled" label={t('cryptoTailStrategy.form.scalpSpotLeadEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpSpotLeadEnabledHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadSource" label={t('cryptoTailStrategy.form.scalpSpotLeadSource')} extra={t('cryptoTailStrategy.form.scalpSpotLeadSourceHint')}>
+                <Select
+                  options={[
+                    { value: 'BINANCE', label: 'Binance' },
+                    { value: 'OKX', label: 'OKX (二期 / Phase 2)', disabled: true },
+                    { value: 'CONSENSUS', label: 'Consensus (二期 / Phase 2)', disabled: true }
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadMaxAgeMs" label={t('cryptoTailStrategy.form.scalpSpotLeadMaxAgeMs')} extra={t('cryptoTailStrategy.form.scalpSpotLeadMaxAgeMsHint')}>
+                <InputNumber min={0} step={500} precision={0} style={{ width: '100%' }} addonAfter="ms" />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadFlipDistanceSigma" label={t('cryptoTailStrategy.form.scalpSpotLeadFlipDistanceSigma')} extra={t('cryptoTailStrategy.form.scalpSpotLeadFlipDistanceSigmaHint')}>
+                <InputNumber min={0} step={0.1} style={{ width: '100%' }} stringMode addonAfter="σ" />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadWickVetoEnabled" label={t('cryptoTailStrategy.form.scalpSpotLeadWickVetoEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpSpotLeadWickVetoEnabledHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadEarlyStopSeconds" label={t('cryptoTailStrategy.form.scalpSpotLeadEarlyStopSeconds')} extra={t('cryptoTailStrategy.form.scalpSpotLeadEarlyStopSecondsHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadScaleOutRatio" label={t('cryptoTailStrategy.form.scalpSpotLeadScaleOutRatio')} extra={t('cryptoTailStrategy.form.scalpSpotLeadScaleOutRatioHint')}>
+                <InputNumber min={0} max={1} step={0.1} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpLateScaleOutRequireSpotDanger" label={t('cryptoTailStrategy.form.scalpLateScaleOutRequireSpotDanger')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpLateScaleOutRequireSpotDangerHint')}>
+                <Switch />
               </Form.Item>
             </>
           )}

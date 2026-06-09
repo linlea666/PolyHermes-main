@@ -89,6 +89,17 @@ class ApiHealthCheckService(
     }
 
     /**
+     * 获取 BinanceSpotTickerService（通过 ApplicationContext 避免循环依赖）
+     */
+    private fun getBinanceSpotTickerService(): com.wrbug.polymarketbot.service.binance.BinanceSpotTickerService? {
+        return try {
+            applicationContext?.getBean(com.wrbug.polymarketbot.service.binance.BinanceSpotTickerService::class.java)
+        } catch (e: BeansException) {
+            null
+        }
+    }
+
+    /**
      * 获取 ChainlinkDataStreamsService（通过 ApplicationContext 避免循环依赖）
      */
     private fun getChainlinkDataStreamsService(): com.wrbug.polymarketbot.service.chainlink.ChainlinkDataStreamsService? {
@@ -116,6 +127,7 @@ class ApiHealthCheckService(
                 async { checkPolygonRpc() },
                 async { checkBinanceApi() },
                 async { checkBinanceWebSocket() },
+                async { checkBinanceSpotTickerWebSocket() },
                 async { checkPolymarketRtdsWebSocket() },
                 async { checkPolymarketActivityWebSocket() },
                 async { checkUnifiedOnChainWebSocket() },
@@ -284,6 +296,65 @@ class ApiHealthCheckService(
             logger.warn("检查币安 WebSocket 状态失败", e)
             ApiHealthCheckDto(
                 name = "币安 WebSocket",
+                url = binanceWsUrl,
+                status = "error",
+                message = "检查失败：${e.message}"
+            )
+        }
+    }
+
+    /**
+     * 检查币安实时现价 WebSocket（@bookTicker）连接状态。
+     * 仅当存在"开启现货领先早警"的 SCALP_FLIP 策略时才建连，故无连接(total==0)视为功能未启用=正常。
+     */
+    private suspend fun checkBinanceSpotTickerWebSocket(): ApiHealthCheckDto = withContext(Dispatchers.Default) {
+        val binanceWsUrl = "wss://stream.binance.com:9443"
+        try {
+            val tickerService = getBinanceSpotTickerService()
+            if (tickerService == null) {
+                return@withContext ApiHealthCheckDto(
+                    name = "币安现价 WebSocket",
+                    url = binanceWsUrl,
+                    status = "error",
+                    message = "服务未初始化"
+                )
+            }
+            val statuses = tickerService.getConnectionStatuses()
+            val total = statuses.size
+            val connected = statuses.values.count { it }
+            when {
+                total == 0 -> ApiHealthCheckDto(
+                    name = "币安现价 WebSocket",
+                    url = binanceWsUrl,
+                    status = "success",
+                    message = "未启用现货领先早警，未订阅"
+                )
+                connected == total -> ApiHealthCheckDto(
+                    name = "币安现价 WebSocket",
+                    url = binanceWsUrl,
+                    status = "success",
+                    message = "连接正常 (按策略订阅)"
+                )
+                connected > 0 -> {
+                    val which = statuses.filter { it.value }.keys.joinToString("、")
+                    ApiHealthCheckDto(
+                        name = "币安现价 WebSocket",
+                        url = binanceWsUrl,
+                        status = "error",
+                        message = "部分连接正常 ($which)"
+                    )
+                }
+                else -> ApiHealthCheckDto(
+                    name = "币安现价 WebSocket",
+                    url = binanceWsUrl,
+                    status = "error",
+                    message = "连接断开"
+                )
+            }
+        } catch (e: Exception) {
+            logger.warn("检查币安现价 WebSocket 状态失败", e)
+            ApiHealthCheckDto(
+                name = "币安现价 WebSocket",
                 url = binanceWsUrl,
                 status = "error",
                 message = "检查失败：${e.message}"

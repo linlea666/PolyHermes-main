@@ -35,14 +35,13 @@ class BinanceKlineService {
 
     /** (marketSlugPrefix, intervalSeconds, periodStartUnix) -> (open, close) */
     private val openCloseByPeriod = ConcurrentHashMap<String, Pair<BigDecimal, BigDecimal>>()
-    
-    /** 市场 slug 前缀（如 btc-updown）-> Binance 交易对映射 */
-    private val marketToSymbol = mapOf(
-        "btc-updown" to "BTCUSDC",
-        "eth-updown" to "ETHUSDC",
-        "sol-updown" to "SOLUSDC",
-        "xrp-updown" to "XRPUSDC"
-    )
+
+    /**
+     * (marketSlugPrefix, intervalSeconds, periodStartUnix) -> 最近一次 kline 推送的本地接收时间戳(ms)。
+     * 供现货领先早警(V93)做新鲜度门禁：WS 断连时该周期 (open,close) 会停留为旧值，仅凭存在性无法判断是否新鲜，
+     * 故额外记录接收时间，调用方据 age 决定是否信任该现货信号（fail-safe，绝不用过期现货价误触发）。
+     */
+    private val updatedAtByPeriod = ConcurrentHashMap<String, Long>()
     
     /** 已连接的 WebSocket: wsKey (symbol-interval) -> WebSocket */
     private val connectedWebSockets = ConcurrentHashMap<String, WebSocket>()
@@ -51,18 +50,11 @@ class BinanceKlineService {
     private val subscriptionLock = Any()
     private var reconnectJob: Job? = null
 
-    /** 解析完整市场 slug（如 btc-updown-5m）为 (basePrefix, interval)，不支持则返回 null */
-    private fun parseMarketSlug(full: String): Pair<String, String>? {
-        val lower = full.lowercase()
-        return when {
-            lower.endsWith("-5m") -> Pair(lower.removeSuffix("-5m"), "5m")
-            lower.endsWith("-15m") -> Pair(lower.removeSuffix("-15m"), "15m")
-            else -> null
-        }
-    }
+    /** 解析完整市场 slug（如 btc-updown-5m）为 (basePrefix, interval)，不支持则返回 null（委托共享解析器） */
+    private fun parseMarketSlug(full: String): Pair<String, String>? = BinanceSymbolResolver.parseMarketSlug(full)
 
-    /** 从市场 base 前缀（如 btc-updown）获取 Binance 交易对 */
-    private fun getSymbol(basePrefix: String): String? = marketToSymbol[basePrefix]
+    /** 从市场 base 前缀（如 btc-updown）获取 Binance 交易对（委托共享解析器） */
+    private fun getSymbol(basePrefix: String): String? = BinanceSymbolResolver.getSymbol(basePrefix)
 
     private fun key(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): String {
         return "$marketSlugPrefix-$intervalSeconds-$periodStartUnix"
@@ -70,6 +62,14 @@ class BinanceKlineService {
 
     fun getCurrentOpenClose(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Pair<BigDecimal, BigDecimal>? {
         return openCloseByPeriod[key(marketSlugPrefix, intervalSeconds, periodStartUnix)]
+    }
+
+    /**
+     * 该周期 (open,close) 最近一次 kline 推送的本地接收时间戳(ms)，无数据返回 null。
+     * 供现货领先早警(V93)计算 age 做新鲜度门禁。
+     */
+    fun getLastUpdateMs(marketSlugPrefix: String, intervalSeconds: Int, periodStartUnix: Long): Long? {
+        return updatedAtByPeriod[key(marketSlugPrefix, intervalSeconds, periodStartUnix)]
     }
 
     /** 供 API 健康检查使用：各币种各周期的连接状态 */
@@ -108,7 +108,9 @@ class BinanceKlineService {
             parsed.forEach { (fullPrefix, symbol, interval) ->
                 connectStream(symbol, interval, fullPrefix) { marketPrefixParam, intervalSec, tMs, openP, closeP ->
                     val periodSec = tMs / 1000
-                    openCloseByPeriod[key(marketPrefixParam, intervalSec, periodSec)] = openP to closeP
+                    val cacheKey = key(marketPrefixParam, intervalSec, periodSec)
+                    openCloseByPeriod[cacheKey] = openP to closeP
+                    updatedAtByPeriod[cacheKey] = System.currentTimeMillis()
                 }
             }
         }

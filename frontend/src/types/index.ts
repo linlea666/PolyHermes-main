@@ -1733,6 +1733,14 @@ export interface CryptoTailStrategyDto {
   scalpLateIgnoreWorstPriceSeconds?: number
   scalpLateScaleOutSeconds?: number
   scalpLateScaleOutRatio?: string
+  scalpSpotLeadEnabled?: boolean
+  scalpSpotLeadSource?: string
+  scalpSpotLeadMaxAgeMs?: number
+  scalpSpotLeadFlipDistanceSigma?: string
+  scalpSpotLeadWickVetoEnabled?: boolean
+  scalpSpotLeadEarlyStopSeconds?: number
+  scalpSpotLeadScaleOutRatio?: string
+  scalpLateScaleOutRequireSpotDanger?: boolean
   createdAt: number
   updatedAt: number
 }
@@ -1800,6 +1808,14 @@ export interface CryptoTailScalpParams {
   scalpLateIgnoreWorstPriceSeconds?: number
   scalpLateScaleOutSeconds?: number
   scalpLateScaleOutRatio?: string
+  scalpSpotLeadEnabled?: boolean
+  scalpSpotLeadSource?: string
+  scalpSpotLeadMaxAgeMs?: number
+  scalpSpotLeadFlipDistanceSigma?: string
+  scalpSpotLeadWickVetoEnabled?: boolean
+  scalpSpotLeadEarlyStopSeconds?: number
+  scalpSpotLeadScaleOutRatio?: string
+  scalpLateScaleOutRequireSpotDanger?: boolean
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */

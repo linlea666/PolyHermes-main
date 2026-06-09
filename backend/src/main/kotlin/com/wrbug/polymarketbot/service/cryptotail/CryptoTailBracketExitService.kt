@@ -66,7 +66,9 @@ class CryptoTailBracketExitService(
     private val wickSignalService: CryptoTailWickSignalService,
     private val tailDiffExitPresetResolver: TailDiffExitPresetResolver,
     private val reverseVelocityTracker: com.wrbug.polymarketbot.service.cryptotail.taildiff.CryptoTailReverseVelocityTracker,
-    private val exitOrderReconciler: CryptoTailExitOrderReconciler
+    private val exitOrderReconciler: CryptoTailExitOrderReconciler,
+    private val spotLeadService: CryptoTailSpotLeadService,
+    private val spotLeadTelemetry: CryptoTailSpotLeadTelemetry
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailBracketExitService::class.java)
@@ -205,6 +207,18 @@ class CryptoTailBracketExitService(
                 )
             )
 
+            // 现货领先信号：每 tick 只计算一次（tick 亚秒刷新，二次求值会漂移），决策与日志共用同一份。
+            // fail-safe：evaluate 内部已对缺失/不新鲜降级；此处再包一层 try/catch，异常一律回退 null 不污染决策热路径。
+            val spotLead: CryptoTailSpotLeadService.SpotLeadState? =
+                if (strategy.mode == TradingMode.SCALP_FLIP && strategy.scalpSpotLeadEnabled) {
+                    try {
+                        spotLeadService.evaluate(strategy, checked, remainingSeconds)
+                    } catch (e: Exception) {
+                        logger.debug("现货领先信号计算失败: ${e.message}")
+                        null
+                    }
+                } else null
+
             val decision = decideExit(
                 strategy = strategy,
                 trigger = checked,
@@ -212,8 +226,9 @@ class CryptoTailBracketExitService(
                 bestBid = bestBid,
                 remainingSeconds = remainingSeconds,
                 nowMs = nowMs,
-                orderbook = orderbook
-            )
+                orderbook = orderbook,
+                spotLead = spotLead
+            ).let { if (it.spotLead == null) it.copy(spotLead = spotLead) else it }
 
             recordExitCheck(checked, strategy, holding, bestBid, remainingSeconds, decision, orderbook, triggerSource)
 
@@ -401,7 +416,17 @@ class CryptoTailBracketExitService(
          * true = 本退出由 SCALP 尾盘动态止损（LATE_DYNAMIC_STOP）触发。仅用于审计/日志 payload，
          * 配合 [scalpDisableWickGuardOnLateStop] 标记 wickGuardDisabledByLateStop。
          */
-        val lateDynamicStop: Boolean = false
+        val lateDynamicStop: Boolean = false,
+        /**
+         * 本次决策所依据的现货领先信号快照（决策期计算的同一份，避免日志侧二次求值导致漂移）。
+         * 仅 SCALP_FLIP + scalpSpotLeadEnabled 且价源可用时非空；其余为 null。仅用于审计/日志。
+         */
+        val spotLead: CryptoTailSpotLeadService.SpotLeadState? = null,
+        /**
+         * true = 现货领先早警**真正改变了本次决策**（B2 提前减仓，或现货否决了"判插针续扛"的旁路从而触发了真止损/熔断）。
+         * 精确归因（非启发式）：仅在现货实际翻转决策的分支置位，供回测统计早警有效率。仅用于审计/日志。
+         */
+        val spotEarlyWarningActed: Boolean = false
     )
 
     private fun decideExit(
@@ -411,7 +436,9 @@ class CryptoTailBracketExitService(
         bestBid: BigDecimal,
         remainingSeconds: Int,
         nowMs: Long,
-        orderbook: OrderbookQualitySnapshot? = null
+        orderbook: OrderbookQualitySnapshot? = null,
+        // 现货领先信号（决策期已计算的同一份）；仅 SCALP_FLIP 路径消费，其余模式忽略。
+        spotLead: CryptoTailSpotLeadService.SpotLeadState? = null
     ): Decision {
         if (remainingSeconds <= 0) {
             return Decision(null, BigDecimal.ZERO, "周期已结束，等待结算")
@@ -440,7 +467,7 @@ class CryptoTailBracketExitService(
         // SCALP_FLIP 复用同一退出引擎：入场按 scalp_* 列冻结一份 preset（hold_to_expiry 恒为 false，
         // 用 tp_limit.enabled 切换"持有到结算(不挂TP)"与"挂止盈"，stop_loss + dynamic_exit 提供价位/标的/反抽止损）。
         if (strategy.mode == TradingMode.TAIL_DIFF || strategy.mode == TradingMode.SCALP_FLIP) {
-            return decideTailDiffExit(strategy, trigger, holding, bestBid, remainingSeconds)
+            return decideTailDiffExit(strategy, trigger, holding, bestBid, remainingSeconds, spotLead)
         }
         val entryFillPrice = trigger.entryFillPrice ?: run {
             val fs = trigger.filledSize
@@ -616,7 +643,9 @@ class CryptoTailBracketExitService(
         trigger: CryptoTailStrategyTrigger,
         holding: HoldingState?,
         bestBid: BigDecimal,
-        remainingSeconds: Int
+        remainingSeconds: Int,
+        // 现货领先信号（决策期由 evaluateAndExit 统一计算并下传，避免与日志侧二次求值漂移）。
+        spotLead: CryptoTailSpotLeadService.SpotLeadState? = null
     ): Decision {
         val tier = TailDiffTier.fromLabel(trigger.tier)
         val modeLabel = if (trigger.mode == TradingMode.SCALP_FLIP) "SCALP" else "TAIL_DIFF"
@@ -629,12 +658,44 @@ class CryptoTailBracketExitService(
             decideScalpLateStop(strategy, trigger, holding, bestBid, remainingSeconds, tier)
         } else null
         if (lateStop != null && strategy.scalpDisableWickGuardOnLateStop) return lateStop
+        // V93 现货价领先早警信号（仅 SCALP_FLIP + scalpSpotLeadEnabled；fail-safe：缺失/不新鲜则 spotDanger=false 回退旧行为）。
+        // spotLead 由 evaluateAndExit 决策期统一计算后下传（每 tick 仅一次，决策与日志共用同一份）；本方法不再二次求值。
+        // 仅作"领先早警层"，不进入 pWin/结算口径——只用于让出场更早(B1/B2)、给 WICK_GUARD 加否决(A)，绝不放松/延长持有。
+        val spotDanger = spotLead?.danger(strategy.scalpSpotLeadFlipDistanceSigma) == true
+        // 集成点 A：现货否决 WICK_GUARD/插针豁免。仅当开关开 + 现货新鲜且危险时为 true → 让"已决定的插针豁免"作废、止损照走（仅增加安全）。
+        val spotForceExit = strategy.scalpSpotLeadWickVetoEnabled && spotDanger
+        // 机械止损归因：在止损旁路处置位，仅当"模型本会判插针续扛而被现货否决"时为 true（精确归因，非启发式）。
+        var spotStopAttribution = false
+        // 集成点 B2：现货穿价早警提前保护性减仓。lateStop 未命中 + 现货危险 + 处于早警窗口 → 复用 FORCE 减一次（全局仅一次）。
+        // fail-safe：spotDanger 仅在现货新鲜时为真；未开/不新鲜 → 不触发，V91/V92 保护不受影响（仅新增保护，零回归）。
+        if (lateStop == null && trigger.mode == TradingMode.SCALP_FLIP && strategy.scalpSpotLeadEnabled &&
+            strategy.scalpSpotLeadEarlyStopSeconds > 0 && strategy.scalpSpotLeadScaleOutRatio > BigDecimal.ZERO &&
+            remainingSeconds in 0..strategy.scalpSpotLeadEarlyStopSeconds && spotDanger
+        ) {
+            val tid = trigger.id
+            val ratio = strategy.scalpSpotLeadScaleOutRatio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+            val scaleOutSize = (trigger.remainingSize ?: BigDecimal.ZERO).multiply(ratio).setScale(sizeDecimalScale, RoundingMode.DOWN)
+            if (tid != null && scaleOutSize > BigDecimal.ZERO && !hasExitOfKind(tid, ExitKind.FORCE)) {
+                return Decision(
+                    ExitKind.FORCE,
+                    ratio,
+                    "$modeLabel[${tier?.label ?: "?"}] SPOT_LEAD_EARLY_STOP: remaining=${remainingSeconds}s<=${strategy.scalpSpotLeadEarlyStopSeconds}s 现货领先危险(spotGap=${spotLead?.spotGap?.toPlainString()} crossed=${spotLead?.crossed} distSigma=${spotLead?.distanceToFlipSigma?.toPlainString()} ageMs=${spotLead?.ageMs}) → 提前减仓 ratio=${ratio.toPlainString()} size≈${scaleOutSize.toPlainString()} bestBid=${bestBid.toPlainString()}",
+                    clearTp1HoldStartedAt = true,
+                    spotLead = spotLead,
+                    spotEarlyWarningActed = true
+                )
+            }
+        }
+        // 集成点 B1：V92 杠杆4 现货门控。require=true 时仅"现货新鲜且判定安全"才抑制减仓（保住赢单尾部收益）；
+        // fail-safe：现货未开/不新鲜/不可用一律放行减仓，不削弱 V92 最后兜底（不削弱对 B 类终局塌缩的保护）。
+        val scaleOutSpotOk = !strategy.scalpLateScaleOutRequireSpotDanger ||
+            spotLead == null || !spotLead.fresh || spotDanger
         // V92 杠杆4 尾盘主动减仓：remaining<=scalpLateScaleOutSeconds 时，无视模型强挺(WICK_GUARD)按 scalpLateScaleOutRatio
         // 主动减仓一次（复用 FORCE：FAK marketable + 紧急抢占；hasExitOfKind 守卫全局仅一次），用确定性小滑点换掉尾盘穿价归零的尾部风险。
         // 仅当尾盘全清止损未命中(lateStop==null)时才减仓——命中大回撤/地板时应走全清而非部分。两参任一为 0 即关（零回归）。
         if (lateStop == null && trigger.mode == TradingMode.SCALP_FLIP &&
             strategy.scalpLateScaleOutSeconds > 0 && strategy.scalpLateScaleOutRatio > BigDecimal.ZERO &&
-            remainingSeconds in 0..strategy.scalpLateScaleOutSeconds
+            remainingSeconds in 0..strategy.scalpLateScaleOutSeconds && scaleOutSpotOk
         ) {
             val tid = trigger.id
             val ratio = strategy.scalpLateScaleOutRatio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
@@ -670,7 +731,9 @@ class CryptoTailBracketExitService(
                 exitSafeRatio = strategy.exitSafeRatio,
                 minSafeRatioFloor = strategy.scalpSmartStopMinSafeRatio
             )
-            if (wickBypass.bypass) {
+            // V93 集成点 A：现货否决。spotForceExit=true（现货新鲜且已穿价/近翻转）时不再放行插针豁免，
+            // 落到后续 stopLoss/dynamicExit 真止损——封住"Chainlink 滞后导致 WICK_GUARD 扛进真穿价"的缺口（仅增加安全）。
+            if (wickBypass.bypass && !spotForceExit) {
                 // 止盈优先：模型强挺但已到止盈线仍应落袋，不被总闸压住。
                 tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
                 return Decision(
@@ -686,7 +749,7 @@ class CryptoTailBracketExitService(
         if (preset.holdToExpiry) {
             // TOP 不再"无脑持有到结算"：即便 holdToExpiry，仍保留硬危险兜底（minOdds/反抽/价差坍缩/方向翻转），
             // 仅跳过 modelProb/diffSigma 这类较软的模型衰减退出，避免最大仓位在剧烈反转下零保护。
-            dynamicExitDecision(strategy, preset, trigger, holding, bestBid, remainingSeconds, tier, hardOnly = true)?.let { return it }
+            dynamicExitDecision(strategy, preset, trigger, holding, bestBid, remainingSeconds, tier, hardOnly = true, spotForceExit = spotForceExit)?.let { return it }
             // 高信念单上行封顶：升到 tp_limit（如 0.99）即落袋，避免为贪最后 1 分而承担尾盘反转风险。
             // tp_limit.enabled=false（TOP 默认）时返回 null → 行为不变，仍持有到结算。
             tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
@@ -726,7 +789,8 @@ class CryptoTailBracketExitService(
                         exitSafeRatio = strategy.exitSafeRatio,
                         minSafeRatioFloor = bypassMinSafeRatio
                     )
-                    if (bypass.bypass) {
+                    // V93 集成点 A：现货否决同样作用于机械止损的插针豁免——避免 WICK_GUARD 被否决后此处又把同一真穿价重新判为插针续扛。
+                    if (bypass.bypass && !spotForceExit) {
                         return Decision(
                             null,
                             BigDecimal.ZERO,
@@ -735,18 +799,22 @@ class CryptoTailBracketExitService(
                             bypassedHardStop = true
                         )
                     }
+                    // 现货早警归因：仅当"模型本会判插针续扛(bypass.bypass) 而被现货否决(spotForceExit)"时，本次止损才是现货促成的。
+                    spotStopAttribution = bypass.bypass && spotForceExit
                 }
                 val ratio = preset.stopLoss.ratio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
                 return Decision(
                     ExitKind.HARD_STOP,
                     ratio,
                     "$modeLabel[${tier?.label ?: "?"}] StopLoss: bestBid=${bestBid.toPlainString()}<=${effectiveStop.toPlainString()} (entry=${entryFillPrice.toPlainString()}, offset=${preset.stopLoss.offset.toPlainString()}, minPrice=${preset.stopLoss.minPrice.toPlainString()})",
-                    clearTp1HoldStartedAt = true
+                    clearTp1HoldStartedAt = true,
+                    spotLead = spotLead,
+                    spotEarlyWarningActed = spotStopAttribution
                 )
             }
         }
         // 3) DynamicExit：modelProb / diffSigma / bestBid / 价差坍缩 / 反抽 / 方向翻转 任一触发即退出
-        dynamicExitDecision(strategy, preset, trigger, holding, bestBid, remainingSeconds, tier, hardOnly = false)?.let { return it }
+        dynamicExitDecision(strategy, preset, trigger, holding, bestBid, remainingSeconds, tier, hardOnly = false, spotForceExit = spotForceExit)?.let { return it }
         // 4) TpLimit
         tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
         return Decision(null, BigDecimal.ZERO, "$modeLabel[${tier?.label ?: "?"}] 继续持有 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
@@ -878,7 +946,9 @@ class CryptoTailBracketExitService(
         holding: HoldingState?,
         bestBid: BigDecimal,
         remainingSeconds: Int,
-        label: String
+        label: String,
+        // V93 集成点 A：现货否决（现货新鲜且已穿价/近翻转）。true 时把熔断下跌按真反转处理，不再判为插针走短确认。
+        spotForceExit: Boolean = false
     ): Decision? {
         val modeLabel = if (trigger.mode == TradingMode.SCALP_FLIP) "SCALP" else "TAIL_DIFF"
         val isScalp = trigger.mode == TradingMode.SCALP_FLIP
@@ -911,6 +981,8 @@ class CryptoTailBracketExitService(
         //  与机械止损旁路同制度同口径，避免一处门控一处裸砸。TAIL_DIFF 行为完全不变。
         val modelGateOn = isScalp && (strategy.enableSmartHardStop || cfg.catastropheFloorRatio > BigDecimal.ZERO)
         var modelHolds = false
+        // 现货早警归因：仅当"模型本会判插针续扛(bypass.bypass) 而被现货否决(spotForceExit)"时，本次熔断即时砍才是现货促成的。
+        var spotForcedCatastrophe = false
         if (modelGateOn && holding != null) {
             val bypass = CryptoTailHoldToSettlePolicy.evaluateHardStopBypass(
                 enabled = true,
@@ -926,7 +998,9 @@ class CryptoTailBracketExitService(
                 exitSafeRatio = strategy.exitSafeRatio,
                 minSafeRatioFloor = strategy.scalpSmartStopMinSafeRatio
             )
-            modelHolds = bypass.bypass
+            // V93 集成点 A：现货否决——现货已穿价/近翻转时不认插针，强制按真反转处理（modelHolds=false → 即时砍仓止血）。
+            modelHolds = bypass.bypass && !spotForceExit
+            spotForcedCatastrophe = bypass.bypass && spotForceExit
         }
         // 模型强挺=插针 → 短确认(forceImmediate=false)；否则真反转 → 按配置即时
         val immediate = if (modelHolds) false else cfg.catastropheImmediate
@@ -948,7 +1022,8 @@ class CryptoTailBracketExitService(
             BigDecimal.ONE,
             reason,
             clearTp1HoldStartedAt = true,
-            forceImmediate = immediate
+            forceImmediate = immediate,
+            spotEarlyWarningActed = spotForcedCatastrophe
         )
     }
 
@@ -960,7 +1035,9 @@ class CryptoTailBracketExitService(
         bestBid: BigDecimal,
         remainingSeconds: Int,
         tier: TailDiffTier?,
-        hardOnly: Boolean
+        hardOnly: Boolean,
+        // V93 集成点 A：现货否决（现货新鲜且已穿价/近翻转）。true 时熔断模型门控不再把下跌判为插针续扛，转为真反转处理。
+        spotForceExit: Boolean = false
     ): Decision? {
         if (!preset.dynamicExit.enabled || holding == null) return null
         val label = tier?.label ?: "?"
@@ -970,7 +1047,7 @@ class CryptoTailBracketExitService(
         // 形成"模型仍自信 + 价格崩破地板"下大仓位零有效止损的裸奔缺口。此处灾难线/回撤任一触发即发
         // 无地板 HARD_STOP（softPriceExit=false → 经 exitConfirmTicks 确认防插针后以 FAK 市价扫单真实止损）。
         // WS2：SCALP 熔断已内建模型门控（模型强挺=插针走短确认，模型翻转=真反转即时），不再纯盘口裸触发。
-        catastropheExitDecision(strategy, preset.dynamicExit, trigger, holding, bestBid, remainingSeconds, label)?.let { return it }
+        catastropheExitDecision(strategy, preset.dynamicExit, trigger, holding, bestBid, remainingSeconds, label, spotForceExit)?.let { return it }
         // 软退出（模型衰减）：仅在非 hardOnly 时评估
         if (!hardOnly && holding.pWinHolding < preset.dynamicExit.minModelProbAfterEntry) {
             return Decision(
@@ -1322,6 +1399,24 @@ class CryptoTailBracketExitService(
         return immediate || nextCount >= strategy.exitConfirmTicks
     }
 
+    /**
+     * 优势/劣势四象限（方向免疫，以"是否仍支持持仓方向"表达 clGap/binGap 符号）：
+     *  - 双确认优势 DOUBLE_CONFIRM：Chainlink 与现货均支持持仓 → 正常持有；
+     *  - 现货领先预警 SPOT_LEAD_WARNING：CL 仍支持、现货已翻 → 核心早警（否决 WICK_GUARD / 早警减仓）；
+     *  - 真反转确认 REVERSAL_CONFIRMED：两者皆翻 → 止损照走；
+     *  - CL 滞后/插针 CHAINLINK_LEAD：CL 已翻、现货仍在上方 → 仅记录，绝不放松/扛单。
+     * 任一侧缺失返回 UNKNOWN（不参与决策，仅审计）。
+     */
+    private fun computeAdvantageState(clSupports: Boolean?, binSupports: Boolean?): String {
+        if (clSupports == null || binSupports == null) return "UNKNOWN"
+        return when {
+            clSupports && binSupports -> "DOUBLE_CONFIRM"
+            clSupports && !binSupports -> "SPOT_LEAD_WARNING"
+            !clSupports && !binSupports -> "REVERSAL_CONFIRMED"
+            else -> "CHAINLINK_LEAD"
+        }
+    }
+
     private fun recordExitCheck(
         trigger: CryptoTailStrategyTrigger,
         strategy: CryptoTailStrategy,
@@ -1339,6 +1434,35 @@ class CryptoTailBracketExitService(
         val realizedIfExit = bestBid.subtract(entryFillPrice).multiply(remaining).setScale(8, RoundingMode.HALF_UP)
         val expectedExitPrice = orderbook?.expectedExitPrice(remaining)
         val executableDepth = orderbook?.executableBidDepthUsd(remaining)
+        // V93 现货领先信号审计：直接复用决策期已计算并随 Decision 下传的同一份 spotLead（避免日志侧二次求值漂移）。
+        // 重点看 spotLeadAheadOfChainlink（现货已穿价但 Chainlink 仍支持）出现频次与领先程度。
+        val spotLead = decision.spotLead
+        val chainlinkGap = holding?.gap
+        val spotLeadAheadOfChainlink = if (spotLead != null && chainlinkGap != null) {
+            spotLead.crossed && CryptoTailHoldToSettlePolicy.gapSupportsHolding(trigger.outcomeIndex, chainlinkGap)
+        } else null
+        // 优势/劣势四象限（方向免疫：以"是否仍支持持仓方向"表达 clGap/binGap 符号）。
+        val clSupports = chainlinkGap?.let { CryptoTailHoldToSettlePolicy.gapSupportsHolding(trigger.outcomeIndex, it) }
+        val advantageState = computeAdvantageState(clSupports, spotLead?.supportsHolding)
+        // 优势强度 = |binGap|/(σ·√剩余)（复用 distanceToFlipSigma），越小越接近翻转。
+        val advantageStrengthSigma = spotLead?.distanceToFlipSigma
+        // 早警是否真正改变决策：精确归因，直接取决策期置位的标志（B2 减仓 / 旁路被现货否决而触发的真止损/熔断）。
+        val spotEarlyWarningActed = decision.spotEarlyWarningActed
+        val telemetry: CryptoTailSpotLeadTelemetry.CrossSnapshot? = run {
+            val sid = strategy.id
+            if (spotLead != null && sid != null) {
+                val binCrossed = spotLead.fresh && spotLead.crossed
+                val clCrossed = clSupports == false
+                spotLeadTelemetry.observe(
+                    sid, trigger.periodStartUnix, trigger.outcomeIndex,
+                    System.currentTimeMillis(), binCrossed, clCrossed
+                )
+                if (spotEarlyWarningActed) {
+                    spotLeadTelemetry.markEarlyWarningActed(sid, trigger.periodStartUnix, trigger.outcomeIndex)
+                }
+                spotLeadTelemetry.snapshot(sid, trigger.periodStartUnix, trigger.outcomeIndex)
+            } else null
+        }
         val payload = mapOf(
             "strategyId" to (strategy.id ?: ""),
             "strategyName" to (strategy.name ?: ""),
@@ -1380,6 +1504,29 @@ class CryptoTailBracketExitService(
             "scalpLateIgnoreWorstPriceSeconds" to strategy.scalpLateIgnoreWorstPriceSeconds,
             "scalpLateScaleOutSeconds" to strategy.scalpLateScaleOutSeconds,
             "scalpLateScaleOutRatio" to strategy.scalpLateScaleOutRatio.toPlainString(),
+            "scalpSpotLeadEnabled" to strategy.scalpSpotLeadEnabled,
+            "scalpSpotLeadSource" to strategy.scalpSpotLeadSource,
+            "scalpSpotLeadWickVetoEnabled" to strategy.scalpSpotLeadWickVetoEnabled,
+            "scalpSpotLeadEarlyStopSeconds" to strategy.scalpSpotLeadEarlyStopSeconds,
+            "scalpSpotLeadScaleOutRatio" to strategy.scalpSpotLeadScaleOutRatio.toPlainString(),
+            "scalpSpotLeadFlipDistanceSigma" to strategy.scalpSpotLeadFlipDistanceSigma.toPlainString(),
+            "scalpLateScaleOutRequireSpotDanger" to strategy.scalpLateScaleOutRequireSpotDanger,
+            "spotLeadFresh" to (spotLead?.fresh ?: ""),
+            "spotLeadGap" to (spotLead?.spotGap?.toPlainString() ?: ""),
+            "spotLeadSupportsHolding" to (spotLead?.supportsHolding ?: ""),
+            "spotLeadCrossed" to (spotLead?.crossed ?: ""),
+            "spotLeadDistanceSigma" to (spotLead?.distanceToFlipSigma?.toPlainString() ?: ""),
+            "spotLeadAgeMs" to (spotLead?.ageMs ?: ""),
+            "spotLeadDanger" to (spotLead?.danger(strategy.scalpSpotLeadFlipDistanceSigma) ?: ""),
+            "spotLeadAheadOfChainlink" to (spotLeadAheadOfChainlink ?: ""),
+            "spotLeadSource" to (spotLead?.source?.name ?: ""),
+            "spotCurrentAgeMs" to (spotLead?.ageMs ?: ""),
+            "advantageState" to advantageState,
+            "advantageStrengthSigma" to (advantageStrengthSigma?.toPlainString() ?: ""),
+            "binFirstCrossTs" to (telemetry?.binFirstCrossTs ?: ""),
+            "clFirstCrossTs" to (telemetry?.clFirstCrossTs ?: ""),
+            "leadMs" to (telemetry?.leadMs ?: ""),
+            "spotEarlyWarningActed" to (telemetry?.earlyWarningActed ?: ""),
             "remainingSize" to remaining.toPlainString(),
             "realizedPnlIfExit" to realizedIfExit.toPlainString(),
             "tp1HoldStartedAt" to (decision.tp1HoldStartedAt ?: trigger.tp1HoldStartedAt ?: ""),

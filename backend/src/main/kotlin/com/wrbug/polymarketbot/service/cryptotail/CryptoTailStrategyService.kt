@@ -488,7 +488,15 @@ class CryptoTailStrategyService(
                 scalpEmergencyRetryIntervalMs = sc.emergencyRetryIntervalMs,
                 scalpLateIgnoreWorstPriceSeconds = sc.lateIgnoreWorstPriceSeconds,
                 scalpLateScaleOutSeconds = sc.lateScaleOutSeconds,
-                scalpLateScaleOutRatio = sc.lateScaleOutRatio
+                scalpLateScaleOutRatio = sc.lateScaleOutRatio,
+                scalpSpotLeadEnabled = sc.spotLeadEnabled,
+                scalpSpotLeadSource = sc.spotLeadSource,
+                scalpSpotLeadMaxAgeMs = sc.spotLeadMaxAgeMs,
+                scalpSpotLeadFlipDistanceSigma = sc.spotLeadFlipDistanceSigma,
+                scalpSpotLeadWickVetoEnabled = sc.spotLeadWickVetoEnabled,
+                scalpSpotLeadEarlyStopSeconds = sc.spotLeadEarlyStopSeconds,
+                scalpSpotLeadScaleOutRatio = sc.spotLeadScaleOutRatio,
+                scalpLateScaleOutRequireSpotDanger = sc.lateScaleOutRequireSpotDanger
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -933,6 +941,14 @@ class CryptoTailStrategyService(
                 scalpLateIgnoreWorstPriceSeconds = sc.lateIgnoreWorstPriceSeconds,
                 scalpLateScaleOutSeconds = sc.lateScaleOutSeconds,
                 scalpLateScaleOutRatio = sc.lateScaleOutRatio,
+                scalpSpotLeadEnabled = sc.spotLeadEnabled,
+                scalpSpotLeadSource = sc.spotLeadSource,
+                scalpSpotLeadMaxAgeMs = sc.spotLeadMaxAgeMs,
+                scalpSpotLeadFlipDistanceSigma = sc.spotLeadFlipDistanceSigma,
+                scalpSpotLeadWickVetoEnabled = sc.spotLeadWickVetoEnabled,
+                scalpSpotLeadEarlyStopSeconds = sc.spotLeadEarlyStopSeconds,
+                scalpSpotLeadScaleOutRatio = sc.spotLeadScaleOutRatio,
+                scalpLateScaleOutRequireSpotDanger = sc.lateScaleOutRequireSpotDanger,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -2205,7 +2221,15 @@ class CryptoTailStrategyService(
         val emergencyRetryIntervalMs: Int,
         val lateIgnoreWorstPriceSeconds: Int,
         val lateScaleOutSeconds: Int,
-        val lateScaleOutRatio: BigDecimal
+        val lateScaleOutRatio: BigDecimal,
+        val spotLeadEnabled: Boolean,
+        val spotLeadSource: String,
+        val spotLeadMaxAgeMs: Int,
+        val spotLeadFlipDistanceSigma: BigDecimal,
+        val spotLeadWickVetoEnabled: Boolean,
+        val spotLeadEarlyStopSeconds: Int,
+        val spotLeadScaleOutRatio: BigDecimal,
+        val lateScaleOutRequireSpotDanger: Boolean
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -2218,6 +2242,12 @@ class CryptoTailStrategyService(
     private fun normalizeScalpEvLimitMode(raw: String?): String {
         val v = (raw ?: "CLAMP").trim().uppercase()
         return if (v == "CLAMP" || v == "GUARD" || v == "OFF") v else "CLAMP"
+    }
+
+    /** SCALP 现货领先价源归一化（V93）：当前仅 BINANCE 已实现；OKX/CONSENSUS 为二期预留（信号置空回退旧行为）。未知值回退 BINANCE */
+    private fun normalizeScalpSpotLeadSource(raw: String?): String {
+        val v = (raw ?: "BINANCE").trim().uppercase()
+        return if (v == "BINANCE" || v == "OKX" || v == "CONSENSUS") v else "BINANCE"
     }
 
     /** 可空 Int 字段三态：null=保留旧值；<=0 视为清空(null)；>0=更新。 */
@@ -2289,7 +2319,15 @@ class CryptoTailStrategyService(
         emergencyRetryIntervalMs = r.scalpEmergencyRetryIntervalMs ?: 150,
         lateIgnoreWorstPriceSeconds = r.scalpLateIgnoreWorstPriceSeconds ?: 0,
         lateScaleOutSeconds = r.scalpLateScaleOutSeconds ?: 0,
-        lateScaleOutRatio = r.scalpLateScaleOutRatio?.toSafeBigDecimal() ?: BigDecimal.ZERO
+        lateScaleOutRatio = r.scalpLateScaleOutRatio?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        spotLeadEnabled = r.scalpSpotLeadEnabled ?: false,
+        spotLeadSource = normalizeScalpSpotLeadSource(r.scalpSpotLeadSource),
+        spotLeadMaxAgeMs = r.scalpSpotLeadMaxAgeMs ?: 3000,
+        spotLeadFlipDistanceSigma = r.scalpSpotLeadFlipDistanceSigma?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        spotLeadWickVetoEnabled = r.scalpSpotLeadWickVetoEnabled ?: false,
+        spotLeadEarlyStopSeconds = r.scalpSpotLeadEarlyStopSeconds ?: 0,
+        spotLeadScaleOutRatio = r.scalpSpotLeadScaleOutRatio?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        lateScaleOutRequireSpotDanger = r.scalpLateScaleOutRequireSpotDanger ?: false
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2354,7 +2392,15 @@ class CryptoTailStrategyService(
         emergencyRetryIntervalMs = r.scalpEmergencyRetryIntervalMs ?: e.scalpEmergencyRetryIntervalMs,
         lateIgnoreWorstPriceSeconds = r.scalpLateIgnoreWorstPriceSeconds ?: e.scalpLateIgnoreWorstPriceSeconds,
         lateScaleOutSeconds = r.scalpLateScaleOutSeconds ?: e.scalpLateScaleOutSeconds,
-        lateScaleOutRatio = r.scalpLateScaleOutRatio?.toSafeBigDecimal() ?: e.scalpLateScaleOutRatio
+        lateScaleOutRatio = r.scalpLateScaleOutRatio?.toSafeBigDecimal() ?: e.scalpLateScaleOutRatio,
+        spotLeadEnabled = r.scalpSpotLeadEnabled ?: e.scalpSpotLeadEnabled,
+        spotLeadSource = r.scalpSpotLeadSource?.let { normalizeScalpSpotLeadSource(it) } ?: e.scalpSpotLeadSource,
+        spotLeadMaxAgeMs = r.scalpSpotLeadMaxAgeMs ?: e.scalpSpotLeadMaxAgeMs,
+        spotLeadFlipDistanceSigma = r.scalpSpotLeadFlipDistanceSigma?.toSafeBigDecimal() ?: e.scalpSpotLeadFlipDistanceSigma,
+        spotLeadWickVetoEnabled = r.scalpSpotLeadWickVetoEnabled ?: e.scalpSpotLeadWickVetoEnabled,
+        spotLeadEarlyStopSeconds = r.scalpSpotLeadEarlyStopSeconds ?: e.scalpSpotLeadEarlyStopSeconds,
+        spotLeadScaleOutRatio = r.scalpSpotLeadScaleOutRatio?.toSafeBigDecimal() ?: e.scalpSpotLeadScaleOutRatio,
+        lateScaleOutRequireSpotDanger = r.scalpLateScaleOutRequireSpotDanger ?: e.scalpLateScaleOutRequireSpotDanger
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2416,6 +2462,12 @@ class CryptoTailStrategyService(
         if (sc.lateIgnoreWorstPriceSeconds < 0) return false
         if (sc.lateScaleOutSeconds < 0) return false
         if (sc.lateScaleOutRatio < zero || sc.lateScaleOutRatio > one) return false
+        // 现货价领先早警（V93）：新鲜度毫秒 >= 0（<=0=不校验 age）；近翻转 σ 阈值 >= 0（0=仅实际穿价）；
+        // 早警窗口秒 >= 0（0=关）；减仓比例 ∈ [0,1]（0=关）。spotLeadSource 已归一化。
+        if (sc.spotLeadMaxAgeMs < 0) return false
+        if (sc.spotLeadFlipDistanceSigma < zero) return false
+        if (sc.spotLeadEarlyStopSeconds < 0) return false
+        if (sc.spotLeadScaleOutRatio < zero || sc.spotLeadScaleOutRatio > one) return false
         return true
     }
 
@@ -2672,7 +2724,15 @@ class CryptoTailStrategyService(
                 scalpEmergencyRetryIntervalMs = e.scalpEmergencyRetryIntervalMs,
                 scalpLateIgnoreWorstPriceSeconds = e.scalpLateIgnoreWorstPriceSeconds,
                 scalpLateScaleOutSeconds = e.scalpLateScaleOutSeconds,
-                scalpLateScaleOutRatio = e.scalpLateScaleOutRatio.toPlainString()
+                scalpLateScaleOutRatio = e.scalpLateScaleOutRatio.toPlainString(),
+                scalpSpotLeadEnabled = e.scalpSpotLeadEnabled,
+                scalpSpotLeadSource = e.scalpSpotLeadSource,
+                scalpSpotLeadMaxAgeMs = e.scalpSpotLeadMaxAgeMs,
+                scalpSpotLeadFlipDistanceSigma = e.scalpSpotLeadFlipDistanceSigma.toPlainString(),
+                scalpSpotLeadWickVetoEnabled = e.scalpSpotLeadWickVetoEnabled,
+                scalpSpotLeadEarlyStopSeconds = e.scalpSpotLeadEarlyStopSeconds,
+                scalpSpotLeadScaleOutRatio = e.scalpSpotLeadScaleOutRatio.toPlainString(),
+                scalpLateScaleOutRequireSpotDanger = e.scalpLateScaleOutRequireSpotDanger
             ),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt

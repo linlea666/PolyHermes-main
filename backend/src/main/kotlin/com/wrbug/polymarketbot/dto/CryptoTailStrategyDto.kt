@@ -281,7 +281,16 @@ data class CryptoTailStrategyCreateRequest(
     val scalpEmergencyRetryIntervalMs: Int? = null,
     val scalpLateIgnoreWorstPriceSeconds: Int? = null,
     val scalpLateScaleOutSeconds: Int? = null,
-    val scalpLateScaleOutRatio: String? = null
+    val scalpLateScaleOutRatio: String? = null,
+    // ===== 现货价领先早警 SCALP_FLIP（V93，均可选，null 走默认）=====
+    val scalpSpotLeadEnabled: Boolean? = null,
+    val scalpSpotLeadSource: String? = null,
+    val scalpSpotLeadMaxAgeMs: Int? = null,
+    val scalpSpotLeadFlipDistanceSigma: String? = null,
+    val scalpSpotLeadWickVetoEnabled: Boolean? = null,
+    val scalpSpotLeadEarlyStopSeconds: Int? = null,
+    val scalpSpotLeadScaleOutRatio: String? = null,
+    val scalpLateScaleOutRequireSpotDanger: Boolean? = null
 )
 
 /**
@@ -535,7 +544,16 @@ data class CryptoTailStrategyUpdateRequest(
     val scalpEmergencyRetryIntervalMs: Int? = null,
     val scalpLateIgnoreWorstPriceSeconds: Int? = null,
     val scalpLateScaleOutSeconds: Int? = null,
-    val scalpLateScaleOutRatio: String? = null
+    val scalpLateScaleOutRatio: String? = null,
+    // ===== 现货价领先早警 SCALP_FLIP（V93，均可选，null 保留旧值）=====
+    val scalpSpotLeadEnabled: Boolean? = null,
+    val scalpSpotLeadSource: String? = null,
+    val scalpSpotLeadMaxAgeMs: Int? = null,
+    val scalpSpotLeadFlipDistanceSigma: String? = null,
+    val scalpSpotLeadWickVetoEnabled: Boolean? = null,
+    val scalpSpotLeadEarlyStopSeconds: Int? = null,
+    val scalpSpotLeadScaleOutRatio: String? = null,
+    val scalpLateScaleOutRequireSpotDanger: Boolean? = null
 )
 
 /**
@@ -618,7 +636,16 @@ data class CryptoTailStrategyScalpDto(
     val scalpEmergencyRetryIntervalMs: Int = 150,
     val scalpLateIgnoreWorstPriceSeconds: Int = 0,
     val scalpLateScaleOutSeconds: Int = 0,
-    val scalpLateScaleOutRatio: String = "0"
+    val scalpLateScaleOutRatio: String = "0",
+    // ===== 现货价领先早警 SCALP_FLIP（V93）=====
+    val scalpSpotLeadEnabled: Boolean = false,
+    val scalpSpotLeadSource: String = "BINANCE",
+    val scalpSpotLeadMaxAgeMs: Int = 3000,
+    val scalpSpotLeadFlipDistanceSigma: String = "0",
+    val scalpSpotLeadWickVetoEnabled: Boolean = false,
+    val scalpSpotLeadEarlyStopSeconds: Int = 0,
+    val scalpSpotLeadScaleOutRatio: String = "0",
+    val scalpLateScaleOutRequireSpotDanger: Boolean = false
 )
 
 /**
