@@ -94,7 +94,7 @@ class CryptoTailOrderbookCacheTest {
         )
         // 自愈：剪掉 < 0.58 的陈旧卖档 0.55，bestAsk 修正为 0.58（杜绝偏低 ask 致 FAK 限价过低）
         assertEquals("0.58", result.snapshot!!.bestAsk!!.toPlainString())
-        // 诊断：自愈确实剪掉了 1 档（漏包信号），供 SELF_HEAL WARN 使用
+        // 诊断：自愈确实剪掉了 1 档（漏包信号），供 SELF_HEAL 心跳计数使用
         assertEquals(1, result.prunedLevels)
     }
 
@@ -122,6 +122,23 @@ class CryptoTailOrderbookCacheTest {
         val snap = cache.latestSnapshot(token)!!
         assertEquals(0L, snap.askAgeMs(5000))
         assertEquals(0L, snap.quoteAgeMs(5000))
+    }
+
+    @Test
+    fun `feed age tracks last frame across tokens and is null before any frame`() {
+        val cache = CryptoTailOrderbookCache()
+        // 从未收帧：行情源未存活
+        assertNull(cache.feedAgeMs(1000))
+
+        // tokenA 收到 book → 全局收帧时刻刷新
+        cache.applyBook("A", listOf(bid("0.50", "100")), listOf(ask("0.55", "100")), 1000)
+        assertEquals(0L, cache.feedAgeMs(1000))
+        assertEquals(500L, cache.feedAgeMs(1500))
+
+        // tokenB 的 price_change（即便 B 尚未播种）也算行情源活跃 → 刷新全局收帧时刻
+        cache.applyPriceChange("B", emptyList(), BigDecimal("0.40"), BigDecimal("0.42"), 2000)
+        assertEquals(0L, cache.feedAgeMs(2000))
+        assertEquals(300L, cache.feedAgeMs(2300))
     }
 
     @Test

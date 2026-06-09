@@ -39,6 +39,7 @@ import com.github.benmanes.caffeine.cache.Caffeine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import jakarta.annotation.PreDestroy
 import java.math.BigDecimal
@@ -102,7 +103,8 @@ class CryptoTailStrategyExecutionService(
     private val boostService: CryptoTailBoostService,
     private val tailDiffDecisionService: CryptoTailTailDiffDecisionService,
     private val tailDiffEntrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
-    private val reversalStatsLookup: TailReversalStatsLookup
+    private val reversalStatsLookup: TailReversalStatsLookup,
+    @Value("\${crypto-tail.scalp.ws-feed-alive-bound-ms:2000}") private val scalpWsFeedAliveBoundMs: Long
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailStrategyExecutionService::class.java)
@@ -2229,8 +2231,17 @@ class CryptoTailStrategyExecutionService(
      *    否则回退 REST，避免用 price_change 复用的陈旧 bidDepthUsd 误判深度门。
      * 任一不满足返回 null（照常 REST 重拉，零回归）。
      */
-    /** WS 主取数结果：[snapshot] 非空表示可用 WS 实时帧跳过 REST；为空时 [reason] 记录回退 REST 的原因（观测用） */
-    private data class WsPick(val snapshot: OrderbookQualitySnapshot?, val reason: String)
+    /**
+     * WS 主取数结果：[snapshot] 非空表示可用 WS 实时帧跳过 REST；为空时 [reason] 记录回退 REST 的原因（观测用）。
+     * [acceptPath]：命中 WS 时的接受路径——"fast"=单腿 quote/ask 够新；"feedAlive"=单腿稍旧但行情源整体存活。
+     * [feedAgeMs]：行情源最近收帧距今毫秒（feedAlive/feedDead 时有值），供日志定位"安静腿误杀 vs 连接真失活"。
+     */
+    private data class WsPick(
+        val snapshot: OrderbookQualitySnapshot?,
+        val reason: String,
+        val acceptPath: String = "",
+        val feedAgeMs: Long? = null
+    )
 
     private fun pickLiveWsOrderbook(
         strategy: CryptoTailStrategy,
@@ -2239,20 +2250,32 @@ class CryptoTailStrategyExecutionService(
         if (strategy.mode != TradingMode.SCALP_FLIP) return WsPick(null, "disabled")
         if (strategy.scalpWsFreshnessSkipRestMs <= 0) return WsPick(null, "disabled")
         val ws = orderbookCache.latestSnapshot(tokenId) ?: return WsPick(null, "noWsFrame")
-        if (ws.bestAsk == null) return WsPick(null, "noAsk")
+        val ask = ws.bestAsk ?: return WsPick(null, "noAsk")
+        // 真交叉(bestAsk < bestBid)为坏数据，回退 REST 防止据此定出错误限价；bid==ask 是最小 tick 锁定盘(可买)，不算交叉。
+        if (ask < ws.bestBid) return WsPick(null, "crossed")
         val nowMs = System.currentTimeMillis()
-        if (ws.quoteAgeMs(nowMs) > strategy.scalpWsFreshnessSkipRestMs) return WsPick(null, "quoteStale")
-        // ask 陈旧防护：L2 重建下每条 price_change 都用 best_ask hint 自愈卖档顶部，askUpdatedAtMs 随报价刷新；
-        // 仍保留此门兜底——若 ask 未在新鲜窗口内更新则回退 REST，杜绝偏低 ask 致 FAK 限价过低被 kill。
-        val askAge = ws.askAgeMs(nowMs)
-        if (askAge == null || askAge > strategy.scalpWsFreshnessSkipRestMs) return WsPick(null, "askStale")
-        // L2 重建后 depthStale 恒为 false（深度随增量持续维护），深度门可直接用 WS 帧通过；
-        // 若未播种(冷启动)则上游 latestSnapshot 为空，已在 noWsFrame 分支兜底。
+        // 深度门优先于新鲜度判定：深度不足直接回退 REST（与原行为一致，且对 fast/feedAlive 两路统一适用）。
+        // L2 重建后 depthStale 恒为 false（深度随增量持续维护）；若未播种(冷启动)则上游 latestSnapshot 为空，已在 noWsFrame 兜底。
         val minExitDepth = strategy.scalpMinExitBidDepthUsdc
         if (minExitDepth != null && minExitDepth > BigDecimal.ZERO) {
             if (ws.depthStale || ws.bidDepthUsd == null) return WsPick(null, "depthStale")
         }
-        return WsPick(ws, "WS_LIVE")
+        // 快路径（原行为，零回归）：单腿 quote 与 ask 均在 scalpWsFreshnessSkipRestMs 新鲜窗口内。
+        val quoteFresh = ws.quoteAgeMs(nowMs) <= strategy.scalpWsFreshnessSkipRestMs
+        val askAge = ws.askAgeMs(nowMs)
+        val askFresh = askAge != null && askAge <= strategy.scalpWsFreshnessSkipRestMs
+        if (quoteFresh && askFresh) return WsPick(ws, "WS_LIVE", acceptPath = "fast")
+        // 放宽路径（纯追加）：单腿稍旧但行情源整体存活时仍采用 WS——L2 盘口权威常驻，安静腿没新帧≠数据陈旧，
+        // 远胜回退 ~700ms+ 的陈旧 REST。真半死连接(全局长时间无帧)走下方 feedDead 回退 REST。
+        if (scalpWsFeedAliveBoundMs > 0) {
+            val feedAge = orderbookCache.feedAgeMs(nowMs)
+            if (feedAge != null && feedAge <= scalpWsFeedAliveBoundMs) {
+                return WsPick(ws, "WS_LIVE", acceptPath = "feedAlive", feedAgeMs = feedAge)
+            }
+            return WsPick(null, "feedDead", feedAgeMs = feedAge)
+        }
+        // 放宽关闭(=0)：保持旧行为，按具体陈旧原因回退 REST。
+        return WsPick(null, if (!quoteFresh) "quoteStale" else "askStale")
     }
 
     /**
@@ -2623,6 +2646,8 @@ class CryptoTailStrategyExecutionService(
                 "tk" to wsDiag.shortToken(tokenId),
                 "src" to (if (restSkipped) "WS_LIVE" else if (refreshedOrderbook != null) "REST" else "NONE"),
                 "reason" to (restFallbackReason ?: ""),
+                "acceptPath" to wsPick.acceptPath,
+                "feedAgeMs" to (wsPick.feedAgeMs ?: ""),
                 "bestBid" to effectiveBestBid.toPlainString(),
                 "bestAsk" to (effectiveBestAsk?.toPlainString() ?: ""),
                 "bidDepth" to (refreshedOrderbook?.bidDepthUsd?.toPlainString() ?: ""),

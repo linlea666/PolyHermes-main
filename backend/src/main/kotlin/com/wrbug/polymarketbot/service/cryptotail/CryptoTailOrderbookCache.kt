@@ -38,6 +38,19 @@ class CryptoTailOrderbookCache {
 
     private val books = ConcurrentHashMap<String, BookState>()
 
+    /**
+     * 全局最近收到任意帧（任意 token 的 book/price_change）的时刻，用于"行情源存活"判定：
+     * L2 重建后本地盘口是权威常驻的，"某腿一段时间没新帧"≠"数据陈旧"（安静腿没成交=盘口未变=仍准确）。
+     * 故执行侧不应仅凭单腿 quoteAge 就误判 WS 陈旧而回退陈旧 REST；只要行情源整体活着（近期有任意帧），
+     * 单腿的较旧快照仍可信。真半死连接（全局长时间无帧）则该值停更，据此回退 REST。
+     */
+    @Volatile
+    private var lastAnyUpdateAtMs: Long = 0L
+
+    /** 行情源存活距今毫秒：从未收过帧返回 null（冷启动，按未存活处理） */
+    fun feedAgeMs(nowMs: Long = System.currentTimeMillis()): Long? =
+        if (lastAnyUpdateAtMs == 0L) null else (nowMs - lastAnyUpdateAtMs).coerceAtLeast(0L)
+
     /** book 全量快照到达：清空并按快照重填。bids 为空 snapshot=null（与旧行为一致，不发布无买价快照） */
     fun applyBook(
         tokenId: String,
@@ -45,6 +58,7 @@ class CryptoTailOrderbookCache {
         askLevels: List<OrderbookQualitySnapshot.BookLevel>,
         nowMs: Long = System.currentTimeMillis()
     ): ApplyResult {
+        lastAnyUpdateAtMs = nowMs
         val state = books.getOrPut(tokenId) { BookState(tokenId) }
         return state.applyBook(bidLevels, askLevels, nowMs)
     }
@@ -57,6 +71,8 @@ class CryptoTailOrderbookCache {
         bestAskHint: BigDecimal?,
         nowMs: Long = System.currentTimeMillis()
     ): ApplyResult {
+        // 收到帧即视为行情源活跃（即便该 token 尚未播种）：用于全局存活判定，不影响单 token 播种语义
+        lastAnyUpdateAtMs = nowMs
         val state = books[tokenId] ?: return ApplyResult(null, 0, seeded = false)
         return state.applyPriceChange(changes, bestBidHint, bestAskHint, nowMs)
     }

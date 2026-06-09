@@ -10,8 +10,9 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * 统一输出单行 `CT-WS evt=<事件> k=v ...`，便于按 `cid`/`tk`/`evt` grep 定位：
  *  - [event]：INFO 级里程碑（连接、订阅、进场链路 TRIGGER→PICK→PRICE→SUBMIT→RESULT），受 [enabled] 控制。
- *  - [heartbeat]：INFO 级行情心跳，每 token 按 [heartbeatIntervalMs] 节流，受 [enabled] 控制。
- *  - [warn]：WARN 级异常（自愈剪档/交叉盘/冷启动/tick_size），**始终输出**，不受 [enabled] 控制。
+ *  - [heartbeat]：INFO 级行情心跳，每 token 按 [heartbeatIntervalMs] 节流，受 [enabled] 控制；
+ *    自愈剪档/交叉盘改为累计计数随心跳输出（selfHeal/crossed），避免逐帧 WARN 刷屏。
+ *  - [warn]：WARN 级异常（冷启动/tick_size 切换/连接失败），**始终输出**，不受 [enabled] 控制。
  *
  * cid 约定复用 `"$strategyId-$periodStartUnix"`，与决策事件一致，可跨容器日志与决策日志关联。
  */
@@ -21,7 +22,9 @@ class CryptoTailWsDiag(
     @Value("\${crypto-tail.ws-diag.heartbeat-interval-ms:5000}") private val heartbeatIntervalMs: Long
 ) {
 
-    private val logger = LoggerFactory.getLogger("CryptoTailWsDiag")
+    // logger 名必须落在 com.wrbug.polymarketbot 包层级下，否则裸名 logger 继承 ROOT(=WARN)，
+    // 导致 event()/heartbeat() 的 INFO 全程被丢弃（全流程诊断形同虚设，仅 warn 可见）。用类名挂到包层级。
+    private val logger = LoggerFactory.getLogger(CryptoTailWsDiag::class.java)
     private val lastHeartbeatAt = ConcurrentHashMap<String, Long>()
 
     val isEnabled: Boolean get() = enabled

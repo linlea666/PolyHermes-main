@@ -115,6 +115,14 @@ class CryptoTailOrderbookWsService(
     private val wsDiagBookCount = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
     private val wsDiagPcCount = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
 
+    /**
+     * WS 诊断：每 token 累计自愈剪档帧数 / 交叉盘帧数。
+     * 原实现每帧逐条 WARN（实测 27 分钟刷屏 4000+ 条，淹没真实信号），改为累计计数随心跳输出区间增量，
+     * 既保留丢包/交叉的健康观测（selfHeal/crossed 增长率），又消除刷屏。
+     */
+    private val wsDiagSelfHealCount = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+    private val wsDiagCrossedCount = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
     /** WS 诊断：上次断连时刻，用于量化重连缺口 */
     private val wsLastDisconnectAtMs = java.util.concurrent.atomic.AtomicLong(0)
 
@@ -292,7 +300,9 @@ class CryptoTailOrderbookWsService(
                     (pc.get("best_bid") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal()?.let { bidHintByAsset[assetId] = it }
                     (pc.get("best_ask") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal()?.let { askHintByAsset[assetId] = it }
                 }
-                for (assetId in (changesByAsset.keys + bidHintByAsset.keys)) {
+                // 资产并集并入 askHintByAsset.keys：仅含 best_ask（无 change、无 best_bid）的帧也需应用一次卖档自愈，
+                // 否则会丢失该帧的 ask 顶档校验（罕见，但属正确性缺口）。
+                for (assetId in (changesByAsset.keys + bidHintByAsset.keys + askHintByAsset.keys)) {
                     val result = orderbookCache.applyPriceChange(
                         assetId,
                         changesByAsset[assetId] ?: emptyList(),
@@ -310,20 +320,17 @@ class CryptoTailOrderbookWsService(
                         continue
                     }
                     if (result.prunedLevels > 0) {
-                        // 自愈剪档：用权威 best_bid/ask 剪掉残留陈旧档，说明此前漏过该档的更新（丢包信号）
-                        wsDiag.warn(
-                            "SELF_HEAL",
-                            "tk" to wsDiag.shortToken(assetId),
-                            "pruned" to result.prunedLevels,
-                            "bestBid" to (bidHintByAsset[assetId]?.toPlainString() ?: ""),
-                            "bestAsk" to (askHintByAsset[assetId]?.toPlainString() ?: "")
-                        )
+                        // 自愈剪档：用权威 best_bid/ask 剪掉残留陈旧档，说明此前漏过该档的更新（丢包信号）。
+                        // 改累计计数随心跳输出（避免逐帧 WARN 刷屏），按帧计 1 次。
+                        wsDiagSelfHealCount.getOrPut(assetId) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
                     }
                     val snapshot = result.snapshot ?: continue
                     val bid = snapshot.bestBid
                     val ask = snapshot.bestAsk
-                    if (ask != null && bid >= ask) {
-                        wsDiag.warn("CROSSED", "tk" to wsDiag.shortToken(assetId), "bestBid" to bid.toPlainString(), "bestAsk" to ask.toPlainString())
+                    // 真交叉用 bid > ask 判定：bid == ask 是最小 tick 上的"锁定盘"（输家腿 0.01/0.01 常态），并非坏数据，
+                    // 用 >= 会把锁定盘全量误报为交叉（实测假阳占比 100%）。同样改累计计数随心跳输出。
+                    if (ask != null && bid > ask) {
+                        wsDiagCrossedCount.getOrPut(assetId) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
                     }
                     emitWsHeartbeat(assetId, snapshot, feedLagMs)
                     onBestBid(assetId, snapshot)
@@ -364,6 +371,8 @@ class CryptoTailOrderbookWsService(
             "askLv" to snapshot.askLevels.size,
             "books" to (wsDiagBookCount[assetId]?.get() ?: 0),
             "pcs" to (wsDiagPcCount[assetId]?.get() ?: 0),
+            "selfHeal" to (wsDiagSelfHealCount[assetId]?.get() ?: 0),
+            "crossed" to (wsDiagCrossedCount[assetId]?.get() ?: 0),
             "feedLagMs" to feedLagMs
         )
     }
@@ -525,6 +534,8 @@ class CryptoTailOrderbookWsService(
             wsDiagColdWarned.retainAll(activeTokens)
             wsDiagBookCount.keys.retainAll(activeTokens)
             wsDiagPcCount.keys.retainAll(activeTokens)
+            wsDiagSelfHealCount.keys.retainAll(activeTokens)
+            wsDiagCrossedCount.keys.retainAll(activeTokens)
             if (tokenIds.isEmpty()) {
                 closeWebSocketForNoStrategies()
                 return
