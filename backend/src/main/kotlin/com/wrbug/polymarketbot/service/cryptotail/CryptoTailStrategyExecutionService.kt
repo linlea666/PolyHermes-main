@@ -1880,6 +1880,68 @@ class CryptoTailStrategyExecutionService(
         )
     }
 
+    /**
+     * 快进快出（SCALP_FLIP）入场单提交快照：发 ORDER_SUBMITTED 决策事件，供成交快照投影/复盘因子读取进场口径。
+     *
+     * 背景：SCALP 进场原先只记 ORDER_RESULT/SETTLED，从不记 ORDER_SUBMITTED，导致投影器建出的快照
+     *   submitTs 与进场字段(gap/pWin/safeRatio)全空，使复盘因子的回填(按 submitTs 过滤)与页面日期过滤(按 entryTs)
+     *   将 SCALP 全部排除。此处补记，使 SCALP 与 BARRIER/BRACKET 同口径进入复盘因子链路。
+     *
+     * 复用决策：独立新写（不复用 recordOrderSubmitted/recordBracketOrderSubmitted，二者强依赖 BarrierMetrics，
+     *   而 SCALP 只有 ScalpEntrySignal；强行复用会引入坏耦合）。进场信号取自入场时冻结的 scalpEntrySnapshotCache
+     *   （此刻尚未被 saveTriggerRecord 清理）；价源不可用时信号为空（与历史 graceful 降级一致，留空不阻断）。
+     *   open/close/σ 不在 SCALP 信号内，留空（投影器对 null 容忍）。盘口刷新/定价诊断字段复用既有 *Payload 辅助。
+     */
+    private fun recordScalpOrderSubmitted(
+        strategy: CryptoTailStrategy,
+        periodStartUnix: Long,
+        outcomeIndex: Int,
+        bestBid: BigDecimal,
+        bestAsk: BigDecimal?,
+        targetPrice: BigDecimal,
+        pricing: CryptoTailFakPricingPolicy.Result? = null,
+        orderbookRefreshed: Boolean = false,
+        preRefreshOrderbook: OrderbookQualitySnapshot? = null,
+        refreshedOrderbook: OrderbookQualitySnapshot? = null,
+        restSkipped: Boolean = false,
+        tokenId: String? = null
+    ) {
+        val signal = scalpEntrySnapshotCache.getIfPresent(tailDiffSnapshotKey(strategy.id!!, periodStartUnix, outcomeIndex))
+        val remainingSeconds = signal?.remainingSeconds
+            ?: (periodStartUnix + strategy.intervalSeconds - System.currentTimeMillis() / 1000).toInt()
+        val mid = bestAsk?.let { bestBid.add(it).divide(BigDecimal(2), 8, RoundingMode.HALF_UP) } ?: bestBid
+        val payload = mapOf(
+            "mode" to "SCALP_FLIP",
+            "marketSlug" to strategy.marketSlugPrefix,
+            "intervalSeconds" to strategy.intervalSeconds,
+            "gap" to (signal?.gap?.toPlainString() ?: ""),
+            "pWin" to (signal?.pWin?.toPlainString() ?: ""),
+            "modelSide" to (signal?.modelSide?.toString() ?: ""),
+            "safeRatio" to (signal?.safeRatio?.toPlainString() ?: ""),
+            "remainingSeconds" to remainingSeconds.toLong().toString(),
+            "bestBid" to bestBid.toPlainString(),
+            "bestAsk" to (bestAsk?.toPlainString() ?: ""),
+            "outcomeBestBid" to bestBid.toPlainString(),
+            "outcomeBestAsk" to (bestAsk?.toPlainString() ?: ""),
+            "spread" to (bestAsk?.subtract(bestBid)?.toPlainString() ?: ""),
+            "mid" to mid.toPlainString(),
+            "orderType" to "FAK",
+            "targetPrice" to targetPrice.toPlainString(),
+            "scalpEntryMinPrice" to strategy.scalpEntryMinPrice.toPlainString(),
+            "scalpEntryMaxPrice" to strategy.scalpEntryMaxPrice.toPlainString(),
+            "scalpEntryMinPwin" to strategy.scalpEntryMinPwin.toPlainString(),
+            "effectiveAmountUsdc" to strategy.amountValue.toPlainString()
+        ).plus(pricingPayload(pricing, orderbookRefreshed))
+            .plus(orderbookRefreshPayload(preRefreshOrderbook, refreshedOrderbook, orderbookRefreshed, restSkipped))
+            .toJson()
+        recordDecisionOncePerPeriod(
+            strategy, periodStartUnix, "ORDER_SUBMITTED", outcomeIndex,
+            eventType = "ORDER_SUBMITTED", gateName = null, passed = null,
+            reason = "已提交快进快出入场单 目标价=${targetPrice.toPlainString()} 剩余=${remainingSeconds}s",
+            payloadJson = payload, triggerId = null, tokenId = tokenId
+        )
+    }
+
     private fun recordEvSafeLimitRejected(
         strategy: CryptoTailStrategy,
         periodStartUnix: Long,
@@ -2597,6 +2659,8 @@ class CryptoTailStrategyExecutionService(
                 recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, scaling, amountOverrideUsdc, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, restSkipped, tokenId)
             } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
                 recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, restSkipped, tokenId)
+            } else if (strategy.mode == TradingMode.SCALP_FLIP) {
+                recordScalpOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveBestBid, effectiveBestAsk, price, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, restSkipped, tokenId)
             }
             val priceStr = price.toPlainString()
             val size = computeSize(amountUsdc, price)
@@ -3099,6 +3163,8 @@ class CryptoTailStrategyExecutionService(
             recordOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, null, null, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, restSkipped, tokenId)
         } else if (strategy.mode == TradingMode.BRACKET_DYNAMIC) {
             recordBracketOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveMetrics, effectiveBestBid, effectiveBestAsk, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, restSkipped, tokenId)
+        } else if (strategy.mode == TradingMode.SCALP_FLIP) {
+            recordScalpOrderSubmitted(strategy, periodStartUnix, outcomeIndex, effectiveBestBid, effectiveBestAsk, price, pricing, orderbookRefreshed, preRefreshOrderbook, refreshedOrderbook, restSkipped, tokenId)
         }
         // 根据模式确定下单价格
         val priceStr = price.toPlainString()
