@@ -1,5 +1,7 @@
 package com.wrbug.polymarketbot.dto
 
+import com.fasterxml.jackson.annotation.JsonUnwrapped
+
 /**
  * 加密价差策略创建请求
  * 金额与价格使用 String，后端转为 BigDecimal
@@ -545,6 +547,81 @@ data class CryptoTailStrategyListRequest(
 )
 
 /**
+ * 快进快出模式 SCALP_FLIP 配置子 DTO（V77/V91/V92，响应回显，默认值 = 实体默认）。
+ *
+ * 拆分原因：CryptoTailStrategyDto 字段持续增长，Kotlin 为"全默认值 data class"生成的合成
+ * 默认构造器 / copy$default 的参数槽数（字段 + 位掩码 int + marker）一旦超过 JVM 单方法 255 槽
+ * 上限，类加载即抛 ClassFormatError: Too many arguments in method signature。
+ * 将 SCALP 块抽成子对象可同时降低父类与子类的参数数；父类用 @JsonUnwrapped 在序列化时把本对象
+ * 字段平铺回顶层，对外 JSON 结构保持不变（前端零改动）。后续新增 SCALP 参数请加在这里。
+ */
+data class CryptoTailStrategyScalpDto(
+    val scalpEntryMinPrice: String = "0.96",
+    val scalpEntryMaxPrice: String = "0.97",
+    val scalpMaxFillPrice: String = "0.975",
+    val scalpWindowStartSeconds: Int = 0,
+    val scalpWindowEndSeconds: Int = 0,
+    val scalpMinRemainingSeconds: Int = 30,
+    val scalpMinExitBidDepthUsdc: String? = null,
+    val scalpReversalGateEnabled: Boolean = true,
+    val scalpMinModelProb: String = "0.95",
+    val scalpMinEdge: String = "0",
+    val scalpStatsSource: String = "HYBRID",
+    val scalpStatsLookbackDays: Int = 180,
+    val scalpStatsMinSamples: Int = 30,
+    val scalpRequireStats: Boolean = false,
+    val scalpMaxConcurrentSameDirection: Int? = null,
+    val scalpHoldWinnerToSettle: Boolean = true,
+    val scalpTpPrice: String = "0.99",
+    val scalpStopEnabled: Boolean = true,
+    val scalpStopOffset: String = "0.05",
+    val scalpStopMinPrice: String = "0.90",
+    val scalpMinOddsAfterEntry: String = "0.93",
+    val scalpUnderlyingStopEnabled: Boolean = true,
+    val scalpUnderlyingStopSigma: String = "0.30",
+    val scalpReverseVelocityStopEnabled: Boolean = true,
+    val scalpMaxReverseVelocitySigma: String = "0.40",
+    val scalpReverseVelocityWindowSeconds: Int = 10,
+    val scalpMinModelProbAfterEntry: String = "0",
+    val scalpMaxDiffRetracePct: String = "0",
+    val scalpCatastropheBidFloor: String = "0.88",
+    val scalpCatastropheImmediate: Boolean = true,
+    val scalpCatastropheFloorRatio: String = "0.85",
+    val scalpWsFreshnessSkipRestMs: Int = 500,
+    val scalpEntryRequoteMax: Int = 2,
+    val scalpRequireUnderlyingAgreement: Boolean = true,
+    val scalpEntryMinPwin: String = "0.90",
+    val scalpSmartStopMinPwin: String = "0.70",
+    val scalpSmartStopMinSafeRatio: String = "1.30",
+    val scalpHardFloorRatio: String = "0.50",
+    val scalpDailyLossLimitUsdc: String? = null,
+    val scalpConsecLossPauseCount: Int = 2,
+    val scalpConsecLossStopCount: Int = 3,
+    val scalpGapGateEnabled: Boolean = false,
+    val scalpMinEntryDiffSigma: String = "0",
+    val scalpMinEntryGapAbs: String = "0",
+    val scalpGapGateRemainingLo: Int = 0,
+    val scalpGapGateRemainingHi: Int = 0,
+    val scalpEvLimitMode: String = "CLAMP",
+    val scalpEvGuardMargin: String = "0.10",
+    // ===== 尾盘动态止损 SCALP_FLIP（V91）=====
+    val scalpLateStopEnabled: Boolean = false,
+    val scalpLateStopSeconds: Int = 15,
+    val scalpLatePeakDrawdown: String = "0.18",
+    val scalpLateBidFloor: String = "0.70",
+    val scalpDisableWickGuardOnLateStop: Boolean = true,
+    val scalpLateStopRequireWeakModel: Boolean = false,
+    // ===== 尾盘退出韧性 SCALP_FLIP（V92）=====
+    val scalpLateFastPollSeconds: Int = 0,
+    val scalpLateFastPollMs: Int = 300,
+    val scalpEmergencyRetryCount: Int = 0,
+    val scalpEmergencyRetryIntervalMs: Int = 150,
+    val scalpLateIgnoreWorstPriceSeconds: Int = 0,
+    val scalpLateScaleOutSeconds: Int = 0,
+    val scalpLateScaleOutRatio: String = "0"
+)
+
+/**
  * 加密价差策略 DTO（列表与详情）
  */
 data class CryptoTailStrategyDto(
@@ -759,69 +836,10 @@ data class CryptoTailStrategyDto(
     val tailDiffEnableKellyCap: Boolean = false,
     val tailDiffKellyFraction: String = "0.10",
     val tailDiffDepthFillRatio: String = "0",
-    // ===== 快进快出模式 SCALP_FLIP（V77，响应回显，默认值 = 实体默认）=====
-    val scalpEntryMinPrice: String = "0.96",
-    val scalpEntryMaxPrice: String = "0.97",
-    val scalpMaxFillPrice: String = "0.975",
-    val scalpWindowStartSeconds: Int = 0,
-    val scalpWindowEndSeconds: Int = 0,
-    val scalpMinRemainingSeconds: Int = 30,
-    val scalpMinExitBidDepthUsdc: String? = null,
-    val scalpReversalGateEnabled: Boolean = true,
-    val scalpMinModelProb: String = "0.95",
-    val scalpMinEdge: String = "0",
-    val scalpStatsSource: String = "HYBRID",
-    val scalpStatsLookbackDays: Int = 180,
-    val scalpStatsMinSamples: Int = 30,
-    val scalpRequireStats: Boolean = false,
-    val scalpMaxConcurrentSameDirection: Int? = null,
-    val scalpHoldWinnerToSettle: Boolean = true,
-    val scalpTpPrice: String = "0.99",
-    val scalpStopEnabled: Boolean = true,
-    val scalpStopOffset: String = "0.05",
-    val scalpStopMinPrice: String = "0.90",
-    val scalpMinOddsAfterEntry: String = "0.93",
-    val scalpUnderlyingStopEnabled: Boolean = true,
-    val scalpUnderlyingStopSigma: String = "0.30",
-    val scalpReverseVelocityStopEnabled: Boolean = true,
-    val scalpMaxReverseVelocitySigma: String = "0.40",
-    val scalpReverseVelocityWindowSeconds: Int = 10,
-    val scalpMinModelProbAfterEntry: String = "0",
-    val scalpMaxDiffRetracePct: String = "0",
-    val scalpCatastropheBidFloor: String = "0.88",
-    val scalpCatastropheImmediate: Boolean = true,
-    val scalpCatastropheFloorRatio: String = "0.85",
-    val scalpWsFreshnessSkipRestMs: Int = 500,
-    val scalpEntryRequoteMax: Int = 2,
-    val scalpRequireUnderlyingAgreement: Boolean = true,
-    val scalpEntryMinPwin: String = "0.90",
-    val scalpSmartStopMinPwin: String = "0.70",
-    val scalpSmartStopMinSafeRatio: String = "1.30",
-    val scalpHardFloorRatio: String = "0.50",
-    val scalpDailyLossLimitUsdc: String? = null,
-    val scalpConsecLossPauseCount: Int = 2,
-    val scalpConsecLossStopCount: Int = 3,
-    val scalpGapGateEnabled: Boolean = false,
-    val scalpMinEntryDiffSigma: String = "0",
-    val scalpMinEntryGapAbs: String = "0",
-    val scalpGapGateRemainingLo: Int = 0,
-    val scalpGapGateRemainingHi: Int = 0,
-    val scalpEvLimitMode: String = "CLAMP",
-    val scalpEvGuardMargin: String = "0.10",
-    // ===== 尾盘动态止损 SCALP_FLIP（V91）=====
-    val scalpLateStopEnabled: Boolean = false,
-    val scalpLateStopSeconds: Int = 15,
-    val scalpLatePeakDrawdown: String = "0.18",
-    val scalpLateBidFloor: String = "0.70",
-    val scalpDisableWickGuardOnLateStop: Boolean = true,
-    val scalpLateStopRequireWeakModel: Boolean = false,
-    val scalpLateFastPollSeconds: Int = 0,
-    val scalpLateFastPollMs: Int = 300,
-    val scalpEmergencyRetryCount: Int = 0,
-    val scalpEmergencyRetryIntervalMs: Int = 150,
-    val scalpLateIgnoreWorstPriceSeconds: Int = 0,
-    val scalpLateScaleOutSeconds: Int = 0,
-    val scalpLateScaleOutRatio: String = "0",
+    // ===== 快进快出 SCALP_FLIP 配置（V77/V91/V92）：抽为子对象 + @JsonUnwrapped 扁平回显，
+    //       规避 JVM 单方法 255 参数槽上限（字段持续增长会使合成默认构造/copy$default 溢出 → ClassFormatError）=====
+    @get:JsonUnwrapped
+    val scalp: CryptoTailStrategyScalpDto = CryptoTailStrategyScalpDto(),
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )
