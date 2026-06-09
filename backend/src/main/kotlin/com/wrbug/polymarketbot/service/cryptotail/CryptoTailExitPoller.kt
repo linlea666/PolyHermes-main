@@ -90,7 +90,15 @@ class CryptoTailExitPoller(
         if (nowSeconds >= trigger.periodStartUnix + strategy.intervalSeconds) return false
         val remaining = trigger.remainingSize
         if (remaining == null || remaining <= BigDecimal.ZERO) return false
-        val intervalMs = strategy.exitPollIntervalMs.coerceAtLeast(500).toLong()
+        var intervalMs = strategy.exitPollIntervalMs.coerceAtLeast(500).toLong()
+        // V92 杠杆1 尾盘提速：remaining<=scalpLateFastPollSeconds 时降低巡检间隔，确保尾盘每个调度 tick 都不被跳过
+        // （真正的评估节流由 evaluateAndExit 同源处理；实际频率仍受 500ms 调度上限约束）。0=关（零回归）。
+        val remainingForPoll = (trigger.periodStartUnix + strategy.intervalSeconds - nowSeconds).toInt()
+        if (strategy.mode == TradingMode.SCALP_FLIP && strategy.scalpLateFastPollSeconds > 0 &&
+            remainingForPoll <= strategy.scalpLateFastPollSeconds
+        ) {
+            intervalMs = minOf(intervalMs, strategy.scalpLateFastPollMs.coerceAtLeast(100).toLong())
+        }
         val last = trigger.lastExitCheckAt
         return last == null || nowMs - last >= intervalMs
     }

@@ -159,7 +159,14 @@ const SCALP_DEFAULTS = {
   scalpLatePeakDrawdown: '0.18',
   scalpLateBidFloor: '0.70',
   scalpDisableWickGuardOnLateStop: true,
-  scalpLateStopRequireWeakModel: false
+  scalpLateStopRequireWeakModel: false,
+  scalpLateFastPollSeconds: 0,
+  scalpLateFastPollMs: 300,
+  scalpEmergencyRetryCount: 0,
+  scalpEmergencyRetryIntervalMs: 150,
+  scalpLateIgnoreWorstPriceSeconds: 0,
+  scalpLateScaleOutSeconds: 0,
+  scalpLateScaleOutRatio: '0'
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -217,7 +224,14 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpLatePeakDrawdown: record.scalpLatePeakDrawdown ?? SCALP_DEFAULTS.scalpLatePeakDrawdown,
   scalpLateBidFloor: record.scalpLateBidFloor ?? SCALP_DEFAULTS.scalpLateBidFloor,
   scalpDisableWickGuardOnLateStop: record.scalpDisableWickGuardOnLateStop ?? SCALP_DEFAULTS.scalpDisableWickGuardOnLateStop,
-  scalpLateStopRequireWeakModel: record.scalpLateStopRequireWeakModel ?? SCALP_DEFAULTS.scalpLateStopRequireWeakModel
+  scalpLateStopRequireWeakModel: record.scalpLateStopRequireWeakModel ?? SCALP_DEFAULTS.scalpLateStopRequireWeakModel,
+  scalpLateFastPollSeconds: record.scalpLateFastPollSeconds ?? SCALP_DEFAULTS.scalpLateFastPollSeconds,
+  scalpLateFastPollMs: record.scalpLateFastPollMs ?? SCALP_DEFAULTS.scalpLateFastPollMs,
+  scalpEmergencyRetryCount: record.scalpEmergencyRetryCount ?? SCALP_DEFAULTS.scalpEmergencyRetryCount,
+  scalpEmergencyRetryIntervalMs: record.scalpEmergencyRetryIntervalMs ?? SCALP_DEFAULTS.scalpEmergencyRetryIntervalMs,
+  scalpLateIgnoreWorstPriceSeconds: record.scalpLateIgnoreWorstPriceSeconds ?? SCALP_DEFAULTS.scalpLateIgnoreWorstPriceSeconds,
+  scalpLateScaleOutSeconds: record.scalpLateScaleOutSeconds ?? SCALP_DEFAULTS.scalpLateScaleOutSeconds,
+  scalpLateScaleOutRatio: record.scalpLateScaleOutRatio ?? SCALP_DEFAULTS.scalpLateScaleOutRatio
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -428,7 +442,14 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpLatePeakDrawdown: strOrUndef(v.scalpLatePeakDrawdown),
   scalpLateBidFloor: strOrUndef(v.scalpLateBidFloor),
   scalpDisableWickGuardOnLateStop: typeof v.scalpDisableWickGuardOnLateStop === 'boolean' ? v.scalpDisableWickGuardOnLateStop : undefined,
-  scalpLateStopRequireWeakModel: typeof v.scalpLateStopRequireWeakModel === 'boolean' ? v.scalpLateStopRequireWeakModel : undefined
+  scalpLateStopRequireWeakModel: typeof v.scalpLateStopRequireWeakModel === 'boolean' ? v.scalpLateStopRequireWeakModel : undefined,
+  scalpLateFastPollSeconds: numOrUndef(v.scalpLateFastPollSeconds),
+  scalpLateFastPollMs: numOrUndef(v.scalpLateFastPollMs),
+  scalpEmergencyRetryCount: numOrUndef(v.scalpEmergencyRetryCount),
+  scalpEmergencyRetryIntervalMs: numOrUndef(v.scalpEmergencyRetryIntervalMs),
+  scalpLateIgnoreWorstPriceSeconds: numOrUndef(v.scalpLateIgnoreWorstPriceSeconds),
+  scalpLateScaleOutSeconds: numOrUndef(v.scalpLateScaleOutSeconds),
+  scalpLateScaleOutRatio: strOrUndef(v.scalpLateScaleOutRatio)
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -3735,6 +3756,33 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpLateStopRequireWeakModel" label={t('cryptoTailStrategy.form.scalpLateStopRequireWeakModel')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpLateStopRequireWeakModelHint')}>
                 <Switch />
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpLateResilienceSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('cryptoTailStrategy.form.scalpLateResilienceSubsectionHint')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpLateFastPollSeconds" label={t('cryptoTailStrategy.form.scalpLateFastPollSeconds')} extra={t('cryptoTailStrategy.form.scalpLateFastPollSecondsHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpLateFastPollMs" label={t('cryptoTailStrategy.form.scalpLateFastPollMs')} extra={t('cryptoTailStrategy.form.scalpLateFastPollMsHint')}>
+                <InputNumber min={0} step={50} precision={0} style={{ width: '100%' }} addonAfter="ms" />
+              </Form.Item>
+              <Form.Item name="scalpEmergencyRetryCount" label={t('cryptoTailStrategy.form.scalpEmergencyRetryCount')} extra={t('cryptoTailStrategy.form.scalpEmergencyRetryCountHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="scalpEmergencyRetryIntervalMs" label={t('cryptoTailStrategy.form.scalpEmergencyRetryIntervalMs')} extra={t('cryptoTailStrategy.form.scalpEmergencyRetryIntervalMsHint')}>
+                <InputNumber min={0} step={50} precision={0} style={{ width: '100%' }} addonAfter="ms" />
+              </Form.Item>
+              <Form.Item name="scalpLateIgnoreWorstPriceSeconds" label={t('cryptoTailStrategy.form.scalpLateIgnoreWorstPriceSeconds')} extra={t('cryptoTailStrategy.form.scalpLateIgnoreWorstPriceSecondsHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpLateScaleOutSeconds" label={t('cryptoTailStrategy.form.scalpLateScaleOutSeconds')} extra={t('cryptoTailStrategy.form.scalpLateScaleOutSecondsHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpLateScaleOutRatio" label={t('cryptoTailStrategy.form.scalpLateScaleOutRatio')} extra={t('cryptoTailStrategy.form.scalpLateScaleOutRatioHint')}>
+                <InputNumber min={0} max={1} step={0.1} style={{ width: '100%' }} stringMode />
               </Form.Item>
             </>
           )}

@@ -962,6 +962,46 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_late_stop_require_weak_model", nullable = false)
     val scalpLateStopRequireWeakModel: Boolean = false,
 
+    /**
+     * 尾盘提速窗口（距结算剩余秒，V92 杠杆1）：remaining<=此值时把退出评估节流降到 scalpLateFastPollMs，
+     * 避免常规 exitPollIntervalMs(默认3000) 把尾盘评估拖到下一 tick。0=关（零回归）。仅 SCALP_FLIP 消费。
+     */
+    @Column(name = "scalp_late_fast_poll_seconds", nullable = false)
+    val scalpLateFastPollSeconds: Int = 0,
+
+    /** 尾盘提速最小评估间隔（毫秒，V92 杠杆1）：与危险区间隔取更小者；实际仍受 500ms 调度上限约束 */
+    @Column(name = "scalp_late_fast_poll_ms", nullable = false)
+    val scalpLateFastPollMs: Int = 300,
+
+    /**
+     * 紧急退出 FAK 失败快速重试次数（V92 杠杆2）：紧急 marketable FAK 提交硬失败(orderId 为空)时，
+     * 同次评估内重新签名并重试，以抓住瞬时回补的对手盘。0=关（仅沿用下一 tick 重试，行为不变）。仅 SCALP_FLIP 消费。
+     */
+    @Column(name = "scalp_emergency_retry_count", nullable = false)
+    val scalpEmergencyRetryCount: Int = 0,
+
+    /** 紧急退出 FAK 重试间隔（毫秒，V92 杠杆2） */
+    @Column(name = "scalp_emergency_retry_interval_ms", nullable = false)
+    val scalpEmergencyRetryIntervalMs: Int = 150,
+
+    /**
+     * 尾盘 marketable 窗口（距结算剩余秒，V92 杠杆3）：remaining<=此值时，连 softPriceExit(裸盘口跌破 minOdds)
+     * 也忽略 worstPrice 地板、按 MIN_PRICE 直发市价扫单，避免该卖却被地板挡住骑到归零。0=关（零回归）。仅 SCALP_FLIP 消费。
+     */
+    @Column(name = "scalp_late_ignore_worst_price_seconds", nullable = false)
+    val scalpLateIgnoreWorstPriceSeconds: Int = 0,
+
+    /**
+     * 尾盘主动减仓窗口（距结算剩余秒，V92 杠杆4）：remaining<=此值时，无视模型强挺(WICK_GUARD)按 scalpLateScaleOutRatio
+     * 主动减仓一次(复用 FORCE，全局仅一次)，用确定性小滑点换掉尾盘穿价归零的尾部风险。0=关（零回归）。仅 SCALP_FLIP 消费。
+     */
+    @Column(name = "scalp_late_scale_out_seconds", nullable = false)
+    val scalpLateScaleOutSeconds: Int = 0,
+
+    /** 尾盘主动减仓比例（V92 杠杆4）：(0,1]，与 scalpLateScaleOutSeconds 同 >0 才生效；0=关 */
+    @Column(name = "scalp_late_scale_out_ratio", nullable = false, precision = 20, scale = 8)
+    val scalpLateScaleOutRatio: BigDecimal = BigDecimal.ZERO,
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 

@@ -272,7 +272,14 @@ data class CryptoTailStrategyCreateRequest(
     val scalpLatePeakDrawdown: String? = null,
     val scalpLateBidFloor: String? = null,
     val scalpDisableWickGuardOnLateStop: Boolean? = null,
-    val scalpLateStopRequireWeakModel: Boolean? = null
+    val scalpLateStopRequireWeakModel: Boolean? = null,
+    val scalpLateFastPollSeconds: Int? = null,
+    val scalpLateFastPollMs: Int? = null,
+    val scalpEmergencyRetryCount: Int? = null,
+    val scalpEmergencyRetryIntervalMs: Int? = null,
+    val scalpLateIgnoreWorstPriceSeconds: Int? = null,
+    val scalpLateScaleOutSeconds: Int? = null,
+    val scalpLateScaleOutRatio: String? = null
 )
 
 /**
@@ -519,7 +526,14 @@ data class CryptoTailStrategyUpdateRequest(
     val scalpLatePeakDrawdown: String? = null,
     val scalpLateBidFloor: String? = null,
     val scalpDisableWickGuardOnLateStop: Boolean? = null,
-    val scalpLateStopRequireWeakModel: Boolean? = null
+    val scalpLateStopRequireWeakModel: Boolean? = null,
+    val scalpLateFastPollSeconds: Int? = null,
+    val scalpLateFastPollMs: Int? = null,
+    val scalpEmergencyRetryCount: Int? = null,
+    val scalpEmergencyRetryIntervalMs: Int? = null,
+    val scalpLateIgnoreWorstPriceSeconds: Int? = null,
+    val scalpLateScaleOutSeconds: Int? = null,
+    val scalpLateScaleOutRatio: String? = null
 )
 
 /**
@@ -801,6 +815,13 @@ data class CryptoTailStrategyDto(
     val scalpLateBidFloor: String = "0.70",
     val scalpDisableWickGuardOnLateStop: Boolean = true,
     val scalpLateStopRequireWeakModel: Boolean = false,
+    val scalpLateFastPollSeconds: Int = 0,
+    val scalpLateFastPollMs: Int = 300,
+    val scalpEmergencyRetryCount: Int = 0,
+    val scalpEmergencyRetryIntervalMs: Int = 150,
+    val scalpLateIgnoreWorstPriceSeconds: Int = 0,
+    val scalpLateScaleOutSeconds: Int = 0,
+    val scalpLateScaleOutRatio: String = "0",
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )

@@ -1726,6 +1726,13 @@ export interface CryptoTailStrategyDto {
   scalpLateBidFloor?: string
   scalpDisableWickGuardOnLateStop?: boolean
   scalpLateStopRequireWeakModel?: boolean
+  scalpLateFastPollSeconds?: number
+  scalpLateFastPollMs?: number
+  scalpEmergencyRetryCount?: number
+  scalpEmergencyRetryIntervalMs?: number
+  scalpLateIgnoreWorstPriceSeconds?: number
+  scalpLateScaleOutSeconds?: number
+  scalpLateScaleOutRatio?: string
   createdAt: number
   updatedAt: number
 }
@@ -1786,6 +1793,13 @@ export interface CryptoTailScalpParams {
   scalpLateBidFloor?: string
   scalpDisableWickGuardOnLateStop?: boolean
   scalpLateStopRequireWeakModel?: boolean
+  scalpLateFastPollSeconds?: number
+  scalpLateFastPollMs?: number
+  scalpEmergencyRetryCount?: number
+  scalpEmergencyRetryIntervalMs?: number
+  scalpLateIgnoreWorstPriceSeconds?: number
+  scalpLateScaleOutSeconds?: number
+  scalpLateScaleOutRatio?: string
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */

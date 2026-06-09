@@ -21,6 +21,7 @@ import com.wrbug.polymarketbot.util.toJson
 import com.wrbug.polymarketbot.util.toSafeBigDecimal
 import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
@@ -182,7 +183,14 @@ class CryptoTailBracketExitService(
             val entryFillForDanger = resolveEntryFillPrice(fresh)
             val inDangerZone = entryFillForDanger != null && entryFillForDanger > BigDecimal.ZERO &&
                 bestBid <= entryFillForDanger.multiply(DANGER_ZONE_RATIO)
-            val intervalMs = if (inDangerZone) DANGER_ZONE_POLL_MS else strategy.exitPollIntervalMs.coerceAtLeast(500).toLong()
+            // V92 杠杆1 尾盘提速：remaining<=scalpLateFastPollSeconds 时把节流降到 scalpLateFastPollMs，
+            // 与危险区间隔取更小者，避免常规 exitPollIntervalMs(默认3000) 把尾盘评估拖到下一 tick。0=关（零回归）。
+            val remainingForThrottle = (fresh.periodStartUnix + strategy.intervalSeconds - nowSeconds).toInt()
+            val lateFastPoll = strategy.mode == TradingMode.SCALP_FLIP &&
+                strategy.scalpLateFastPollSeconds > 0 && remainingForThrottle <= strategy.scalpLateFastPollSeconds
+            var intervalMs = strategy.exitPollIntervalMs.coerceAtLeast(500).toLong()
+            if (inDangerZone) intervalMs = minOf(intervalMs, DANGER_ZONE_POLL_MS)
+            if (lateFastPoll) intervalMs = minOf(intervalMs, strategy.scalpLateFastPollMs.coerceAtLeast(100).toLong())
             if (fresh.lastExitCheckAt != null && nowMs - fresh.lastExitCheckAt < intervalMs) return
 
             // 计算 pWin（与进场同源；持仓方向与模型方向不同时取 1-pWin）
@@ -621,6 +629,27 @@ class CryptoTailBracketExitService(
             decideScalpLateStop(strategy, trigger, holding, bestBid, remainingSeconds, tier)
         } else null
         if (lateStop != null && strategy.scalpDisableWickGuardOnLateStop) return lateStop
+        // V92 杠杆4 尾盘主动减仓：remaining<=scalpLateScaleOutSeconds 时，无视模型强挺(WICK_GUARD)按 scalpLateScaleOutRatio
+        // 主动减仓一次（复用 FORCE：FAK marketable + 紧急抢占；hasExitOfKind 守卫全局仅一次），用确定性小滑点换掉尾盘穿价归零的尾部风险。
+        // 仅当尾盘全清止损未命中(lateStop==null)时才减仓——命中大回撤/地板时应走全清而非部分。两参任一为 0 即关（零回归）。
+        if (lateStop == null && trigger.mode == TradingMode.SCALP_FLIP &&
+            strategy.scalpLateScaleOutSeconds > 0 && strategy.scalpLateScaleOutRatio > BigDecimal.ZERO &&
+            remainingSeconds in 0..strategy.scalpLateScaleOutSeconds
+        ) {
+            val tid = trigger.id
+            val ratio = strategy.scalpLateScaleOutRatio.max(BigDecimal.ZERO).min(BigDecimal.ONE)
+            // 减仓量护栏：按 size 精度(2 位)向下取整须 >0（即 >=0.01）才减仓，否则跳过让常规逻辑接管——
+            // 避免 dust 残尾上 targetSize 取整为 0、每 tick 空判 FORCE 不下单又遮蔽 TP/软退出（不创建退出行→hasExitOfKind 恒 false→死遮蔽）。
+            val scaleOutSize = (trigger.remainingSize ?: BigDecimal.ZERO).multiply(ratio).setScale(sizeDecimalScale, RoundingMode.DOWN)
+            if (tid != null && scaleOutSize > BigDecimal.ZERO && !hasExitOfKind(tid, ExitKind.FORCE)) {
+                return Decision(
+                    ExitKind.FORCE,
+                    ratio,
+                    "$modeLabel[${tier?.label ?: "?"}] LATE_SCALE_OUT: remaining=${remainingSeconds}s<=${strategy.scalpLateScaleOutSeconds}s 主动减仓 ratio=${ratio.toPlainString()} size≈${scaleOutSize.toPlainString()} bestBid=${bestBid.toPlainString()}",
+                    clearTp1HoldStartedAt = true
+                )
+            }
+        }
         // SCALP 抗插针总闸（V82）：进入此处时 bestBid 必 > 入场×深底线（深底线在 decideExit 顶部已无条件拦截）。
         // 模型强挺（方向未反 + gap 顺 + pWin>=插针容忍 + safeRatio>=可配下限 + 价源新鲜）→ 判为盘口瞬时插针，
         // 跳过所有亏损类退出（机械止损线/熔断地板/minOdds/反抽），继续持有；止盈(tpLimit)优先照常落袋。
@@ -1345,6 +1374,12 @@ class CryptoTailBracketExitService(
             "scalpLatePeakDrawdown" to strategy.scalpLatePeakDrawdown.toPlainString(),
             "scalpLateBidFloor" to strategy.scalpLateBidFloor.toPlainString(),
             "wickGuardDisabledByLateStop" to (decision.lateDynamicStop && strategy.scalpDisableWickGuardOnLateStop),
+            "scalpLateFastPollSeconds" to strategy.scalpLateFastPollSeconds,
+            "scalpLateFastPollMs" to strategy.scalpLateFastPollMs,
+            "scalpEmergencyRetryCount" to strategy.scalpEmergencyRetryCount,
+            "scalpLateIgnoreWorstPriceSeconds" to strategy.scalpLateIgnoreWorstPriceSeconds,
+            "scalpLateScaleOutSeconds" to strategy.scalpLateScaleOutSeconds,
+            "scalpLateScaleOutRatio" to strategy.scalpLateScaleOutRatio.toPlainString(),
             "remainingSize" to remaining.toPlainString(),
             "realizedPnlIfExit" to realizedIfExit.toPlainString(),
             "tp1HoldStartedAt" to (decision.tp1HoldStartedAt ?: trigger.tp1HoldStartedAt ?: ""),
@@ -1548,48 +1583,34 @@ class CryptoTailBracketExitService(
             strategy.exitFakSlippage to null
         }
         var exitPrice = computeExitPrice(orderType, bestBid, effExitSlippage)
+        val isFak = orderType.uppercase() == "FAK"
+        // V92 杠杆3 尾盘 marketable：remaining<=scalpLateIgnoreWorstPriceSeconds 时，连 softPriceExit(裸盘口跌破 minOdds)
+        // 也忽略 worstPrice 地板、按 MIN_PRICE 直发市价扫单——尾盘已无修复时间，宁可吃滑点也要成交，避免被地板挡住骑到归零。0=关（零回归）。
+        val lateMarketable = strategy.mode == TradingMode.SCALP_FLIP &&
+            strategy.scalpLateIgnoreWorstPriceSeconds > 0 &&
+            remainingSeconds in 0..strategy.scalpLateIgnoreWorstPriceSeconds
         // 紧急退出（硬止损/熔断/模型反转/深底线）且非 softPriceExit 时：FAK 限价取 MIN_PRICE 作市价扫单，
         // 保证只要盘口有买单就成交（FAK 按盘口挂单价、价格-时间优先撮合，限价 0.01 仅定"最差可接受"，
         // 实际成交价仍是当前最优买价，绝不劣于现状）。这是 trigger 150 在崩盘中 bid-0.02 限价被反复杀单的直接修复。
-        // softPriceExit（裸盘口跌破 minOdds，最易被插针误伤）不走此分支，仍由下方 worstPrice 地板保护。
-        if (isEmergencyExit(kind) && !applyWorstPriceFloor && orderType.uppercase() == "FAK") {
+        // softPriceExit（裸盘口跌破 minOdds，最易被插针误伤）平时不走此分支，仍由下方 worstPrice 地板保护；尾盘 lateMarketable 时一并放行。
+        val forceMarketable = isFak && ((isEmergencyExit(kind) && !applyWorstPriceFloor) || lateMarketable)
+        if (forceMarketable) {
             exitPrice = MIN_PRICE
-        }
-        // worstPrice：FAK 卖出限价不得低于该底线（限价被抬高 → 低于底线时不成交，避免滑点把仓位贱卖）。
-        // 仅对 softPriceExit（裸盘口跌破 minOdds）套用——假报价/插针时宁可不成交＝继续持有赢家；
-        // 真模型恶化/反转/止损不套地板，确保该割肉时能在市价附近成交，不被地板挡住而骑到归零。
-        if (applyWorstPriceFloor && orderType.uppercase() == "FAK" && worstPriceFloor != null && worstPriceFloor > BigDecimal.ZERO) {
+        } else if (applyWorstPriceFloor && isFak && worstPriceFloor != null && worstPriceFloor > BigDecimal.ZERO) {
+            // worstPrice：FAK 卖出限价不得低于该底线（限价被抬高 → 低于底线时不成交，避免滑点把仓位贱卖）。
+            // 仅对 softPriceExit（裸盘口跌破 minOdds）套用——假报价/插针时宁可不成交＝继续持有赢家；
+            // 真模型恶化/反转/止损不套地板，确保该割肉时能在市价附近成交，不被地板挡住而骑到归零。
             exitPrice = exitPrice.max(worstPriceFloor.setScale(PRICE_SCALE, RoundingMode.DOWN))
         }
         val sizeStr = targetSize.toPlainString()
 
-        val signedOrder = try {
-            orderSigningService.createAndSignOrder(
-                privateKey = ctx.decryptedPrivateKey,
-                makerAddress = ctx.proxyAddress,
-                tokenId = tokenId,
-                side = "SELL",
-                price = exitPrice.toPlainString(),
-                size = sizeStr,
-                signatureType = ctx.signatureType
-            )
-        } catch (e: Exception) {
-            logger.error("阶梯退出签名失败 triggerId=$triggerId kind=$kind, ${e.message}", e)
-            saveExit(
-                strategy, trigger, kind, targetSize, exitPrice, orderType, "failed",
-                pwinHolding, bestBid, remainingSeconds, reason, "签名失败:${e.message}", null
-            )
-            failBackoffCache.put(failBackoffKey(triggerId, kind), true)
-            return
-        }
-
         val isPostOnly = orderType == "GTC"
-        val orderRequest = NewOrderRequest(
-            order = signedOrder,
-            owner = ctx.apiKey,
-            orderType = orderType,
-            postOnly = isPostOnly
-        )
+        // V92 杠杆2 紧急 FAK 失败快速重试：仅当本单为 marketable(限价被压到 MIN_PRICE=0.01 的市价扫单) 且配置了重试次数时，
+        // 同次评估内对"硬失败(orderId 为空：零成交/被拒/异常)"重新签名(换 salt 防重放)并重试，以抓住瞬时回补的对手盘。
+        // 仅在 orderId 为空时重试 → 部分成交会返回 orderId 并立即 break，绝不会重复卖出已成交部分。0=关（仅沿用下一 tick 重试，行为不变）。
+        val emergencyRetryEnabled = forceMarketable && strategy.scalpEmergencyRetryCount > 0
+        val maxAttempts = if (emergencyRetryEnabled) 1 + strategy.scalpEmergencyRetryCount else 1
+        val retryDelayMs = strategy.scalpEmergencyRetryIntervalMs.coerceAtLeast(50).toLong()
 
         var orderId: String? = null
         var failReason: String? = null
@@ -1597,30 +1618,62 @@ class CryptoTailBracketExitService(
         // 必须以撮合返回的真实成交量入账，否则对账阶段用 0.01 限价估值会把市价扫单错记成 1¢ 贱卖（phantom 巨亏）。
         var immediateFilledSize: BigDecimal? = null
         var immediateFilledAmount: BigDecimal? = null
-        try {
-            val resp = ctx.clobApi.createOrder(orderRequest)
-            if (resp.isSuccessful && resp.body() != null) {
-                val body = resp.body()!!
-                if (body.success && body.orderId != null) {
-                    orderId = body.orderId
-                    val a = body.makingAmount?.toSafeBigDecimal()
-                    val b = body.takingAmount?.toSafeBigDecimal()
-                    if (a != null && b != null && a > BigDecimal.ZERO && b > BigDecimal.ZERO) {
-                        // 二元市场价格∈(0,1)，故 USDC=份额×价格<份额：较大者为成交份额(filledSize)，较小者为成交USDC(filledAmount)。
-                        // 该不变式对买卖两侧 making/taking 字段映射均成立，规避字段语义歧义。
-                        immediateFilledSize = a.max(b)
-                        immediateFilledAmount = a.min(b)
+        var attempt = 0
+        while (attempt < maxAttempts) {
+            if (attempt > 0) {
+                delay(retryDelayMs)
+                logger.warn("紧急退出 FAK 第${attempt}/${maxAttempts - 1}次重试 triggerId=$triggerId kind=$kind 上次失败=$failReason")
+                failReason = null
+            }
+            val signedOrder = try {
+                orderSigningService.createAndSignOrder(
+                    privateKey = ctx.decryptedPrivateKey,
+                    makerAddress = ctx.proxyAddress,
+                    tokenId = tokenId,
+                    side = "SELL",
+                    price = exitPrice.toPlainString(),
+                    size = sizeStr,
+                    signatureType = ctx.signatureType
+                )
+            } catch (e: Exception) {
+                failReason = "签名失败:${e.message}"
+                logger.error("阶梯退出签名失败 triggerId=$triggerId kind=$kind, ${e.message}", e)
+                attempt++
+                continue
+            }
+            val orderRequest = NewOrderRequest(
+                order = signedOrder,
+                owner = ctx.apiKey,
+                orderType = orderType,
+                postOnly = isPostOnly
+            )
+            try {
+                val resp = ctx.clobApi.createOrder(orderRequest)
+                if (resp.isSuccessful && resp.body() != null) {
+                    val body = resp.body()!!
+                    if (body.success && body.orderId != null) {
+                        orderId = body.orderId
+                        val a = body.makingAmount?.toSafeBigDecimal()
+                        val b = body.takingAmount?.toSafeBigDecimal()
+                        if (a != null && b != null && a > BigDecimal.ZERO && b > BigDecimal.ZERO) {
+                            // 二元市场价格∈(0,1)，故 USDC=份额×价格<份额：较大者为成交份额(filledSize)，较小者为成交USDC(filledAmount)。
+                            // 该不变式对买卖两侧 making/taking 字段映射均成立，规避字段语义歧义。
+                            immediateFilledSize = a.max(b)
+                            immediateFilledAmount = a.min(b)
+                        }
+                    } else {
+                        failReason = body.errorMsg ?: body.getErrorMessage()
                     }
                 } else {
-                    failReason = body.errorMsg ?: body.getErrorMessage()
+                    val errBody = resp.errorBody()?.string().orEmpty()
+                    failReason = errBody.ifEmpty { "请求失败" }
                 }
-            } else {
-                val errBody = resp.errorBody()?.string().orEmpty()
-                failReason = errBody.ifEmpty { "请求失败" }
+            } catch (e: Exception) {
+                failReason = e.message ?: e.toString()
+                logger.error("阶梯退出下单异常 triggerId=$triggerId kind=$kind, ${e.message}", e)
             }
-        } catch (e: Exception) {
-            failReason = e.message ?: e.toString()
-            logger.error("阶梯退出下单异常 triggerId=$triggerId kind=$kind, ${e.message}", e)
+            if (orderId != null) break
+            attempt++
         }
 
         val recordOrderType = if (orderType == "GTC" && isPostOnly) "GTC_POST_ONLY" else orderType

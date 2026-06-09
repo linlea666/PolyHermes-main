@@ -481,7 +481,14 @@ class CryptoTailStrategyService(
                 scalpLatePeakDrawdown = sc.latePeakDrawdown,
                 scalpLateBidFloor = sc.lateBidFloor,
                 scalpDisableWickGuardOnLateStop = sc.disableWickGuardOnLateStop,
-                scalpLateStopRequireWeakModel = sc.lateStopRequireWeakModel
+                scalpLateStopRequireWeakModel = sc.lateStopRequireWeakModel,
+                scalpLateFastPollSeconds = sc.lateFastPollSeconds,
+                scalpLateFastPollMs = sc.lateFastPollMs,
+                scalpEmergencyRetryCount = sc.emergencyRetryCount,
+                scalpEmergencyRetryIntervalMs = sc.emergencyRetryIntervalMs,
+                scalpLateIgnoreWorstPriceSeconds = sc.lateIgnoreWorstPriceSeconds,
+                scalpLateScaleOutSeconds = sc.lateScaleOutSeconds,
+                scalpLateScaleOutRatio = sc.lateScaleOutRatio
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -919,6 +926,13 @@ class CryptoTailStrategyService(
                 scalpLateBidFloor = sc.lateBidFloor,
                 scalpDisableWickGuardOnLateStop = sc.disableWickGuardOnLateStop,
                 scalpLateStopRequireWeakModel = sc.lateStopRequireWeakModel,
+                scalpLateFastPollSeconds = sc.lateFastPollSeconds,
+                scalpLateFastPollMs = sc.lateFastPollMs,
+                scalpEmergencyRetryCount = sc.emergencyRetryCount,
+                scalpEmergencyRetryIntervalMs = sc.emergencyRetryIntervalMs,
+                scalpLateIgnoreWorstPriceSeconds = sc.lateIgnoreWorstPriceSeconds,
+                scalpLateScaleOutSeconds = sc.lateScaleOutSeconds,
+                scalpLateScaleOutRatio = sc.lateScaleOutRatio,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -2184,7 +2198,14 @@ class CryptoTailStrategyService(
         val latePeakDrawdown: BigDecimal,
         val lateBidFloor: BigDecimal,
         val disableWickGuardOnLateStop: Boolean,
-        val lateStopRequireWeakModel: Boolean
+        val lateStopRequireWeakModel: Boolean,
+        val lateFastPollSeconds: Int,
+        val lateFastPollMs: Int,
+        val emergencyRetryCount: Int,
+        val emergencyRetryIntervalMs: Int,
+        val lateIgnoreWorstPriceSeconds: Int,
+        val lateScaleOutSeconds: Int,
+        val lateScaleOutRatio: BigDecimal
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -2261,7 +2282,14 @@ class CryptoTailStrategyService(
         latePeakDrawdown = r.scalpLatePeakDrawdown?.toSafeBigDecimal() ?: BigDecimal("0.18"),
         lateBidFloor = r.scalpLateBidFloor?.toSafeBigDecimal() ?: BigDecimal("0.70"),
         disableWickGuardOnLateStop = r.scalpDisableWickGuardOnLateStop ?: true,
-        lateStopRequireWeakModel = r.scalpLateStopRequireWeakModel ?: false
+        lateStopRequireWeakModel = r.scalpLateStopRequireWeakModel ?: false,
+        lateFastPollSeconds = r.scalpLateFastPollSeconds ?: 0,
+        lateFastPollMs = r.scalpLateFastPollMs ?: 300,
+        emergencyRetryCount = r.scalpEmergencyRetryCount ?: 0,
+        emergencyRetryIntervalMs = r.scalpEmergencyRetryIntervalMs ?: 150,
+        lateIgnoreWorstPriceSeconds = r.scalpLateIgnoreWorstPriceSeconds ?: 0,
+        lateScaleOutSeconds = r.scalpLateScaleOutSeconds ?: 0,
+        lateScaleOutRatio = r.scalpLateScaleOutRatio?.toSafeBigDecimal() ?: BigDecimal.ZERO
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2319,7 +2347,14 @@ class CryptoTailStrategyService(
         latePeakDrawdown = r.scalpLatePeakDrawdown?.toSafeBigDecimal() ?: e.scalpLatePeakDrawdown,
         lateBidFloor = r.scalpLateBidFloor?.toSafeBigDecimal() ?: e.scalpLateBidFloor,
         disableWickGuardOnLateStop = r.scalpDisableWickGuardOnLateStop ?: e.scalpDisableWickGuardOnLateStop,
-        lateStopRequireWeakModel = r.scalpLateStopRequireWeakModel ?: e.scalpLateStopRequireWeakModel
+        lateStopRequireWeakModel = r.scalpLateStopRequireWeakModel ?: e.scalpLateStopRequireWeakModel,
+        lateFastPollSeconds = r.scalpLateFastPollSeconds ?: e.scalpLateFastPollSeconds,
+        lateFastPollMs = r.scalpLateFastPollMs ?: e.scalpLateFastPollMs,
+        emergencyRetryCount = r.scalpEmergencyRetryCount ?: e.scalpEmergencyRetryCount,
+        emergencyRetryIntervalMs = r.scalpEmergencyRetryIntervalMs ?: e.scalpEmergencyRetryIntervalMs,
+        lateIgnoreWorstPriceSeconds = r.scalpLateIgnoreWorstPriceSeconds ?: e.scalpLateIgnoreWorstPriceSeconds,
+        lateScaleOutSeconds = r.scalpLateScaleOutSeconds ?: e.scalpLateScaleOutSeconds,
+        lateScaleOutRatio = r.scalpLateScaleOutRatio?.toSafeBigDecimal() ?: e.scalpLateScaleOutRatio
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2375,6 +2410,12 @@ class CryptoTailStrategyService(
         if (sc.lateStopSeconds < 0) return false
         if (sc.latePeakDrawdown < zero || sc.latePeakDrawdown > one) return false
         if (sc.lateBidFloor < zero || sc.lateBidFloor > one) return false
+        // 尾盘退出韧性（V92）：窗口/次数 >= 0（0=关）；间隔毫秒 >= 0；减仓比例 ∈ [0,1]（0=关）
+        if (sc.lateFastPollSeconds < 0 || sc.lateFastPollMs < 0) return false
+        if (sc.emergencyRetryCount < 0 || sc.emergencyRetryIntervalMs < 0) return false
+        if (sc.lateIgnoreWorstPriceSeconds < 0) return false
+        if (sc.lateScaleOutSeconds < 0) return false
+        if (sc.lateScaleOutRatio < zero || sc.lateScaleOutRatio > one) return false
         return true
     }
 
@@ -2624,6 +2665,13 @@ class CryptoTailStrategyService(
             scalpLateBidFloor = e.scalpLateBidFloor.toPlainString(),
             scalpDisableWickGuardOnLateStop = e.scalpDisableWickGuardOnLateStop,
             scalpLateStopRequireWeakModel = e.scalpLateStopRequireWeakModel,
+            scalpLateFastPollSeconds = e.scalpLateFastPollSeconds,
+            scalpLateFastPollMs = e.scalpLateFastPollMs,
+            scalpEmergencyRetryCount = e.scalpEmergencyRetryCount,
+            scalpEmergencyRetryIntervalMs = e.scalpEmergencyRetryIntervalMs,
+            scalpLateIgnoreWorstPriceSeconds = e.scalpLateIgnoreWorstPriceSeconds,
+            scalpLateScaleOutSeconds = e.scalpLateScaleOutSeconds,
+            scalpLateScaleOutRatio = e.scalpLateScaleOutRatio.toPlainString(),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )
