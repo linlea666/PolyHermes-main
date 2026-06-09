@@ -388,7 +388,12 @@ class CryptoTailBracketExitService(
          * 灾难线/回撤触发时若开启 catastrophe_immediate，则不等确认直接砍仓，换取最快止血（牺牲防插针）。
          * 默认 false → 与现有 HARD_STOP 一致，仍走确认。
          */
-        val forceImmediate: Boolean = false
+        val forceImmediate: Boolean = false,
+        /**
+         * true = 本退出由 SCALP 尾盘动态止损（LATE_DYNAMIC_STOP）触发。仅用于审计/日志 payload，
+         * 配合 [scalpDisableWickGuardOnLateStop] 标记 wickGuardDisabledByLateStop。
+         */
+        val lateDynamicStop: Boolean = false
     )
 
     private fun decideExit(
@@ -608,6 +613,14 @@ class CryptoTailBracketExitService(
         val tier = TailDiffTier.fromLabel(trigger.tier)
         val modeLabel = if (trigger.mode == TradingMode.SCALP_FLIP) "SCALP" else "TAIL_DIFF"
         val preset = resolveTailDiffPresetForTrigger(strategy, trigger, tier)
+        // SCALP 尾盘动态止损（V91）：时间分层风控。仅 SCALP_FLIP + scalpLateStopEnabled 生效。
+        // 在尾盘窗口(remaining<=scalpLateStopSeconds)内，若 bid 从持仓峰值大回撤或跌破地板 → 立即 HARD_STOP 退出。
+        // 与 WICK_GUARD 关系：scalpDisableWickGuardOnLateStop=true（默认）→ 在 WICK_GUARD 之前返回，永不被插针豁免；
+        // =false → 允许 WICK_GUARD 先豁免、未豁免才在其后兜底退出。深底线(HARD_FLOOR)仍最高优先（decideExit 顶部）。
+        val lateStop: Decision? = if (trigger.mode == TradingMode.SCALP_FLIP && strategy.scalpLateStopEnabled) {
+            decideScalpLateStop(strategy, trigger, holding, bestBid, remainingSeconds, tier)
+        } else null
+        if (lateStop != null && strategy.scalpDisableWickGuardOnLateStop) return lateStop
         // SCALP 抗插针总闸（V82）：进入此处时 bestBid 必 > 入场×深底线（深底线在 decideExit 顶部已无条件拦截）。
         // 模型强挺（方向未反 + gap 顺 + pWin>=插针容忍 + safeRatio>=可配下限 + 价源新鲜）→ 判为盘口瞬时插针，
         // 跳过所有亏损类退出（机械止损线/熔断地板/minOdds/反抽），继续持有；止盈(tpLimit)优先照常落袋。
@@ -639,6 +652,8 @@ class CryptoTailBracketExitService(
                 )
             }
         }
+        // 尾盘止损兜底（scalpDisableWickGuardOnLateStop=false 路径）：WICK_GUARD 未豁免时仍按尾盘止损退出。
+        lateStop?.let { return it }
         if (preset.holdToExpiry) {
             // TOP 不再"无脑持有到结算"：即便 holdToExpiry，仍保留硬危险兜底（minOdds/反抽/价差坍缩/方向翻转），
             // 仅跳过 modelProb/diffSigma 这类较软的模型衰减退出，避免最大仓位在剧烈反转下零保护。
@@ -706,6 +721,72 @@ class CryptoTailBracketExitService(
         // 4) TpLimit
         tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
         return Decision(null, BigDecimal.ZERO, "$modeLabel[${tier?.label ?: "?"}] 继续持有 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
+    }
+
+    /**
+     * SCALP 尾盘动态止损（V91）：时间分层风控，仅在尾盘窗口内对"从持仓峰值大回撤/跌破地板"立即止损。
+     * 调用方已保证 trigger.mode==SCALP_FLIP 且 strategy.scalpLateStopEnabled==true。
+     *
+     * 触发条件（满足其一即退出，均要求处于尾盘窗口 remaining<=scalpLateStopSeconds）：
+     *  - 回撤触发：peakBid 有效(>0) 且 (peakBid - bestBid) >= scalpLatePeakDrawdown（绝对价差，非百分比）；
+     *  - 地板触发：bestBid <= scalpLateBidFloor（peakBid 缺失也能触发，不要求模型转弱）。
+     * 若 scalpLateStopRequireWeakModel=true，则仅当模型转弱（evaluateHardStopBypass 不豁免/holding 缺失）才放行。
+     *
+     * @return 命中返回 HARD_STOP（reason 含 LATE_DYNAMIC_STOP；forceImmediate=scalpDisableWickGuardOnLateStop）；未命中返回 null。
+     */
+    private fun decideScalpLateStop(
+        strategy: CryptoTailStrategy,
+        trigger: CryptoTailStrategyTrigger,
+        holding: HoldingState?,
+        bestBid: BigDecimal,
+        remainingSeconds: Int,
+        tier: TailDiffTier?
+    ): Decision? {
+        if (remainingSeconds > strategy.scalpLateStopSeconds) return null
+        if (bestBid <= BigDecimal.ZERO) return null
+
+        val peakBid = trigger.peakBid?.takeIf { it > BigDecimal.ZERO }
+        val peakDrawdown = peakBid?.subtract(bestBid)?.max(BigDecimal.ZERO)
+        val lateDrawdownHit = peakBid != null && peakDrawdown != null &&
+            strategy.scalpLatePeakDrawdown > BigDecimal.ZERO && peakDrawdown >= strategy.scalpLatePeakDrawdown
+        val lateBidFloorHit = strategy.scalpLateBidFloor > BigDecimal.ZERO && bestBid <= strategy.scalpLateBidFloor
+
+        if (!lateDrawdownHit && !lateBidFloorHit) return null
+
+        // 模型转弱门控（默认关）：开启时仅当模型不再强挺才放行，避免在模型仍强挺时误杀普通插针。
+        if (strategy.scalpLateStopRequireWeakModel) {
+            val modelStrong = holding != null && CryptoTailHoldToSettlePolicy.evaluateHardStopBypass(
+                enabled = true,
+                priceReady = holding.priceReady(strategy.maxPriceAgeMs),
+                outcomeIndex = trigger.outcomeIndex,
+                modelSide = holding.modelSide,
+                gap = holding.gap,
+                pWinHolding = holding.pWinHolding,
+                safeRatio = holding.safeRatio,
+                remainingSeconds = remainingSeconds,
+                bypassMinPwin = strategy.scalpSmartStopMinPwin,
+                holdToSettleSeconds = strategy.intervalSeconds,
+                exitSafeRatio = strategy.exitSafeRatio,
+                minSafeRatioFloor = strategy.scalpSmartStopMinSafeRatio
+            ).bypass
+            if (modelStrong) return null
+        }
+
+        val label = tier?.label ?: "?"
+        val wickTag = if (strategy.scalpDisableWickGuardOnLateStop) "禁止 WICK_GUARD 豁免,立即退出" else "允许 WICK_GUARD 优先,未豁免则退出"
+        val reason = if (lateDrawdownHit) {
+            "SCALP[$label] LATE_DYNAMIC_STOP: remaining=${remainingSeconds}s peakBid=${peakBid?.toPlainString()} currentBestBid=${bestBid.toPlainString()} drawdown=${peakDrawdown?.toPlainString()}>=${strategy.scalpLatePeakDrawdown.toPlainString()} -> $wickTag"
+        } else {
+            "SCALP[$label] LATE_DYNAMIC_STOP: remaining=${remainingSeconds}s currentBestBid=${bestBid.toPlainString()}<=lateBidFloor=${strategy.scalpLateBidFloor.toPlainString()} -> $wickTag"
+        }
+        return Decision(
+            ExitKind.HARD_STOP,
+            BigDecimal.ONE,
+            reason,
+            clearTp1HoldStartedAt = true,
+            forceImmediate = strategy.scalpDisableWickGuardOnLateStop,
+            lateDynamicStop = true
+        )
     }
 
     /**
@@ -1259,6 +1340,11 @@ class CryptoTailBracketExitService(
             "peakBid" to peakBid.toPlainString(),
             "drawdownFromPeak" to drawdown.toPlainString(),
             "exitReason" to (decision.kind?.name ?: ""),
+            "scalpLateStopEnabled" to strategy.scalpLateStopEnabled,
+            "scalpLateStopSeconds" to strategy.scalpLateStopSeconds,
+            "scalpLatePeakDrawdown" to strategy.scalpLatePeakDrawdown.toPlainString(),
+            "scalpLateBidFloor" to strategy.scalpLateBidFloor.toPlainString(),
+            "wickGuardDisabledByLateStop" to (decision.lateDynamicStop && strategy.scalpDisableWickGuardOnLateStop),
             "remainingSize" to remaining.toPlainString(),
             "realizedPnlIfExit" to realizedIfExit.toPlainString(),
             "tp1HoldStartedAt" to (decision.tp1HoldStartedAt ?: trigger.tp1HoldStartedAt ?: ""),

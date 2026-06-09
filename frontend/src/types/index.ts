@@ -1720,6 +1720,12 @@ export interface CryptoTailStrategyDto {
   scalpGapGateRemainingHi?: number
   scalpEvLimitMode?: string
   scalpEvGuardMargin?: string
+  scalpLateStopEnabled?: boolean
+  scalpLateStopSeconds?: number
+  scalpLatePeakDrawdown?: string
+  scalpLateBidFloor?: string
+  scalpDisableWickGuardOnLateStop?: boolean
+  scalpLateStopRequireWeakModel?: boolean
   createdAt: number
   updatedAt: number
 }
@@ -1774,6 +1780,12 @@ export interface CryptoTailScalpParams {
   scalpGapGateRemainingHi?: number
   scalpEvLimitMode?: string
   scalpEvGuardMargin?: string
+  scalpLateStopEnabled?: boolean
+  scalpLateStopSeconds?: number
+  scalpLatePeakDrawdown?: string
+  scalpLateBidFloor?: string
+  scalpDisableWickGuardOnLateStop?: boolean
+  scalpLateStopRequireWeakModel?: boolean
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */

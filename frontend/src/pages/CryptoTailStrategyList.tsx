@@ -153,7 +153,13 @@ const SCALP_DEFAULTS = {
   scalpGapGateRemainingLo: 0,
   scalpGapGateRemainingHi: 0,
   scalpEvLimitMode: 'CLAMP',
-  scalpEvGuardMargin: '0.10'
+  scalpEvGuardMargin: '0.10',
+  scalpLateStopEnabled: false,
+  scalpLateStopSeconds: 15,
+  scalpLatePeakDrawdown: '0.18',
+  scalpLateBidFloor: '0.70',
+  scalpDisableWickGuardOnLateStop: true,
+  scalpLateStopRequireWeakModel: false
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -205,7 +211,13 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpGapGateRemainingLo: record.scalpGapGateRemainingLo ?? SCALP_DEFAULTS.scalpGapGateRemainingLo,
   scalpGapGateRemainingHi: record.scalpGapGateRemainingHi ?? SCALP_DEFAULTS.scalpGapGateRemainingHi,
   scalpEvLimitMode: record.scalpEvLimitMode ?? SCALP_DEFAULTS.scalpEvLimitMode,
-  scalpEvGuardMargin: record.scalpEvGuardMargin ?? SCALP_DEFAULTS.scalpEvGuardMargin
+  scalpEvGuardMargin: record.scalpEvGuardMargin ?? SCALP_DEFAULTS.scalpEvGuardMargin,
+  scalpLateStopEnabled: record.scalpLateStopEnabled ?? SCALP_DEFAULTS.scalpLateStopEnabled,
+  scalpLateStopSeconds: record.scalpLateStopSeconds ?? SCALP_DEFAULTS.scalpLateStopSeconds,
+  scalpLatePeakDrawdown: record.scalpLatePeakDrawdown ?? SCALP_DEFAULTS.scalpLatePeakDrawdown,
+  scalpLateBidFloor: record.scalpLateBidFloor ?? SCALP_DEFAULTS.scalpLateBidFloor,
+  scalpDisableWickGuardOnLateStop: record.scalpDisableWickGuardOnLateStop ?? SCALP_DEFAULTS.scalpDisableWickGuardOnLateStop,
+  scalpLateStopRequireWeakModel: record.scalpLateStopRequireWeakModel ?? SCALP_DEFAULTS.scalpLateStopRequireWeakModel
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -410,7 +422,13 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpGapGateRemainingLo: numOrUndef(v.scalpGapGateRemainingLo),
   scalpGapGateRemainingHi: numOrUndef(v.scalpGapGateRemainingHi),
   scalpEvLimitMode: strOrUndef(v.scalpEvLimitMode),
-  scalpEvGuardMargin: strOrUndef(v.scalpEvGuardMargin)
+  scalpEvGuardMargin: strOrUndef(v.scalpEvGuardMargin),
+  scalpLateStopEnabled: typeof v.scalpLateStopEnabled === 'boolean' ? v.scalpLateStopEnabled : undefined,
+  scalpLateStopSeconds: numOrUndef(v.scalpLateStopSeconds),
+  scalpLatePeakDrawdown: strOrUndef(v.scalpLatePeakDrawdown),
+  scalpLateBidFloor: strOrUndef(v.scalpLateBidFloor),
+  scalpDisableWickGuardOnLateStop: typeof v.scalpDisableWickGuardOnLateStop === 'boolean' ? v.scalpDisableWickGuardOnLateStop : undefined,
+  scalpLateStopRequireWeakModel: typeof v.scalpLateStopRequireWeakModel === 'boolean' ? v.scalpLateStopRequireWeakModel : undefined
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -3693,6 +3711,30 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpConsecLossStopCount" label={t('cryptoTailStrategy.form.scalpConsecLossStopCount')} extra={t('cryptoTailStrategy.form.scalpConsecLossStopCountHint')}>
                 <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpLateStopSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('cryptoTailStrategy.form.scalpLateStopSubsectionHint')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpLateStopEnabled" label={t('cryptoTailStrategy.form.scalpLateStopEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpLateStopEnabledHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpLateStopSeconds" label={t('cryptoTailStrategy.form.scalpLateStopSeconds')} extra={t('cryptoTailStrategy.form.scalpLateStopSecondsHint')}>
+                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpLatePeakDrawdown" label={t('cryptoTailStrategy.form.scalpLatePeakDrawdown')} extra={t('cryptoTailStrategy.form.scalpLatePeakDrawdownHint')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpLateBidFloor" label={t('cryptoTailStrategy.form.scalpLateBidFloor')} extra={t('cryptoTailStrategy.form.scalpLateBidFloorHint')}>
+                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpDisableWickGuardOnLateStop" label={t('cryptoTailStrategy.form.scalpDisableWickGuardOnLateStop')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpDisableWickGuardOnLateStopHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpLateStopRequireWeakModel" label={t('cryptoTailStrategy.form.scalpLateStopRequireWeakModel')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpLateStopRequireWeakModelHint')}>
+                <Switch />
               </Form.Item>
             </>
           )}

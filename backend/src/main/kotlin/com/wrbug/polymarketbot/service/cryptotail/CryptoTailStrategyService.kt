@@ -475,7 +475,13 @@ class CryptoTailStrategyService(
                 scalpGapGateRemainingLo = sc.gapGateRemainingLo,
                 scalpGapGateRemainingHi = sc.gapGateRemainingHi,
                 scalpEvLimitMode = sc.evLimitMode,
-                scalpEvGuardMargin = sc.evGuardMargin
+                scalpEvGuardMargin = sc.evGuardMargin,
+                scalpLateStopEnabled = sc.lateStopEnabled,
+                scalpLateStopSeconds = sc.lateStopSeconds,
+                scalpLatePeakDrawdown = sc.latePeakDrawdown,
+                scalpLateBidFloor = sc.lateBidFloor,
+                scalpDisableWickGuardOnLateStop = sc.disableWickGuardOnLateStop,
+                scalpLateStopRequireWeakModel = sc.lateStopRequireWeakModel
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -907,6 +913,12 @@ class CryptoTailStrategyService(
                 scalpGapGateRemainingHi = sc.gapGateRemainingHi,
                 scalpEvLimitMode = sc.evLimitMode,
                 scalpEvGuardMargin = sc.evGuardMargin,
+                scalpLateStopEnabled = sc.lateStopEnabled,
+                scalpLateStopSeconds = sc.lateStopSeconds,
+                scalpLatePeakDrawdown = sc.latePeakDrawdown,
+                scalpLateBidFloor = sc.lateBidFloor,
+                scalpDisableWickGuardOnLateStop = sc.disableWickGuardOnLateStop,
+                scalpLateStopRequireWeakModel = sc.lateStopRequireWeakModel,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -2166,7 +2178,13 @@ class CryptoTailStrategyService(
         val gapGateRemainingLo: Int,
         val gapGateRemainingHi: Int,
         val evLimitMode: String,
-        val evGuardMargin: BigDecimal
+        val evGuardMargin: BigDecimal,
+        val lateStopEnabled: Boolean,
+        val lateStopSeconds: Int,
+        val latePeakDrawdown: BigDecimal,
+        val lateBidFloor: BigDecimal,
+        val disableWickGuardOnLateStop: Boolean,
+        val lateStopRequireWeakModel: Boolean
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -2237,7 +2255,13 @@ class CryptoTailStrategyService(
         gapGateRemainingLo = r.scalpGapGateRemainingLo ?: 0,
         gapGateRemainingHi = r.scalpGapGateRemainingHi ?: 0,
         evLimitMode = normalizeScalpEvLimitMode(r.scalpEvLimitMode),
-        evGuardMargin = r.scalpEvGuardMargin?.toSafeBigDecimal() ?: BigDecimal("0.10")
+        evGuardMargin = r.scalpEvGuardMargin?.toSafeBigDecimal() ?: BigDecimal("0.10"),
+        lateStopEnabled = r.scalpLateStopEnabled ?: false,
+        lateStopSeconds = r.scalpLateStopSeconds ?: 15,
+        latePeakDrawdown = r.scalpLatePeakDrawdown?.toSafeBigDecimal() ?: BigDecimal("0.18"),
+        lateBidFloor = r.scalpLateBidFloor?.toSafeBigDecimal() ?: BigDecimal("0.70"),
+        disableWickGuardOnLateStop = r.scalpDisableWickGuardOnLateStop ?: true,
+        lateStopRequireWeakModel = r.scalpLateStopRequireWeakModel ?: false
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2289,7 +2313,13 @@ class CryptoTailStrategyService(
         gapGateRemainingLo = r.scalpGapGateRemainingLo ?: e.scalpGapGateRemainingLo,
         gapGateRemainingHi = r.scalpGapGateRemainingHi ?: e.scalpGapGateRemainingHi,
         evLimitMode = r.scalpEvLimitMode?.let { normalizeScalpEvLimitMode(it) } ?: e.scalpEvLimitMode,
-        evGuardMargin = r.scalpEvGuardMargin?.toSafeBigDecimal() ?: e.scalpEvGuardMargin
+        evGuardMargin = r.scalpEvGuardMargin?.toSafeBigDecimal() ?: e.scalpEvGuardMargin,
+        lateStopEnabled = r.scalpLateStopEnabled ?: e.scalpLateStopEnabled,
+        lateStopSeconds = r.scalpLateStopSeconds ?: e.scalpLateStopSeconds,
+        latePeakDrawdown = r.scalpLatePeakDrawdown?.toSafeBigDecimal() ?: e.scalpLatePeakDrawdown,
+        lateBidFloor = r.scalpLateBidFloor?.toSafeBigDecimal() ?: e.scalpLateBidFloor,
+        disableWickGuardOnLateStop = r.scalpDisableWickGuardOnLateStop ?: e.scalpDisableWickGuardOnLateStop,
+        lateStopRequireWeakModel = r.scalpLateStopRequireWeakModel ?: e.scalpLateStopRequireWeakModel
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2341,6 +2371,10 @@ class CryptoTailStrategyService(
         if (sc.consecLossPauseCount < 0 || sc.consecLossStopCount < 0) return false
         // EV 限价模式（V90）：mode 已归一化为 CLAMP/GUARD/OFF；GUARD 安全阀差额 ∈ [0,1)（<=0 退化 CLAMP 也允许）
         if (sc.evGuardMargin < zero || sc.evGuardMargin >= one) return false
+        // 尾盘动态止损（V91）：生效窗口秒 >= 0；峰值回撤阈值 ∈ [0,1]（0=该维度不检查）；尾盘 bid 地板 ∈ [0,1]
+        if (sc.lateStopSeconds < 0) return false
+        if (sc.latePeakDrawdown < zero || sc.latePeakDrawdown > one) return false
+        if (sc.lateBidFloor < zero || sc.lateBidFloor > one) return false
         return true
     }
 
@@ -2584,6 +2618,12 @@ class CryptoTailStrategyService(
             scalpGapGateRemainingHi = e.scalpGapGateRemainingHi,
             scalpEvLimitMode = e.scalpEvLimitMode,
             scalpEvGuardMargin = e.scalpEvGuardMargin.toPlainString(),
+            scalpLateStopEnabled = e.scalpLateStopEnabled,
+            scalpLateStopSeconds = e.scalpLateStopSeconds,
+            scalpLatePeakDrawdown = e.scalpLatePeakDrawdown.toPlainString(),
+            scalpLateBidFloor = e.scalpLateBidFloor.toPlainString(),
+            scalpDisableWickGuardOnLateStop = e.scalpDisableWickGuardOnLateStop,
+            scalpLateStopRequireWeakModel = e.scalpLateStopRequireWeakModel,
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )

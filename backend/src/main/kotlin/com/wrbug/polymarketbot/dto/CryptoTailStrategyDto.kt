@@ -265,7 +265,14 @@ data class CryptoTailStrategyCreateRequest(
     val scalpGapGateRemainingLo: Int? = null,
     val scalpGapGateRemainingHi: Int? = null,
     val scalpEvLimitMode: String? = null,
-    val scalpEvGuardMargin: String? = null
+    val scalpEvGuardMargin: String? = null,
+    // ===== 尾盘动态止损 SCALP_FLIP（V91，均可选，null 走默认）=====
+    val scalpLateStopEnabled: Boolean? = null,
+    val scalpLateStopSeconds: Int? = null,
+    val scalpLatePeakDrawdown: String? = null,
+    val scalpLateBidFloor: String? = null,
+    val scalpDisableWickGuardOnLateStop: Boolean? = null,
+    val scalpLateStopRequireWeakModel: Boolean? = null
 )
 
 /**
@@ -505,7 +512,14 @@ data class CryptoTailStrategyUpdateRequest(
     val scalpGapGateRemainingLo: Int? = null,
     val scalpGapGateRemainingHi: Int? = null,
     val scalpEvLimitMode: String? = null,
-    val scalpEvGuardMargin: String? = null
+    val scalpEvGuardMargin: String? = null,
+    // ===== 尾盘动态止损 SCALP_FLIP（V91，均可选，null 走默认）=====
+    val scalpLateStopEnabled: Boolean? = null,
+    val scalpLateStopSeconds: Int? = null,
+    val scalpLatePeakDrawdown: String? = null,
+    val scalpLateBidFloor: String? = null,
+    val scalpDisableWickGuardOnLateStop: Boolean? = null,
+    val scalpLateStopRequireWeakModel: Boolean? = null
 )
 
 /**
@@ -780,6 +794,13 @@ data class CryptoTailStrategyDto(
     val scalpGapGateRemainingHi: Int = 0,
     val scalpEvLimitMode: String = "CLAMP",
     val scalpEvGuardMargin: String = "0.10",
+    // ===== 尾盘动态止损 SCALP_FLIP（V91）=====
+    val scalpLateStopEnabled: Boolean = false,
+    val scalpLateStopSeconds: Int = 15,
+    val scalpLatePeakDrawdown: String = "0.18",
+    val scalpLateBidFloor: String = "0.70",
+    val scalpDisableWickGuardOnLateStop: Boolean = true,
+    val scalpLateStopRequireWeakModel: Boolean = false,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )

@@ -935,6 +935,33 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_gap_gate_remaining_hi", nullable = false)
     val scalpGapGateRemainingHi: Int = 0,
 
+    /**
+     * 尾盘动态止损总开关（V91）：true 时在尾盘窗口内对"从持仓峰值大回撤/跌破地板"立即 HARD_STOP 退出，
+     * 并可禁止 WICK_GUARD 把它判为插针继续持有。默认 false（零回归，仅 UI 手动开启后测试）。仅 SCALP_FLIP 消费。
+     */
+    @Column(name = "scalp_late_stop_enabled", nullable = false)
+    val scalpLateStopEnabled: Boolean = false,
+
+    /** 尾盘止损生效窗口（距结算剩余秒）：仅当 remainingSeconds <= 此值时尾盘止损才生效 */
+    @Column(name = "scalp_late_stop_seconds", nullable = false)
+    val scalpLateStopSeconds: Int = 15,
+
+    /** 峰值回撤止损阈值（绝对价差，非百分比）：(peakBid - currentBestBid) >= 此值即触发；0=该维度不检查 */
+    @Column(name = "scalp_late_peak_drawdown", nullable = false, precision = 20, scale = 8)
+    val scalpLatePeakDrawdown: BigDecimal = BigDecimal("0.18"),
+
+    /** 尾盘 bid 地板：currentBestBid <= 此值即触发（peakBid 缺失也能触发，不要求模型转弱） */
+    @Column(name = "scalp_late_bid_floor", nullable = false, precision = 20, scale = 8)
+    val scalpLateBidFloor: BigDecimal = BigDecimal("0.70"),
+
+    /** 尾盘止损命中后是否禁止 WICK_GUARD 豁免：true=禁止豁免立即退出（默认） */
+    @Column(name = "scalp_disable_wick_guard_on_late_stop", nullable = false)
+    val scalpDisableWickGuardOnLateStop: Boolean = true,
+
+    /** 是否要求模型转弱后才触发尾盘止损：默认 false（盘口常先崩、模型滞后，要求转弱会使止损过慢） */
+    @Column(name = "scalp_late_stop_require_weak_model", nullable = false)
+    val scalpLateStopRequireWeakModel: Boolean = false,
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 
