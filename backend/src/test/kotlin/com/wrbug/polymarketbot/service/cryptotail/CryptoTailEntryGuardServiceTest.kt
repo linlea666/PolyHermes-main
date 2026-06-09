@@ -1,6 +1,5 @@
 package com.wrbug.polymarketbot.service.cryptotail
 
-import com.wrbug.polymarketbot.dto.AccountBalanceResponse
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
 import com.wrbug.polymarketbot.service.accounts.AccountService
@@ -17,12 +16,12 @@ class CryptoTailEntryGuardServiceTest {
     fun `spendable balance subtracts pending entry amount for shared account`() {
         val accountService = Mockito.mock(AccountService::class.java)
         val triggerRepository = Mockito.mock(CryptoTailStrategyTriggerRepository::class.java)
-        Mockito.`when`(accountService.getAccountBalance(7L)).thenReturn(
-            Result.success(AccountBalanceResponse("10.00", "0", "10.00"))
+        Mockito.`when`(accountService.getAvailableUsdc(7L)).thenReturn(
+            Result.success(BigDecimal("10.00"))
         )
         Mockito.`when`(triggerRepository.sumPendingEntryAmountByAccountId(7L)).thenReturn(BigDecimal("4.25"))
 
-        val guard = CryptoTailEntryGuardService(accountService, triggerRepository)
+        val guard = CryptoTailEntryGuardService(accountService, triggerRepository, 10_000L)
         val snapshot = guard.loadEntryBalanceSnapshot(7L)
 
         assertEquals(0, BigDecimal("10.00").compareTo(snapshot.rawAvailable))
@@ -34,12 +33,12 @@ class CryptoTailEntryGuardServiceTest {
     fun `recent FAK fill reservation reduces spendable for concurrent same-account strategy`() {
         val accountService = Mockito.mock(AccountService::class.java)
         val triggerRepository = Mockito.mock(CryptoTailStrategyTriggerRepository::class.java)
-        Mockito.`when`(accountService.getAccountBalance(7L)).thenReturn(
-            Result.success(AccountBalanceResponse("10.00", "0", "10.00"))
+        Mockito.`when`(accountService.getAvailableUsdc(7L)).thenReturn(
+            Result.success(BigDecimal("10.00"))
         )
         Mockito.`when`(triggerRepository.sumPendingEntryAmountByAccountId(7L)).thenReturn(BigDecimal.ZERO)
 
-        val guard = CryptoTailEntryGuardService(accountService, triggerRepository)
+        val guard = CryptoTailEntryGuardService(accountService, triggerRepository, 10_000L)
         // 模拟一笔刚成交、链上余额尚未反映的 FAK 花费
         guard.reserveRecentFill(7L, BigDecimal("6.00"))
         val snapshot = guard.loadEntryBalanceSnapshot(7L)
@@ -61,7 +60,7 @@ class CryptoTailEntryGuardServiceTest {
             )
         ).thenReturn(1L)
 
-        val guard = CryptoTailEntryGuardService(accountService, triggerRepository)
+        val guard = CryptoTailEntryGuardService(accountService, triggerRepository, 10_000L)
         val defaultStrategy = CryptoTailStrategy(
             id = 1L,
             accountId = 7L,

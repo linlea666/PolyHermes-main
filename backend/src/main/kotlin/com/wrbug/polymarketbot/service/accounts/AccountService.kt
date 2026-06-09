@@ -710,6 +710,32 @@ class AccountService(
     }
 
     /**
+     * 轻量查询账户可用 USDC 余额（仅 RPC 查 USDC，跳过持仓列表与仓位市值两个远程往返）。
+     * 用于 crypto-tail 进场热路径与后台余额刷新：进场金额计算只用到可用余额，
+     * getWalletBalance 的 positions/value 两次远程调用在该场景下是纯开销。
+     * 返回值与 getAccountBalance().availableBalance 等价（同一 queryUsdcBalanceViaRpc 来源）。
+     */
+    fun getAvailableUsdc(accountId: Long?): Result<BigDecimal> {
+        return try {
+            if (accountId == null) {
+                return Result.failure(IllegalArgumentException("账户ID不能为空"))
+            }
+            val account = accountRepository.findById(accountId).orElse(null)
+                ?: return Result.failure(IllegalArgumentException("账户不存在"))
+            if (account.proxyAddress.isBlank()) {
+                logger.error("账户 ${account.id} 的代理地址为空，无法查询余额")
+                return Result.failure(IllegalStateException("账户代理地址不存在，无法查询余额。请重新导入账户以获取代理地址"))
+            }
+            runBlocking {
+                blockchainService.getUsdcBalance(account.proxyAddress, account.proxyAddress)
+            }.map { it.toSafeBigDecimal() }
+        } catch (e: Exception) {
+            logger.error("查询账户可用 USDC 余额失败", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
      * 转换为基础 DTO（列表使用，不包含统计信息）
      * 列表接口只返回基本信息，不查询统计信息，以提高性能
      */

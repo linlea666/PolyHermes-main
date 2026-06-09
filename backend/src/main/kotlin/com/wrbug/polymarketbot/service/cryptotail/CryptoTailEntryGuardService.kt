@@ -3,8 +3,8 @@ package com.wrbug.polymarketbot.service.cryptotail
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyTriggerRepository
 import com.wrbug.polymarketbot.service.accounts.AccountService
-import com.wrbug.polymarketbot.util.toSafeBigDecimal
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import java.math.BigDecimal
 import java.util.concurrent.ConcurrentHashMap
@@ -12,7 +12,8 @@ import java.util.concurrent.ConcurrentHashMap
 @Service
 class CryptoTailEntryGuardService(
     private val accountService: AccountService,
-    private val triggerRepository: CryptoTailStrategyTriggerRepository
+    private val triggerRepository: CryptoTailStrategyTriggerRepository,
+    @Value("\${crypto-tail.scalp.balance-freshness-bound-ms:10000}") private val balanceFreshnessBoundMs: Long
 ) {
     private val logger = LoggerFactory.getLogger(CryptoTailEntryGuardService::class.java)
 
@@ -28,6 +29,18 @@ class CryptoTailEntryGuardService(
     private val recentFillReservations = ConcurrentHashMap<Long, MutableList<Reservation>>()
 
     private val reservationTtlMs = 20_000L
+
+    /**
+     * 账户级链上可用余额缓存（rawAvailable）。
+     * 根因：进场热路径原本每次同步拉链上余额（getWalletBalance 串行 3 个远程往返，~1.8s），
+     * 把"触发→发单"拖到 ~3s，导致 SCALP 用 3s 前的盘口发单、FAK 频繁 kill。
+     * 这里把"取链上余额"与"下单"解耦：后台 @Scheduled 周期刷新写入本缓存，进场只读本地缓存（~0 延迟）。
+     * 安全性：缓存只替换 rawAvailable，pendingReserved/recentFillReserved 两层预留仍在读取时实时扣减；
+     * 缓存最大滞后受 reservationTtlMs(20s) 兜底窗口覆盖，不破坏并发防超额保证。
+     */
+    private data class CachedRawAvailable(val value: BigDecimal, val refreshedAtMs: Long)
+
+    private val rawAvailableCache = ConcurrentHashMap<Long, CachedRawAvailable>()
 
     data class EntryBalanceSnapshot(
         val rawAvailable: BigDecimal,
@@ -56,12 +69,47 @@ class CryptoTailEntryGuardService(
         }
     }
 
+    /**
+     * 后台余额刷新调度器调用：拉取最新可用 USDC 并写入缓存。失败时保留旧缓存（不覆盖、不清空）。
+     * @return 刷新后的可用余额；失败返回 null。
+     */
+    fun refreshRawAvailableCache(accountId: Long): BigDecimal? {
+        return fetchAndCacheRawAvailable(accountId)
+    }
+
+    private fun fetchAndCacheRawAvailable(accountId: Long): BigDecimal? {
+        val result = accountService.getAvailableUsdc(accountId)
+        val value = result.getOrNull()
+        if (value == null) {
+            logger.warn("crypto-tail 刷新可用余额失败: accountId=$accountId, ${result.exceptionOrNull()?.message}")
+            return null
+        }
+        rawAvailableCache[accountId] = CachedRawAvailable(value, System.currentTimeMillis())
+        return value
+    }
+
+    /**
+     * 取账户当前可用余额（rawAvailable）：
+     * - 命中缓存且在新鲜度上限内 → 直接用缓存（~0 延迟，热路径无网络）；
+     * - 缓存缺失/超过新鲜度上限 → 同步兜底拉一次（不返默认值，保证正确性）；
+     * - 同步兜底失败 → 退用旧缓存，但仅当滞后 ≤ reservationTtlMs(防超额兜底窗口) 时；超出则退化为 0（保守，与原失败语义一致）。
+     */
+    private fun currentRawAvailable(accountId: Long): BigDecimal {
+        val now = System.currentTimeMillis()
+        val cached = rawAvailableCache[accountId]
+        if (cached != null && now - cached.refreshedAtMs <= balanceFreshnessBoundMs) {
+            return cached.value
+        }
+        val fetched = fetchAndCacheRawAvailable(accountId)
+        if (fetched != null) return fetched
+        if (cached != null && now - cached.refreshedAtMs <= reservationTtlMs) {
+            return cached.value
+        }
+        return BigDecimal.ZERO
+    }
+
     fun loadEntryBalanceSnapshot(accountId: Long): EntryBalanceSnapshot {
-        val rawAvailable = accountService.getAccountBalance(accountId)
-            .getOrNull()
-            ?.availableBalance
-            ?.toSafeBigDecimal()
-            ?: BigDecimal.ZERO
+        val rawAvailable = currentRawAvailable(accountId)
         val pendingReserved = try {
             triggerRepository.sumPendingEntryAmountByAccountId(accountId) ?: BigDecimal.ZERO
         } catch (e: Exception) {
