@@ -1161,9 +1161,11 @@ const CryptoTailStrategyList: React.FC = () => {
       const tailDiffParams = tailDiffOn ? buildTailDiffPayload(v) : {}
       // SCALP_FLIP：退出复用 BRACKET/TAIL_DIFF 引擎，必须开启持仓退出管理器，否则止盈/止损不评估。
       // holdToSettlePwin 仅在 bracketParams 发送，SCALP 需在此补发（enableSmartHardStop/exitPollIntervalMs 已由 barrierParams 无条件发送）。
+      // SCALP_FLIP 全部配置已收敛到后端嵌套对象 scalp，故此处包成 { scalp: {...} }；
+      // enableExitManager / holdToSettlePwin 属请求顶层字段，保持平铺。
       const scalpParams = scalpOn
         ? {
-            ...buildScalpPayload(v),
+            scalp: buildScalpPayload(v),
             enableExitManager: true,
             holdToSettlePwin: v.holdToSettlePwin != null ? String(v.holdToSettlePwin) : undefined
           }
