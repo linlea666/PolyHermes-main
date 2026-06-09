@@ -263,7 +263,9 @@ data class CryptoTailStrategyCreateRequest(
     val scalpMinEntryDiffSigma: String? = null,
     val scalpMinEntryGapAbs: String? = null,
     val scalpGapGateRemainingLo: Int? = null,
-    val scalpGapGateRemainingHi: Int? = null
+    val scalpGapGateRemainingHi: Int? = null,
+    val scalpEvLimitMode: String? = null,
+    val scalpEvGuardMargin: String? = null
 )
 
 /**
@@ -501,7 +503,9 @@ data class CryptoTailStrategyUpdateRequest(
     val scalpMinEntryDiffSigma: String? = null,
     val scalpMinEntryGapAbs: String? = null,
     val scalpGapGateRemainingLo: Int? = null,
-    val scalpGapGateRemainingHi: Int? = null
+    val scalpGapGateRemainingHi: Int? = null,
+    val scalpEvLimitMode: String? = null,
+    val scalpEvGuardMargin: String? = null
 )
 
 /**
@@ -774,6 +778,8 @@ data class CryptoTailStrategyDto(
     val scalpMinEntryGapAbs: String = "0",
     val scalpGapGateRemainingLo: Int = 0,
     val scalpGapGateRemainingHi: Int = 0,
+    val scalpEvLimitMode: String = "CLAMP",
+    val scalpEvGuardMargin: String = "0.10",
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )

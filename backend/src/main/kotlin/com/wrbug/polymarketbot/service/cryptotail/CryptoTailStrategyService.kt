@@ -473,7 +473,9 @@ class CryptoTailStrategyService(
                 scalpMinEntryDiffSigma = sc.minEntryDiffSigma,
                 scalpMinEntryGapAbs = sc.minEntryGapAbs,
                 scalpGapGateRemainingLo = sc.gapGateRemainingLo,
-                scalpGapGateRemainingHi = sc.gapGateRemainingHi
+                scalpGapGateRemainingHi = sc.gapGateRemainingHi,
+                scalpEvLimitMode = sc.evLimitMode,
+                scalpEvGuardMargin = sc.evGuardMargin
             )
             val saved = strategyRepository.save(entity)
             eventPublisher.publishEvent(CryptoTailStrategyChangedEvent(this))
@@ -903,6 +905,8 @@ class CryptoTailStrategyService(
                 scalpMinEntryGapAbs = sc.minEntryGapAbs,
                 scalpGapGateRemainingLo = sc.gapGateRemainingLo,
                 scalpGapGateRemainingHi = sc.gapGateRemainingHi,
+                scalpEvLimitMode = sc.evLimitMode,
+                scalpEvGuardMargin = sc.evGuardMargin,
                 updatedAt = System.currentTimeMillis()
             )
             if (updated.minPrice > updated.maxPrice) {
@@ -2160,13 +2164,21 @@ class CryptoTailStrategyService(
         val minEntryDiffSigma: BigDecimal,
         val minEntryGapAbs: BigDecimal,
         val gapGateRemainingLo: Int,
-        val gapGateRemainingHi: Int
+        val gapGateRemainingHi: Int,
+        val evLimitMode: String,
+        val evGuardMargin: BigDecimal
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
     private fun normalizeScalpStatsSource(raw: String?): String {
         val v = (raw ?: "HYBRID").trim().uppercase()
         return if (v == "HYBRID" || v == "POLYMARKET" || v == "BINANCE") v else "HYBRID"
+    }
+
+    /** SCALP EV 限价模式归一化：CLAMP（默认/现状）/ GUARD（仅极端背离钳）/ OFF（完全不钳）。未知值回退 CLAMP（保守=零回归） */
+    private fun normalizeScalpEvLimitMode(raw: String?): String {
+        val v = (raw ?: "CLAMP").trim().uppercase()
+        return if (v == "CLAMP" || v == "GUARD" || v == "OFF") v else "CLAMP"
     }
 
     /** 可空 Int 字段三态：null=保留旧值；<=0 视为清空(null)；>0=更新。 */
@@ -2223,7 +2235,9 @@ class CryptoTailStrategyService(
         minEntryDiffSigma = r.scalpMinEntryDiffSigma?.toSafeBigDecimal() ?: BigDecimal.ZERO,
         minEntryGapAbs = r.scalpMinEntryGapAbs?.toSafeBigDecimal() ?: BigDecimal.ZERO,
         gapGateRemainingLo = r.scalpGapGateRemainingLo ?: 0,
-        gapGateRemainingHi = r.scalpGapGateRemainingHi ?: 0
+        gapGateRemainingHi = r.scalpGapGateRemainingHi ?: 0,
+        evLimitMode = normalizeScalpEvLimitMode(r.scalpEvLimitMode),
+        evGuardMargin = r.scalpEvGuardMargin?.toSafeBigDecimal() ?: BigDecimal("0.10")
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2273,7 +2287,9 @@ class CryptoTailStrategyService(
         minEntryDiffSigma = r.scalpMinEntryDiffSigma?.toSafeBigDecimal() ?: e.scalpMinEntryDiffSigma,
         minEntryGapAbs = r.scalpMinEntryGapAbs?.toSafeBigDecimal() ?: e.scalpMinEntryGapAbs,
         gapGateRemainingLo = r.scalpGapGateRemainingLo ?: e.scalpGapGateRemainingLo,
-        gapGateRemainingHi = r.scalpGapGateRemainingHi ?: e.scalpGapGateRemainingHi
+        gapGateRemainingHi = r.scalpGapGateRemainingHi ?: e.scalpGapGateRemainingHi,
+        evLimitMode = r.scalpEvLimitMode?.let { normalizeScalpEvLimitMode(it) } ?: e.scalpEvLimitMode,
+        evGuardMargin = r.scalpEvGuardMargin?.toSafeBigDecimal() ?: e.scalpEvGuardMargin
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2323,6 +2339,8 @@ class CryptoTailStrategyService(
         // 风控（V83）：日亏阈值 >= 0（null=关）；连亏暂停/停笔数 >= 0（0=关）
         sc.dailyLossLimitUsdc?.let { if (it < zero) return false }
         if (sc.consecLossPauseCount < 0 || sc.consecLossStopCount < 0) return false
+        // EV 限价模式（V90）：mode 已归一化为 CLAMP/GUARD/OFF；GUARD 安全阀差额 ∈ [0,1)（<=0 退化 CLAMP 也允许）
+        if (sc.evGuardMargin < zero || sc.evGuardMargin >= one) return false
         return true
     }
 
@@ -2564,6 +2582,8 @@ class CryptoTailStrategyService(
             scalpMinEntryGapAbs = e.scalpMinEntryGapAbs.toPlainString(),
             scalpGapGateRemainingLo = e.scalpGapGateRemainingLo,
             scalpGapGateRemainingHi = e.scalpGapGateRemainingHi,
+            scalpEvLimitMode = e.scalpEvLimitMode,
+            scalpEvGuardMargin = e.scalpEvGuardMargin.toPlainString(),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
         )

@@ -717,6 +717,21 @@ data class CryptoTailStrategy(
     @Column(name = "scalp_max_fill_price", nullable = false, precision = 20, scale = 8)
     val scalpMaxFillPrice: BigDecimal = BigDecimal("0.975"),
 
+    /**
+     * SCALP 进场限价的 EV 钳价模式（仅作用于限价上限，绝不否决进场；进场与否由 [scalpEntryMinPwin] 等闸口决定）：
+     *  - CLAMP（默认，现状）：追价上限 = max(evSafeLimit, ask)。因尾盘 evSafeLimit≈pWin 常 < ask，
+     *    结果限价被钳到恰好 = ask，[entryFakSlippage] 完全失效、对盘口上跳零容忍。
+     *  - GUARD：仅当市场 ask 显著高于 EV 安全价（ask - evSafeLimit > [scalpEvGuardMargin]，疑似坏数据/飞刀）才钳到 ask；
+     *    正常分歧放行 [entryFakSlippage]（限价 = ask+滑点，封顶 [scalpMaxFillPrice]），既复活滑点又保留极端兜底。
+     *  - OFF：完全不钳 EV 安全价，限价 = ask+[entryFakSlippage]（封顶 [scalpMaxFillPrice]）。
+     */
+    @Column(name = "scalp_ev_limit_mode", nullable = false, length = 16)
+    val scalpEvLimitMode: String = "CLAMP",
+
+    /** GUARD 模式安全阀：仅当 (ask - evSafeLimit) > 此阈值才钳到 EV 安全价；<=0 等价 CLAMP（任意背离即钳）。仅 [scalpEvLimitMode]=GUARD 时生效 */
+    @Column(name = "scalp_ev_guard_margin", nullable = false, precision = 20, scale = 8)
+    val scalpEvGuardMargin: BigDecimal = BigDecimal("0.10"),
+
     /** 进场窗口起点（距周期开始秒数，0=周期开始即可进） */
     @Column(name = "scalp_window_start_seconds", nullable = false)
     val scalpWindowStartSeconds: Int = 0,

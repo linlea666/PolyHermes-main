@@ -60,6 +60,33 @@ private const val SIZE_DECIMAL_SCALE = 2
 private val MIN_ORDER_USDC = BigDecimal("1")
 
 /**
+ * SCALP 进场限价的 EV 钳价决策（纯函数，无副作用，便于单测）。
+ * chaseCeil = max(evSafeLimit, executableAsk) 恒 >= ask，故任何模式都*不否决进场*，仅决定追价上限：
+ *  - OFF：完全不钳，返回 base（= ask+entryFakSlippage，已封顶 scalpMaxFillPrice）。
+ *  - GUARD：仅当 (executableAsk − evSafeLimit) > guardMargin(且 guardMargin>0) 才钳到 chaseCeil（疑似坏数据/飞刀）；
+ *    否则放行 base 让 entryFakSlippage 生效。guardMargin<=0 退化为 CLAMP（任意背离即钳）。
+ *  - CLAMP/未知值：返回 base.min(chaseCeil)（现状；尾盘 evSafeLimit≈pWin<ask 时退化为钳到 ask，滑点被抹平）。
+ */
+internal fun resolveScalpEvLimit(
+    mode: String,
+    guardMargin: BigDecimal,
+    base: BigDecimal,
+    evSafeLimit: BigDecimal,
+    executableAsk: BigDecimal
+): BigDecimal {
+    val chaseCeil = evSafeLimit.max(executableAsk)
+    return when (mode.trim().uppercase()) {
+        "OFF" -> base
+        "GUARD" -> {
+            // margin<=0 时 divergence>margin 恒真（除非 ask<=evSafeLimit），即退化为 CLAMP（任意背离即钳），与文档/校验语义一致。
+            val divergence = executableAsk.subtract(evSafeLimit)
+            if (divergence > guardMargin) base.min(chaseCeil) else base
+        }
+        else -> base.min(chaseCeil)
+    }
+}
+
+/**
  * 周期内预置上下文：账户、解密凭证、费率、签名类型、CLOB 客户端；不含预签订单。
  * 触发时 FIXED/RATIO 均按 outcomeIndex 计算 size 并签名提交。
  */
@@ -2281,9 +2308,12 @@ class CryptoTailStrategyExecutionService(
     /**
      * 进场最终限价（WS3，fast/slow 两路共用）：
      *  - 概率/EV 路径（pricing 非空，BARRIER/BRACKET/TAIL_DIFF）→ 直接用 pricing.finalLimit（行为不变）。
-     *  - SCALP_FLIP → 在原 computeBuyPrice(min(ask+滑点, scalpMaxFillPrice)) 基础上，叠加"EV 安全上沿"作*追价上限*：
-     *    finalLimit = base.min(max(evSafeLimit, executableAsk))。即始终允许以已通过进场闸的当前 ask 成交（不否决），
-     *    但向上追价不超过 EV 安全价，避免盘口上跳时追到 -EV。信号/价源不可用 → 回退 base（与旧行为一致，绝不臆造）。
+     *  - SCALP_FLIP → 在原 computeBuyPrice(min(ask+滑点, scalpMaxFillPrice)) 基础上，按 [CryptoTailStrategy.scalpEvLimitMode] 决定是否叠加"EV 安全上沿"作*追价上限*：
+     *    · CLAMP（默认/现状）：finalLimit = base.min(max(evSafeLimit, executableAsk))，追价不超过 EV 安全价；
+     *      因 evSafeLimit≈pWin 尾盘常 < ask，实际钳到 = ask，entryFakSlippage 被抹平（零容忍，历史高 kill 根因之一）。
+     *    · GUARD：仅当 ask 显著高于 EV 安全价(差 > scalpEvGuardMargin，疑似坏数据/飞刀)才钳到 ask，否则放行 entryFakSlippage。
+     *    · OFF：不钳，finalLimit = base（ask+滑点，封顶 scalpMaxFillPrice）。
+     *    三种模式 chaseCeil 均 >= ask，故*始终不否决*已过进场闸的当前 ask 成交。信号/价源不可用 → 回退 base（与旧行为一致，绝不臆造）。
      *  - 其余（LEGACY）→ computeBuyPrice。
      */
     private fun computeEntryLimitPrice(
@@ -2302,8 +2332,13 @@ class CryptoTailStrategyExecutionService(
         val remainingSeconds = (periodStartUnix + strategy.intervalSeconds - nowSeconds).toInt()
         val signal = computeScalpEntrySignal(strategy, periodStartUnix, outcomeIndex, remainingSeconds) ?: return base
         val ev = computeFakPricing(strategy, effectiveBestBid, effectiveBestAsk, signal.pWin)
-        val chaseCeil = ev.evSafeLimit.max(ev.executableAsk)
-        return base.min(chaseCeil)
+        return resolveScalpEvLimit(
+            mode = strategy.scalpEvLimitMode,
+            guardMargin = strategy.scalpEvGuardMargin,
+            base = base,
+            evSafeLimit = ev.evSafeLimit,
+            executableAsk = ev.executableAsk
+        )
     }
 
     private suspend fun buildRetryFakOrderAttempt(

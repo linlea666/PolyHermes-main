@@ -1718,6 +1718,8 @@ export interface CryptoTailStrategyDto {
   scalpMinEntryGapAbs?: string
   scalpGapGateRemainingLo?: number
   scalpGapGateRemainingHi?: number
+  scalpEvLimitMode?: string
+  scalpEvGuardMargin?: string
   createdAt: number
   updatedAt: number
 }
@@ -1770,6 +1772,8 @@ export interface CryptoTailScalpParams {
   scalpMinEntryGapAbs?: string
   scalpGapGateRemainingLo?: number
   scalpGapGateRemainingHi?: number
+  scalpEvLimitMode?: string
+  scalpEvGuardMargin?: string
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */

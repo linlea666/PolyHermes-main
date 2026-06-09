@@ -151,7 +151,9 @@ const SCALP_DEFAULTS = {
   scalpMinEntryDiffSigma: '0',
   scalpMinEntryGapAbs: '0',
   scalpGapGateRemainingLo: 0,
-  scalpGapGateRemainingHi: 0
+  scalpGapGateRemainingHi: 0,
+  scalpEvLimitMode: 'CLAMP',
+  scalpEvGuardMargin: '0.10'
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -201,7 +203,9 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpMinEntryDiffSigma: record.scalpMinEntryDiffSigma ?? SCALP_DEFAULTS.scalpMinEntryDiffSigma,
   scalpMinEntryGapAbs: record.scalpMinEntryGapAbs ?? SCALP_DEFAULTS.scalpMinEntryGapAbs,
   scalpGapGateRemainingLo: record.scalpGapGateRemainingLo ?? SCALP_DEFAULTS.scalpGapGateRemainingLo,
-  scalpGapGateRemainingHi: record.scalpGapGateRemainingHi ?? SCALP_DEFAULTS.scalpGapGateRemainingHi
+  scalpGapGateRemainingHi: record.scalpGapGateRemainingHi ?? SCALP_DEFAULTS.scalpGapGateRemainingHi,
+  scalpEvLimitMode: record.scalpEvLimitMode ?? SCALP_DEFAULTS.scalpEvLimitMode,
+  scalpEvGuardMargin: record.scalpEvGuardMargin ?? SCALP_DEFAULTS.scalpEvGuardMargin
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -404,7 +408,9 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpMinEntryDiffSigma: strOrUndef(v.scalpMinEntryDiffSigma),
   scalpMinEntryGapAbs: strOrUndef(v.scalpMinEntryGapAbs),
   scalpGapGateRemainingLo: numOrUndef(v.scalpGapGateRemainingLo),
-  scalpGapGateRemainingHi: numOrUndef(v.scalpGapGateRemainingHi)
+  scalpGapGateRemainingHi: numOrUndef(v.scalpGapGateRemainingHi),
+  scalpEvLimitMode: strOrUndef(v.scalpEvLimitMode),
+  scalpEvGuardMargin: strOrUndef(v.scalpEvGuardMargin)
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -3480,6 +3486,24 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpMaxFillPrice" label={t('cryptoTailStrategy.form.scalpMaxFillPrice')} extra={t('cryptoTailStrategy.form.scalpMaxFillPriceHint')} rules={[{ required: true }]}>
                 <InputNumber min={0} max={1} step={0.005} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpEvLimitMode" label={t('cryptoTailStrategy.form.scalpEvLimitMode')} extra={t('cryptoTailStrategy.form.scalpEvLimitModeHint')}>
+                <Select
+                  options={[
+                    { label: t('cryptoTailStrategy.form.scalpEvLimitModeClamp'), value: 'CLAMP' },
+                    { label: t('cryptoTailStrategy.form.scalpEvLimitModeGuard'), value: 'GUARD' },
+                    { label: t('cryptoTailStrategy.form.scalpEvLimitModeOff'), value: 'OFF' }
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item noStyle shouldUpdate={(prev, curr) => prev.scalpEvLimitMode !== curr.scalpEvLimitMode}>
+                {({ getFieldValue }) =>
+                  getFieldValue('scalpEvLimitMode') === 'GUARD' ? (
+                    <Form.Item name="scalpEvGuardMargin" label={t('cryptoTailStrategy.form.scalpEvGuardMargin')} extra={t('cryptoTailStrategy.form.scalpEvGuardMarginHint')}>
+                      <InputNumber min={0} max={0.99} step={0.01} style={{ width: '100%' }} stringMode />
+                    </Form.Item>
+                  ) : null
+                }
               </Form.Item>
               <Form.Item name="scalpMinExitBidDepthUsdc" label={t('cryptoTailStrategy.form.scalpMinExitBidDepthUsdc')} extra={t('cryptoTailStrategy.form.scalpMinExitBidDepthHint')}>
                 <InputNumber min={0} step={1} style={{ width: '100%' }} addonBefore="$" placeholder={t('cryptoTailStrategy.form.scalpOptionalPlaceholder')} stringMode />
