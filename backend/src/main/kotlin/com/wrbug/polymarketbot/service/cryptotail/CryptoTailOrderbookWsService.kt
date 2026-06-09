@@ -12,7 +12,6 @@ import com.wrbug.polymarketbot.service.binance.BinanceKlineService
 import com.wrbug.polymarketbot.util.RetrofitFactory
 import com.wrbug.polymarketbot.util.createClient
 import com.wrbug.polymarketbot.util.fromJson
-import com.wrbug.polymarketbot.util.gt
 import com.wrbug.polymarketbot.util.toJson
 import com.wrbug.polymarketbot.util.toSafeBigDecimal
 import kotlinx.coroutines.CoroutineScope
@@ -48,7 +47,8 @@ class CryptoTailOrderbookWsService(
     private val periodPriceProvider: PeriodPriceProvider,
     private val bracketExitService: CryptoTailBracketExitService,
     private val entrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
-    private val orderbookCache: CryptoTailOrderbookCache
+    private val orderbookCache: CryptoTailOrderbookCache,
+    private val wsDiag: CryptoTailWsDiag
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailOrderbookWsService::class.java)
@@ -101,6 +101,22 @@ class CryptoTailOrderbookWsService(
 
     /** per-subscriptionKey 退出评估在途守卫：同上，避免退出评估协程堆积 */
     private val exitEvalInFlight = java.util.concurrent.ConcurrentHashMap<String, AtomicBoolean>()
+
+    /** WS 诊断：每 token 上次订阅时刻，用于量化"订阅→首个 book"冷窗口 */
+    private val wsDiagSubscribedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** WS 诊断：本轮订阅后已记录过 BOOK_SEEDED 的 token，避免重复记录冷窗口 */
+    private val wsDiagSeeded = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** WS 诊断：本轮订阅后已记录过 COLD_START 的 token，避免冷窗口内每条 price_change 刷屏（每冷启动周期每 token 仅一次） */
+    private val wsDiagColdWarned = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** WS 诊断：每 token 累计 book / price_change 消息数（心跳里输出区间增量观察吞吐） */
+    private val wsDiagBookCount = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+    private val wsDiagPcCount = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
+    /** WS 诊断：上次断连时刻，用于量化重连缺口 */
+    private val wsLastDisconnectAtMs = java.util.concurrent.atomic.AtomicLong(0)
 
     private fun enabledStrategiesCached(): List<CryptoTailStrategy> {
         val now = System.currentTimeMillis()
@@ -155,6 +171,11 @@ class CryptoTailOrderbookWsService(
                 webSocket = client.newWebSocket(request, object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
                         logger.info("加密价差策略订单簿 WebSocket 已连接")
+                        val lastDisc = wsLastDisconnectAtMs.getAndSet(0)
+                        wsDiag.event(
+                            "WS_CONNECT",
+                            "gapMs" to (if (lastDisc > 0) System.currentTimeMillis() - lastDisc else "")
+                        )
                         refreshAndSubscribe(fromConnect = true)
                     }
 
@@ -164,12 +185,16 @@ class CryptoTailOrderbookWsService(
 
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                         this@CryptoTailOrderbookWsService.webSocket = null
+                        wsLastDisconnectAtMs.set(System.currentTimeMillis())
+                        wsDiag.event("WS_CLOSING", "code" to code, "reason" to reason)
                         if (!closedForNoStrategies.getAndSet(false)) scheduleReconnect()
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
                         logger.warn("加密价差策略订单簿 WebSocket 异常: ${t.message}")
                         this@CryptoTailOrderbookWsService.webSocket = null
+                        wsLastDisconnectAtMs.set(System.currentTimeMillis())
+                        wsDiag.warn("WS_FAILURE", "err" to (t.message ?: t.javaClass.simpleName))
                         scheduleReconnect()
                     }
                 })
@@ -205,97 +230,142 @@ class CryptoTailOrderbookWsService(
                 val assetId = (json.get("asset_id") as? com.google.gson.JsonPrimitive)?.asString ?: return
                 val bids = json.get("bids") as? com.google.gson.JsonArray
                 if (bids == null || bids.isEmpty) return
-                // Polymarket book 的 bids 为价格升序，bids[0] 为最低买价；bestBid 应取最高买价
-                var bestBid: BigDecimal? = null
-                var bestBidSize: BigDecimal? = null
-                var bidDepthUsd = BigDecimal.ZERO
                 val bidLevels = mutableListOf<OrderbookQualitySnapshot.BookLevel>()
                 for (i in 0 until bids.size()) {
                     val level = bids.get(i) as? com.google.gson.JsonObject ?: continue
                     val p = (level.get("price") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: continue
                     val size = (level.get("size") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: BigDecimal.ZERO
-                    bidDepthUsd = bidDepthUsd.add(p.multiply(size))
                     bidLevels.add(OrderbookQualitySnapshot.BookLevel(p, size))
-                    if (bestBid == null || p.gt(bestBid)) {
-                        bestBid = p
-                        bestBidSize = size
-                    }
                 }
-                // asks 取最低卖价作为 bestAsk（用于障碍模式 EV 闸的有效成本）
                 val asks = json.get("asks") as? com.google.gson.JsonArray
-                var bestAsk: BigDecimal? = null
-                var bestAskSize: BigDecimal? = null
-                var askDepthUsd = BigDecimal.ZERO
                 val askLevels = mutableListOf<OrderbookQualitySnapshot.BookLevel>()
                 if (asks != null) {
                     for (i in 0 until asks.size()) {
                         val level = asks.get(i) as? com.google.gson.JsonObject ?: continue
                         val p = (level.get("price") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: continue
                         val size = (level.get("size") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal() ?: BigDecimal.ZERO
-                        askDepthUsd = askDepthUsd.add(p.multiply(size))
                         askLevels.add(OrderbookQualitySnapshot.BookLevel(p, size))
-                        if (bestAsk == null || p < bestAsk) {
-                            bestAsk = p
-                            bestAskSize = size
-                        }
                     }
                 }
-                if (bestBid != null) {
-                    val nowMs = System.currentTimeMillis()
-                    val snapshot = OrderbookQualitySnapshot(
-                        tokenId = assetId,
-                        bestBid = bestBid,
-                        bestAsk = bestAsk,
-                        bidSize = bestBidSize,
-                        askSize = bestAskSize,
-                        bidDepthUsd = bidDepthUsd,
-                        askDepthUsd = askDepthUsd,
-                        spread = bestAsk?.subtract(bestBid),
-                        quoteUpdatedAtMs = nowMs,
-                        depthUpdatedAtMs = nowMs,
-                        askUpdatedAtMs = bestAsk?.let { nowMs },
-                        depthStale = false,
-                        bidLevels = bidLevels.sortedByDescending { it.price },
-                        askLevels = askLevels.sortedBy { it.price }
+                // book 为全量快照：交由本地盘口清空重填（天然 resync 点），派生含完整深度的最新快照
+                val nowMs = System.currentTimeMillis()
+                val feedLagMs = msgFeedLagMs(json, nowMs)
+                val result = orderbookCache.applyBook(assetId, bidLevels, askLevels, nowMs)
+                wsDiagBookCount.getOrPut(assetId) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
+                // 首个 book 到达：量化"订阅→播种"冷窗口（此前 price_change 无法重建，只能走 REST 兜底）
+                if (wsDiagSeeded.add(assetId)) {
+                    val subAt = wsDiagSubscribedAtMs[assetId]
+                    wsDiag.event(
+                        "BOOK_SEEDED",
+                        "tk" to wsDiag.shortToken(assetId),
+                        "coldWindowMs" to (if (subAt != null) nowMs - subAt else ""),
+                        "bidLv" to bidLevels.size,
+                        "askLv" to askLevels.size,
+                        "feedLagMs" to feedLagMs
                     )
-                    orderbookCache.put(assetId, snapshot)
+                }
+                val snapshot = result.snapshot
+                if (snapshot != null) {
+                    emitWsHeartbeat(assetId, snapshot, feedLagMs)
                     onBestBid(assetId, snapshot)
                 }
             }
 
             "price_change" -> {
                 val priceChanges = json.get("price_changes") as? com.google.gson.JsonArray ?: return
+                val nowMs = System.currentTimeMillis()
+                val feedLagMs = msgFeedLagMs(json, nowMs)
+                // 同一条消息可含多 token 的多档变更：按 assetId 聚合后各应用一次（绝对量置位语义）
+                val changesByAsset = HashMap<String, MutableList<CryptoTailOrderbookCache.LevelChange>>()
+                val bidHintByAsset = HashMap<String, BigDecimal>()
+                val askHintByAsset = HashMap<String, BigDecimal>()
                 for (i in 0 until priceChanges.size()) {
                     val pc = priceChanges.get(i) as? com.google.gson.JsonObject ?: continue
                     val assetId = (pc.get("asset_id") as? com.google.gson.JsonPrimitive)?.asString ?: continue
-                    val bestBidStr = (pc.get("best_bid") as? com.google.gson.JsonPrimitive)?.asString
-                    val bestBid = bestBidStr?.toSafeBigDecimal()
-                    val bestAskStr = (pc.get("best_ask") as? com.google.gson.JsonPrimitive)?.asString
-                    val bestAsk = bestAskStr?.toSafeBigDecimal()
-                    if (bestBid != null) {
-                        val prev = orderbookCache.get(assetId)
-                        val nowMs = System.currentTimeMillis()
-                        val snapshot = OrderbookQualitySnapshot(
-                            tokenId = assetId,
-                            bestBid = bestBid,
-                            bestAsk = bestAsk ?: prev?.bestAsk,
-                            bidSize = prev?.bidSize,
-                            askSize = prev?.askSize,
-                            bidDepthUsd = prev?.bidDepthUsd,
-                            askDepthUsd = prev?.askDepthUsd,
-                            spread = (bestAsk ?: prev?.bestAsk)?.subtract(bestBid),
-                            quoteUpdatedAtMs = nowMs,
-                            depthUpdatedAtMs = prev?.depthUpdatedAtMs,
-                            askUpdatedAtMs = if (bestAsk != null) nowMs else prev?.askUpdatedAtMs,
-                            depthStale = prev?.depthUpdatedAtMs == null,
-                            bidLevels = prev?.bidLevels ?: emptyList()
-                        )
-                        orderbookCache.put(assetId, snapshot)
-                        onBestBid(assetId, snapshot)
+                    val price = (pc.get("price") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal()
+                    val size = (pc.get("size") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal()
+                    val side = (pc.get("side") as? com.google.gson.JsonPrimitive)?.asString
+                    if (price != null && size != null && side != null) {
+                        changesByAsset.getOrPut(assetId) { mutableListOf() }
+                            .add(CryptoTailOrderbookCache.LevelChange(price, size, isBid = side.equals("BUY", ignoreCase = true)))
                     }
+                    (pc.get("best_bid") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal()?.let { bidHintByAsset[assetId] = it }
+                    (pc.get("best_ask") as? com.google.gson.JsonPrimitive)?.asString?.toSafeBigDecimal()?.let { askHintByAsset[assetId] = it }
+                }
+                for (assetId in (changesByAsset.keys + bidHintByAsset.keys)) {
+                    val result = orderbookCache.applyPriceChange(
+                        assetId,
+                        changesByAsset[assetId] ?: emptyList(),
+                        bidHintByAsset[assetId],
+                        askHintByAsset[assetId],
+                        nowMs
+                    )
+                    wsDiagPcCount.getOrPut(assetId) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
+                    if (!result.seeded) {
+                        // 冷启动：book 尚未播种，price_change 无法重建完整盘口 → 本单只能 REST 兜底。
+                        // 冷窗口内 price_change 高频，每 token 仅记一次，避免刷屏（订阅时已清除标记）
+                        if (wsDiagColdWarned.add(assetId)) {
+                            wsDiag.warn("COLD_START", "tk" to wsDiag.shortToken(assetId), "feedLagMs" to feedLagMs)
+                        }
+                        continue
+                    }
+                    if (result.prunedLevels > 0) {
+                        // 自愈剪档：用权威 best_bid/ask 剪掉残留陈旧档，说明此前漏过该档的更新（丢包信号）
+                        wsDiag.warn(
+                            "SELF_HEAL",
+                            "tk" to wsDiag.shortToken(assetId),
+                            "pruned" to result.prunedLevels,
+                            "bestBid" to (bidHintByAsset[assetId]?.toPlainString() ?: ""),
+                            "bestAsk" to (askHintByAsset[assetId]?.toPlainString() ?: "")
+                        )
+                    }
+                    val snapshot = result.snapshot ?: continue
+                    val bid = snapshot.bestBid
+                    val ask = snapshot.bestAsk
+                    if (ask != null && bid >= ask) {
+                        wsDiag.warn("CROSSED", "tk" to wsDiag.shortToken(assetId), "bestBid" to bid.toPlainString(), "bestAsk" to ask.toPlainString())
+                    }
+                    emitWsHeartbeat(assetId, snapshot, feedLagMs)
+                    onBestBid(assetId, snapshot)
                 }
             }
+
+            "tick_size_change" -> {
+                // 本轮不处理 tick 切换（旧 tick 下单会被拒）；先 WARN 记录便于排查异常拒单
+                val assetId = (json.get("asset_id") as? com.google.gson.JsonPrimitive)?.asString
+                wsDiag.warn(
+                    "TICK_SIZE_CHANGE",
+                    "tk" to (assetId?.let { wsDiag.shortToken(it) } ?: ""),
+                    "old" to ((json.get("old_tick_size") as? com.google.gson.JsonPrimitive)?.asString ?: ""),
+                    "new" to ((json.get("new_tick_size") as? com.google.gson.JsonPrimitive)?.asString ?: "")
+                )
+            }
         }
+    }
+
+    /** 行情源到本地的延迟：本地 now − 消息 timestamp(ms)；缺失或异常返回 "" */
+    private fun msgFeedLagMs(json: com.google.gson.JsonObject, nowMs: Long): Any {
+        val ts = (json.get("timestamp") as? com.google.gson.JsonPrimitive)?.asString?.toLongOrNull() ?: return ""
+        val lag = nowMs - ts
+        return if (lag in 0..600_000) lag else ""
+    }
+
+    /** 行情心跳（每 token 按配置间隔节流）：输出顶档/深度/档位数/吞吐计数/feedLag */
+    private fun emitWsHeartbeat(assetId: String, snapshot: OrderbookQualitySnapshot, feedLagMs: Any) {
+        if (!wsDiag.isEnabled) return
+        wsDiag.heartbeat(
+            assetId,
+            "bestBid" to (snapshot.bestBid.toPlainString()),
+            "bestAsk" to (snapshot.bestAsk?.toPlainString() ?: ""),
+            "spread" to (snapshot.spread?.toPlainString() ?: ""),
+            "bidDepth" to (snapshot.bidDepthUsd?.toPlainString() ?: ""),
+            "askDepth" to (snapshot.askDepthUsd?.toPlainString() ?: ""),
+            "bidLv" to snapshot.bidLevels.size,
+            "askLv" to snapshot.askLevels.size,
+            "books" to (wsDiagBookCount[assetId]?.get() ?: 0),
+            "pcs" to (wsDiagPcCount[assetId]?.get() ?: 0),
+            "feedLagMs" to feedLagMs
+        )
     }
 
     fun latestSnapshot(tokenId: String): OrderbookQualitySnapshot? = orderbookCache.latestSnapshot(tokenId)
@@ -446,6 +516,15 @@ class CryptoTailOrderbookWsService(
             val oldTokenIds = tokenToEntries.get().keys.toSet()
             val (tokenIds, newMap) = buildSubscriptionMap()
             tokenToEntries.set(newMap)
+            // 淘汰已下线周期的 token：本地盘口缓存 + 各诊断 map 仅保留当前活跃 token，防止跨周期轮换内存无界增长
+            val activeTokens = tokenIds.toSet()
+            orderbookCache.retainTokens(activeTokens)
+            wsDiag.retainTokens(activeTokens)
+            wsDiagSubscribedAtMs.keys.retainAll(activeTokens)
+            wsDiagSeeded.retainAll(activeTokens)
+            wsDiagColdWarned.retainAll(activeTokens)
+            wsDiagBookCount.keys.retainAll(activeTokens)
+            wsDiagPcCount.keys.retainAll(activeTokens)
             if (tokenIds.isEmpty()) {
                 closeWebSocketForNoStrategies()
                 return
@@ -471,6 +550,14 @@ class CryptoTailOrderbookWsService(
             try {
                 webSocket?.send(msg)
                 logger.info("加密价差策略订单簿订阅: ${tokenIds.size} 个 token, 市场: $marketSlugs")
+                // WS 诊断：记订阅时刻 + 清除 seeded 标记，待首个 book 到达时量化冷窗口
+                val subAt = System.currentTimeMillis()
+                for (tid in tokenIds) {
+                    wsDiagSubscribedAtMs[tid] = subAt
+                    wsDiagSeeded.remove(tid)
+                    wsDiagColdWarned.remove(tid)
+                }
+                wsDiag.event("WS_SUBSCRIBE", "tokens" to tokenIds.size, "markets" to marketSlugs.joinToString("|"))
             } catch (e: Exception) {
                 logger.warn("发送订阅失败: ${e.message}")
                 return
