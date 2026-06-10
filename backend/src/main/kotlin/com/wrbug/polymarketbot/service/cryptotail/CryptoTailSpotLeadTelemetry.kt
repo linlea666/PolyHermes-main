@@ -18,19 +18,24 @@ class CryptoTailSpotLeadTelemetry {
 
     /**
      * @param binFirstCrossTs 币安现货首次穿价（站到持仓错误一侧）的本地时间戳ms；未发生为 null
+     * @param okxFirstCrossTs OKX 现货首次穿价的本地时间戳ms；未发生为 null
      * @param clFirstCrossTs Chainlink 首次穿价的本地时间戳ms；未发生为 null
-     * @param leadMs clFirstCrossTs - binFirstCrossTs（正=币安领先）；任一缺失为 null
+     * @param leadMs clFirstCrossTs - binFirstCrossTs（正=币安领先）；任一缺失为 null（向后兼容字段）
+     * @param okxLeadMs clFirstCrossTs - okxFirstCrossTs（正=OKX 领先）；任一缺失为 null
      * @param earlyWarningActed 本周期早警是否真正触发并改变了决策（否决/早警减仓/即时砍）
      */
     data class CrossSnapshot(
         val binFirstCrossTs: Long? = null,
+        val okxFirstCrossTs: Long? = null,
         val clFirstCrossTs: Long? = null,
         val leadMs: Long? = null,
+        val okxLeadMs: Long? = null,
         val earlyWarningActed: Boolean = false
     )
 
     private class Record {
         @Volatile var binFirstCrossTs: Long? = null
+        @Volatile var okxFirstCrossTs: Long? = null
         @Volatile var clFirstCrossTs: Long? = null
         @Volatile var earlyWarningActed: Boolean = false
     }
@@ -46,6 +51,7 @@ class CryptoTailSpotLeadTelemetry {
     /**
      * 观测一次穿价状态；首次穿价时间戳一旦记录不再覆盖（取首穿）。
      * @param binCrossed 币安现货是否已穿价（须现货新鲜）
+     * @param okxCrossed OKX 现货是否已穿价（须现货新鲜）
      * @param clCrossed Chainlink 是否已穿价
      */
     fun observe(
@@ -54,11 +60,13 @@ class CryptoTailSpotLeadTelemetry {
         outcomeIndex: Int,
         nowMs: Long,
         binCrossed: Boolean,
+        okxCrossed: Boolean,
         clCrossed: Boolean
     ) {
-        if (!binCrossed && !clCrossed) return
+        if (!binCrossed && !okxCrossed && !clCrossed) return
         val rec = cache.get(key(strategyId, periodStartUnix, outcomeIndex)) { Record() }
         if (binCrossed && rec.binFirstCrossTs == null) rec.binFirstCrossTs = nowMs
+        if (okxCrossed && rec.okxFirstCrossTs == null) rec.okxFirstCrossTs = nowMs
         if (clCrossed && rec.clFirstCrossTs == null) rec.clFirstCrossTs = nowMs
     }
 
@@ -71,8 +79,10 @@ class CryptoTailSpotLeadTelemetry {
     fun snapshot(strategyId: Long, periodStartUnix: Long, outcomeIndex: Int): CrossSnapshot {
         val rec = cache.getIfPresent(key(strategyId, periodStartUnix, outcomeIndex)) ?: return CrossSnapshot()
         val bin = rec.binFirstCrossTs
+        val okx = rec.okxFirstCrossTs
         val cl = rec.clFirstCrossTs
         val lead = if (bin != null && cl != null) cl - bin else null
-        return CrossSnapshot(bin, cl, lead, rec.earlyWarningActed)
+        val okxLead = if (okx != null && cl != null) cl - okx else null
+        return CrossSnapshot(bin, okx, cl, lead, okxLead, rec.earlyWarningActed)
     }
 }

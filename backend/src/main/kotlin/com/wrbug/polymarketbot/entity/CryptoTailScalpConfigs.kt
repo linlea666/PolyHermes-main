@@ -362,5 +362,34 @@ data class CryptoTailScalpSpotLeadConfig(
     val scaleOutRatio: BigDecimal = BigDecimal.ZERO,
 
     @Column(name = "scalp_late_scale_out_require_spot_danger", nullable = false)
-    val lateScaleOutRequireSpotDanger: Boolean = false
+    val lateScaleOutRequireSpotDanger: Boolean = false,
+
+    /**
+     * 混合推送总开关（v2/Phase A4）：true 时实时现货 tick 在尾盘窗口内直接推送退出重评估（亚秒级），
+     * 不再纯依赖 ~300ms 尾盘轮询。复用 WS 缓存盘口（零新增 REST）、复用退出在途守卫与时间防抖。默认 false（零回归）。
+     */
+    @Column(name = "scalp_spot_lead_push_enabled", nullable = false)
+    val pushEnabled: Boolean = false,
+
+    /** 推送尾盘窗口（距结算剩余秒）：remaining<=此值时每条现货 tick 触发一次退出重评估（边沿+防抖）。 */
+    @Column(name = "scalp_spot_lead_push_tail_seconds", nullable = false)
+    val pushTailSeconds: Int = 20,
+
+    /** 推送最小间隔（毫秒，按订阅防抖）：同一持仓两次 tick 推送的最小间隔，防止崩盘高频 tick 触发评估风暴。 */
+    @Column(name = "scalp_spot_lead_push_min_interval_ms", nullable = false)
+    val pushMinIntervalMs: Int = 80,
+
+    /**
+     * 入场现货闸开关（Phase B）：true 时在 SCALP 进场闸链追加一道"现货已穿价/逆向则否决进场(SPOT_LEAD_ENTRY_VETO)"。
+     * 仅在现货新鲜且明确不利时否决；现货缺失/不新鲜一律放行（fail-safe，不误拦）。默认 false（零回归）。
+     */
+    @Column(name = "scalp_spot_lead_entry_gate_enabled", nullable = false)
+    val entryGateEnabled: Boolean = false,
+
+    /**
+     * 尾盘硬止损现货门控开关（Phase C）：true 时尾盘硬止损命中且模型仍强挺、而现货**未**判危险时，
+     * 抑制硬止损改为减仓（修"尾盘误伤赢单"）；现货判危险则照常硬止损。默认 false（零回归）。
+     */
+    @Column(name = "scalp_spot_lead_late_stop_gate_enabled", nullable = false)
+    val lateStopGateEnabled: Boolean = false
 )

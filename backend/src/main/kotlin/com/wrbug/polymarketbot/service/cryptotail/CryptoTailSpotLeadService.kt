@@ -2,8 +2,6 @@ package com.wrbug.polymarketbot.service.cryptotail
 
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.entity.CryptoTailStrategyTrigger
-import com.wrbug.polymarketbot.service.binance.BinanceKlineService
-import com.wrbug.polymarketbot.service.binance.BinanceSpotTickerService
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import java.math.BigDecimal
@@ -26,16 +24,20 @@ import java.math.BigDecimal
  *  - 仅用于：(1) 让出场更早/更快；(2) 给 WICK_GUARD 加否决。绝不放松/延长持有。
  *  - fail-safe：现货数据缺失/不新鲜一律返回 null 或 fresh=false，调用方据此回退旧行为，绝不用过期现货价误触发。
  *
+ * 价源升级(v2)：现价来源不再硬锁币安，改由 [SpotLeadPriceProviderRouter] 按策略 source 路由：
+ *  - BINANCE / OKX：单源（各自 K 线 open + 实时 tick）；
+ *  - CONSENSUS：币安与 OKX 双源融合——两源均新鲜且方向一致才判危险（require both agree，抑制单源假信号），
+ *    仅单源新鲜时退化为该源（fail-safe，不静默回退到"无信号"）。
+ *
  * 复用决策：
- *  - 复用 [BinanceKlineService.getCurrentOpenClose] 取同周期 (open=strike, close) 及 [BinanceKlineService.getLastUpdateMs] 的 age；
- *  - 复用 [BinanceSpotTickerService] 的实时 mid + age 作为更新鲜的 current 候选；
+ *  - 复用 [SpotLeadPriceProvider.getSpotSnapshot] 取同周期 (open=strike, current, age, kind)，各源同场自洽；
  *  - 复用 [CryptoTailHoldToSettlePolicy.gapSupportsHolding] 判方向（与 Chainlink gap 同号口径）；
- *  - 复用 [BarrierProbability.winProbTerminal] 的 safeRatio(=z=|gap|/(σ√t)) 作为"距翻转 σ 数"，避免重写统计。
+ *  - 复用 [BarrierProbability.winProbTerminal] 的 safeRatio(=z=|gap|/(σ√t)) 作为"距翻转 σ 数"，避免重写统计；
+ *  - σ 取自结算同源价 [PeriodPriceProvider]（与价格水平解耦，仅取波动率量级），与现价来源无关。
  */
 @Service
 class CryptoTailSpotLeadService(
-    private val binanceKlineService: BinanceKlineService,
-    private val binanceSpotTickerService: BinanceSpotTickerService,
+    private val spotLeadRouter: SpotLeadPriceProviderRouter,
     private val periodPriceProvider: PeriodPriceProvider
 ) {
 
@@ -53,6 +55,7 @@ class CryptoTailSpotLeadService(
      * @param distanceToFlipSigma 现货距翻转的 σ 数 = |binGap|/(σ√剩余)；σ 不可用时为 null
      * @param ageMs 选用现价的 age（ms）；无数据时为 null
      * @param source 选用现价的来源（TICK/KLINE）；无数据时为 null
+     * @param exchange 现价交易所归属（BINANCE、OKX、CONSENSUS、CONSENSUS_DEGRADED_BINANCE/OKX、CONSENSUS_STALE）；仅用于审计/日志
      */
     data class SpotLeadState(
         val fresh: Boolean,
@@ -60,7 +63,8 @@ class CryptoTailSpotLeadService(
         val supportsHolding: Boolean,
         val distanceToFlipSigma: BigDecimal?,
         val ageMs: Long?,
-        val source: SpotPriceSource? = null
+        val source: SpotPriceSource? = null,
+        val exchange: String? = null
     ) {
         /** 现货是否已实际穿价（站到持仓方向的错误一侧） */
         val crossed: Boolean get() = !supportsHolding
@@ -89,71 +93,122 @@ class CryptoTailSpotLeadService(
         strategy: CryptoTailStrategy,
         trigger: CryptoTailStrategyTrigger,
         remainingSeconds: Int
+    ): SpotLeadState? = evaluateCore(strategy, trigger.outcomeIndex, trigger.periodStartUnix, remainingSeconds)
+
+    /**
+     * 入场期现货领先评估（集成点 B 入场闸专用）：进场时尚无 trigger，按"买入侧 outcomeIndex + 同周期 periodStartUnix"
+     * 直接评估现货是否已穿价/逆向。与 [evaluate] 完全同口径（同源路由/共识融合/fail-safe），仅入参来源不同。
+     */
+    fun evaluateForEntry(
+        strategy: CryptoTailStrategy,
+        outcomeIndex: Int,
+        periodStartUnix: Long,
+        remainingSeconds: Int
+    ): SpotLeadState? = evaluateCore(strategy, outcomeIndex, periodStartUnix, remainingSeconds)
+
+    private fun evaluateCore(
+        strategy: CryptoTailStrategy,
+        outcomeIndex: Int,
+        periodStartUnix: Long,
+        remainingSeconds: Int
     ): SpotLeadState? {
-        // 第一期仅实现 BINANCE 价源；OKX/CONSENSUS 为二期预留，未实现时返回 null（fail-safe，不返回假数据）。
-        if (strategy.scalpSpotLeadSource.uppercase() != "BINANCE") return null
-
-        // strike(周期开盘价) 固定取币安 K 线 open；无 K 线则无法构造同场基准 → fail-safe 返回 null。
-        val oc = binanceKlineService.getCurrentOpenClose(
-            strategy.marketSlugPrefix, strategy.intervalSeconds, trigger.periodStartUnix
-        ) ?: return null
-        val open = oc.first
-        val klineClose = oc.second
-
-        val now = System.currentTimeMillis()
-
-        // current 候选 1：K 线 running close（age 来自该周期 kline 最近推送时间）
-        val klineLastMs = binanceKlineService.getLastUpdateMs(
-            strategy.marketSlugPrefix, strategy.intervalSeconds, trigger.periodStartUnix
-        )
-        val klineAge = klineLastMs?.let { now - it }
-
-        // current 候选 2：实时 tick mid（与周期无关，age 来自最近 bookTicker 推送时间）
-        val tickMid = binanceSpotTickerService.getLatestMid(strategy.marketSlugPrefix)
-        val tickLastMs = binanceSpotTickerService.getLastUpdateMs(strategy.marketSlugPrefix)
-        val tickAge = tickLastMs?.let { now - it }
-
-        // 取 age 更小者作为 current；两者皆缺 → fail-safe（current/age 为 null，fresh=false）。
-        val tickCandidate = if (tickMid != null && tickAge != null)
-            Triple(SpotPriceSource.TICK, tickMid, tickAge) else null
-        val klineCandidate = if (klineAge != null)
-            Triple(SpotPriceSource.KLINE, klineClose, klineAge) else null
-        val chosen = listOfNotNull(tickCandidate, klineCandidate).minByOrNull { it.third }
-
-        val source = chosen?.first
-        val current = chosen?.second
-        val ageMs = chosen?.third
-
-        val maxAge = strategy.scalpSpotLeadMaxAgeMs
-        val fresh = when {
-            ageMs == null -> false
-            maxAge <= 0 -> true
-            else -> ageMs <= maxAge
-        }
-
-        // binGap = current - strike；无 current 时退化为 K 线 close - open（与旧行为一致，但此时 fresh=false 不会触发动作）。
-        val binGap = (current ?: klineClose).subtract(open)
-        val supports = CryptoTailHoldToSettlePolicy.gapSupportsHolding(trigger.outcomeIndex, binGap)
-
-        // 距翻转 σ 数：复用 BarrierProbability.safeRatio(=z=|gap|/(σ√剩余))。σ 与结算同源价一致（与价格水平解耦，仅取波动率量级）。
-        // 仅在需要时（remaining>0）计算；σ 不可用时为 null，danger() 在 flipDistanceSigma>0 路径下会安全跳过。
-        val distance: BigDecimal? = if (remainingSeconds > 0) {
-            val sigma = periodPriceProvider.getSigmaPerSqrtS(
-                strategy.marketSlugPrefix, strategy.intervalSeconds, trigger.periodStartUnix,
-                trigger.outcomeIndex, strategy.sigmaScale, strategy.sigmaMethod, strategy.ewmaLambda
+        // σ 与结算同源价一致（与现价来源无关），整次评估只算一次供各源共用，避免重复采样。
+        val sigma: BigDecimal? = if (remainingSeconds > 0) {
+            periodPriceProvider.getSigmaPerSqrtS(
+                strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix,
+                outcomeIndex, strategy.sigmaScale, strategy.sigmaMethod, strategy.ewmaLambda
             )
-            if (sigma != null) {
-                BarrierProbability.winProbTerminal(binGap, sigma, remainingSeconds.toDouble())?.safeRatio
-            } else null
         } else null
 
+        return when (strategy.scalpSpotLeadSource.uppercase()) {
+            "BINANCE" -> spotLeadRouter.provider("BINANCE")
+                ?.let { buildState(it, strategy, outcomeIndex, periodStartUnix, remainingSeconds, sigma) }
+            "OKX" -> spotLeadRouter.provider("OKX")
+                ?.let { buildState(it, strategy, outcomeIndex, periodStartUnix, remainingSeconds, sigma) }
+            "CONSENSUS" -> {
+                val a = buildState(spotLeadRouter.binance, strategy, outcomeIndex, periodStartUnix, remainingSeconds, sigma)
+                val b = buildState(spotLeadRouter.okx, strategy, outcomeIndex, periodStartUnix, remainingSeconds, sigma)
+                mergeConsensus(a, b)
+            }
+            else -> null
+        }
+    }
+
+    /** 单源构造信号：从某价源取同周期快照并算 binGap/方向/距翻转 σ 数；无快照返回 null（fail-safe）。 */
+    private fun buildState(
+        provider: SpotLeadPriceProvider,
+        strategy: CryptoTailStrategy,
+        outcomeIndex: Int,
+        periodStartUnix: Long,
+        remainingSeconds: Int,
+        sigma: BigDecimal?
+    ): SpotLeadState? {
+        val snap = provider.getSpotSnapshot(
+            strategy.marketSlugPrefix, strategy.intervalSeconds, periodStartUnix
+        ) ?: return null
+
+        val binGap = snap.current.subtract(snap.open)
+        val supports = CryptoTailHoldToSettlePolicy.gapSupportsHolding(outcomeIndex, binGap)
+        val maxAge = strategy.scalpSpotLeadMaxAgeMs
+        val fresh = if (maxAge <= 0) true else snap.currentAgeMs <= maxAge
+        val distance: BigDecimal? = if (remainingSeconds > 0 && sigma != null) {
+            BarrierProbability.winProbTerminal(binGap, sigma, remainingSeconds.toDouble())?.safeRatio
+        } else null
+        val source = try {
+            SpotPriceSource.valueOf(snap.currentSourceKind)
+        } catch (e: IllegalArgumentException) {
+            null
+        }
         return SpotLeadState(
             fresh = fresh,
             spotGap = binGap,
             supportsHolding = supports,
             distanceToFlipSigma = distance,
-            ageMs = ageMs,
-            source = source
+            ageMs = snap.currentAgeMs,
+            source = source,
+            exchange = provider.source
         )
+    }
+
+    /**
+     * 双源融合（CONSENSUS）：
+     *  - 仅一源有数据 → 退化为该源（不静默丢信号）；
+     *  - 两源皆新鲜 → 合成"需双源一致才危险"的状态：
+     *      crossed(合) = 两源皆 crossed（supportsHolding = 非"皆穿价"），近翻转距离取两源较大者（两源都近才算近），
+     *      age 取两源较大者（更保守的新鲜度）；
+     *  - 否则退化为新鲜的那一源；皆不新鲜 → fresh=false（不触发动作）。
+     */
+    internal fun mergeConsensus(a: SpotLeadState?, b: SpotLeadState?): SpotLeadState? {
+        if (a == null && b == null) return null
+        if (a == null) return b?.copy(exchange = "CONSENSUS_DEGRADED_OKX")
+        if (b == null) return a.copy(exchange = "CONSENSUS_DEGRADED_BINANCE")
+
+        if (a.fresh && b.fresh) {
+            val crossedBoth = a.crossed && b.crossed
+            val mergedDistance = mergeDistanceRequireBoth(a.distanceToFlipSigma, b.distanceToFlipSigma)
+            val mergedAge = maxOf(a.ageMs ?: Long.MAX_VALUE, b.ageMs ?: Long.MAX_VALUE)
+            // spotGap 展示取"距翻转更近(较危险)"的一源，便于日志直观；精确双源明细由决策日志分别落库。
+            val repr = if ((a.distanceToFlipSigma ?: BigDecimal.valueOf(Long.MAX_VALUE)) <=
+                (b.distanceToFlipSigma ?: BigDecimal.valueOf(Long.MAX_VALUE))
+            ) a else b
+            return SpotLeadState(
+                fresh = true,
+                spotGap = repr.spotGap,
+                supportsHolding = !crossedBoth,
+                distanceToFlipSigma = mergedDistance,
+                ageMs = mergedAge,
+                source = repr.source,
+                exchange = "CONSENSUS"
+            )
+        }
+        if (a.fresh) return a.copy(exchange = "CONSENSUS_DEGRADED_BINANCE")
+        if (b.fresh) return b.copy(exchange = "CONSENSUS_DEGRADED_OKX")
+        return a.copy(fresh = false, exchange = "CONSENSUS_STALE")
+    }
+
+    /** 近翻转距离合并：两源都有 σ 距离时取较大者（要求两源都近才判近）；任一缺失则返回 null（不靠单源近翻转触发共识危险）。 */
+    private fun mergeDistanceRequireBoth(a: BigDecimal?, b: BigDecimal?): BigDecimal? {
+        if (a == null || b == null) return null
+        return a.max(b)
     }
 }

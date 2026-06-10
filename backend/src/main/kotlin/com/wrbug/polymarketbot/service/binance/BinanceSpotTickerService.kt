@@ -48,6 +48,17 @@ class BinanceSpotTickerService {
     private var reconnectJob: Job? = null
 
     /**
+     * tick 推送监听器（供现货领先推送触发器注册）：每条 tick 缓存后回调 (symbol, mid, tsMs)。
+     * 用函数类型而非共享接口，避免 binance 包与 cryptotail 包的反向耦合。null=无监听（零开销）。
+     */
+    @Volatile
+    private var tickListener: ((symbol: String, mid: BigDecimal, tsMs: Long) -> Unit)? = null
+
+    fun setTickListener(listener: (symbol: String, mid: BigDecimal, tsMs: Long) -> Unit) {
+        tickListener = listener
+    }
+
+    /**
      * 该市场对应币种的最新现价 mid，无数据返回 null。
      * @param marketSlugPrefix 完整市场 slug（如 btc-updown-5m），内部解析为币安交易对
      */
@@ -113,7 +124,15 @@ class BinanceSpotTickerService {
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 parseBookTickerMid(text)?.let { mid ->
-                    latestBySymbol[symbol] = mid to System.currentTimeMillis()
+                    val nowMs = System.currentTimeMillis()
+                    latestBySymbol[symbol] = mid to nowMs
+                    tickListener?.let { l ->
+                        try {
+                            l(symbol, mid, nowMs)
+                        } catch (e: Exception) {
+                            logger.debug("币安 tick 监听器回调异常: ${e.message}")
+                        }
+                    }
                 }
             }
 

@@ -9,7 +9,8 @@ import com.wrbug.polymarketbot.event.CryptoTailStrategyChangedEvent
 import com.wrbug.polymarketbot.repository.CryptoTailStrategyRepository
 import com.wrbug.polymarketbot.service.binance.BinanceKlineAutoSpreadService
 import com.wrbug.polymarketbot.service.binance.BinanceKlineService
-import com.wrbug.polymarketbot.service.binance.BinanceSpotTickerService
+import com.wrbug.polymarketbot.service.binance.BinanceSymbolResolver
+import com.wrbug.polymarketbot.service.okx.OkxSymbolResolver
 import com.wrbug.polymarketbot.util.RetrofitFactory
 import com.wrbug.polymarketbot.util.createClient
 import com.wrbug.polymarketbot.util.fromJson
@@ -45,7 +46,7 @@ class CryptoTailOrderbookWsService(
     private val retrofitFactory: RetrofitFactory,
     private val binanceKlineAutoSpreadService: BinanceKlineAutoSpreadService,
     private val binanceKlineService: BinanceKlineService,
-    private val binanceSpotTickerService: BinanceSpotTickerService,
+    private val spotLeadRouter: SpotLeadPriceProviderRouter,
     private val periodPriceProvider: PeriodPriceProvider,
     private val bracketExitService: CryptoTailBracketExitService,
     private val entrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
@@ -104,6 +105,9 @@ class CryptoTailOrderbookWsService(
     /** per-subscriptionKey 退出评估在途守卫：同上，避免退出评估协程堆积 */
     private val exitEvalInFlight = java.util.concurrent.ConcurrentHashMap<String, AtomicBoolean>()
 
+    /** per-subscriptionKey 现货推送防抖：上次 tick 推送退出评估的时刻(ms)，按 scalpSpotLeadPushMinIntervalMs 节流 */
+    private val spotPushLastAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     /** WS 诊断：每 token 上次订阅时刻，用于量化"订阅→首个 book"冷窗口 */
     private val wsDiagSubscribedAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
@@ -150,7 +154,74 @@ class CryptoTailOrderbookWsService(
 
     @PostConstruct
     fun init() {
+        // 注册现货 tick 监听器（混合推送 Phase A4）：每条实时现货 tick 在尾盘窗口内推送一次退出重评估。
+        // 单点注册（仅本服务），ticker 仅在有现货领先策略时才连接，故无策略时零回调、零开销。
+        spotLeadRouter.setTickListener { exchange, symbol, _, _ -> onSpotTick(exchange, symbol) }
         if (strategyRepository.findAllByEnabledTrue().isNotEmpty()) connect()
+    }
+
+    /**
+     * 现货 tick → 退出重评估（混合推送，Phase A4）。
+     * 仅在 SCALP_FLIP + scalpSpotLeadEnabled + scalpSpotLeadPushEnabled、且现价交易所与策略 source 匹配、
+     * 且处于尾盘窗口(remaining<=pushTailSeconds) 时生效；按订阅时间防抖，复用退出在途守卫与 WS 缓存盘口（零新增 REST）。
+     */
+    private fun onSpotTick(exchange: String, symbol: String) {
+        if (closedForNoStrategies.get()) return
+        val entriesByToken = tokenToEntries.get()
+        if (entriesByToken.isEmpty()) return
+        val nowMs = System.currentTimeMillis()
+        val nowSeconds = nowMs / 1000
+        for (entries in entriesByToken.values) {
+            for (e in entries) {
+                val s = e.strategy
+                if (s.mode != TradingMode.SCALP_FLIP) continue
+                if (!s.scalpSpotLeadEnabled || !s.scalpSpotLeadPushEnabled) continue
+                val exMatch = when (s.scalpSpotLeadSource.uppercase()) {
+                    "OKX" -> exchange == "OKX"
+                    "CONSENSUS" -> exchange == "BINANCE" || exchange == "OKX"
+                    else -> exchange == "BINANCE"
+                }
+                if (!exMatch) continue
+                val sym = if (exchange == "OKX") {
+                    OkxSymbolResolver.instIdOfMarketSlug(s.marketSlugPrefix)
+                } else {
+                    BinanceSymbolResolver.symbolOfMarketSlug(s.marketSlugPrefix)
+                }
+                if (sym == null || sym != symbol) continue
+                val remaining = (e.periodStartUnix + s.intervalSeconds) - nowSeconds
+                if (remaining <= 0 || remaining > s.scalpSpotLeadPushTailSeconds) continue
+                val minIv = s.scalpSpotLeadPushMinIntervalMs.coerceAtLeast(20).toLong()
+                val last = spotPushLastAtMs[e.subscriptionKey]
+                if (last != null && nowMs - last < minIv) continue
+                spotPushLastAtMs[e.subscriptionKey] = nowMs
+                val guard = exitEvalInFlight.getOrPut(e.subscriptionKey) { AtomicBoolean(false) }
+                if (!guard.compareAndSet(false, true)) continue
+                val entry = e
+                scope.launch {
+                    try {
+                        val ob = orderbookCache.get(entry.tokenId) ?: return@launch
+                        bracketExitService.evaluatePeriodOutcome(
+                            strategy = entry.strategy,
+                            periodStartUnix = entry.periodStartUnix,
+                            outcomeIndex = entry.outcomeIndex,
+                            bestBid = ob.bestBid,
+                            nowSeconds = nowSeconds,
+                            orderbook = ob,
+                            triggerSource = "SPOT_PUSH"
+                        )
+                    } catch (ex: Exception) {
+                        logger.debug("现货推送退出评估异常: strategyId=${entry.strategy.id}, ${ex.message}")
+                    } finally {
+                        guard.set(false)
+                    }
+                }
+            }
+        }
+        // 清理过期防抖键（仅保留活跃订阅），防止跨周期无界增长
+        if (spotPushLastAtMs.size > 256) {
+            val activeKeys = entriesByToken.values.flatten().map { it.subscriptionKey }.toSet()
+            spotPushLastAtMs.keys.retainAll(activeKeys)
+        }
     }
 
     @PreDestroy
@@ -522,13 +593,22 @@ class CryptoTailOrderbookWsService(
         try {
             val strategies = strategyRepository.findAllByEnabledTrue()
             binanceKlineService.updateSubscriptions(strategies.map { it.marketSlugPrefix }.toSet())
-            // 现货领先早警(实时 tick)：仅对开启该功能的 SCALP_FLIP 策略订阅 bookTicker，功能关闭时零连接
-            binanceSpotTickerService.updateSubscriptions(
-                strategies.asSequence()
-                    .filter { it.mode == TradingMode.SCALP_FLIP && it.scalpSpotLeadEnabled }
-                    .map { it.marketSlugPrefix }
-                    .toSet()
-            )
+            // 现货领先早警(v2)：仅对开启该功能的 SCALP_FLIP 策略，按其 source 分发实时价源订阅；功能关闭时零连接。
+            // CONSENSUS 同时计入 BINANCE 与 OKX 两源；币安 K 线已由上面全局订阅覆盖，此处仅驱动 tick(及 OKX candle)。
+            val marketsBySource = HashMap<String, MutableSet<String>>()
+            strategies.asSequence()
+                .filter { it.mode == TradingMode.SCALP_FLIP && it.scalpSpotLeadEnabled }
+                .forEach { s ->
+                    val sources = when (s.scalpSpotLeadSource.uppercase()) {
+                        "OKX" -> listOf("OKX")
+                        "CONSENSUS" -> listOf("BINANCE", "OKX")
+                        else -> listOf("BINANCE")
+                    }
+                    sources.forEach { src ->
+                        marketsBySource.getOrPut(src) { HashSet() }.add(s.marketSlugPrefix)
+                    }
+                }
+            spotLeadRouter.updateSubscriptions(marketsBySource)
             periodEndCountdownJob?.cancel()
             periodEndCountdownJob = null
             val oldTokenIds = tokenToEntries.get().keys.toSet()

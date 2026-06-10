@@ -824,4 +824,9 @@ data class CryptoTailStrategy(
     val scalpSpotLeadEarlyStopSeconds: Int get() = scalpSpotLeadConfig.earlyStopSeconds
     val scalpSpotLeadScaleOutRatio: BigDecimal get() = scalpSpotLeadConfig.scaleOutRatio
     val scalpLateScaleOutRequireSpotDanger: Boolean get() = scalpSpotLeadConfig.lateScaleOutRequireSpotDanger
+    val scalpSpotLeadPushEnabled: Boolean get() = scalpSpotLeadConfig.pushEnabled
+    val scalpSpotLeadPushTailSeconds: Int get() = scalpSpotLeadConfig.pushTailSeconds
+    val scalpSpotLeadPushMinIntervalMs: Int get() = scalpSpotLeadConfig.pushMinIntervalMs
+    val scalpSpotLeadEntryGateEnabled: Boolean get() = scalpSpotLeadConfig.entryGateEnabled
+    val scalpSpotLeadLateStopGateEnabled: Boolean get() = scalpSpotLeadConfig.lateStopGateEnabled
 }

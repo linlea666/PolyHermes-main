@@ -131,6 +131,7 @@ class CryptoTailStrategyExecutionService(
     private val tailDiffDecisionService: CryptoTailTailDiffDecisionService,
     private val tailDiffEntrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
     private val reversalStatsLookup: TailReversalStatsLookup,
+    private val spotLeadService: CryptoTailSpotLeadService,
     @Value("\${crypto-tail.scalp.ws-feed-alive-bound-ms:2000}") private val scalpWsFeedAliveBoundMs: Long
 ) {
 
@@ -772,6 +773,25 @@ class CryptoTailStrategyExecutionService(
                         "价差过小: |gap|=${entrySignal.gap.abs().toPlainString()}<${minGapAbs.toPlainString()} (remaining=${remainingSeconds}s)",
                         orderbookPayload(orderbook, nowMs).plus("remainingSeconds" to remainingSeconds).plus(scalpSignalPayload(entrySignal)).toJson())
                 }
+            }
+        }
+
+        // 3.7) 入场现货闸（V94 集成点 B，默认关）：进场前若"现货领先早警"判定危险（现货已穿价/逆向于买入侧，或近翻转）
+        // 则否决进场（SPOT_LEAD_ENTRY_VETO），从源头拦截逆向 gap 单（决策日志复盘：输单几乎全是逆向 gap）。
+        // fail-safe：现货缺失/不新鲜（spotLead==null 或 !fresh）→ 不拦截，沿用旧入场逻辑（不阻断正常进场）。
+        if (strategy.scalpSpotLeadEnabled && strategy.scalpSpotLeadEntryGateEnabled) {
+            val spotLead = spotLeadService.evaluateForEntry(strategy, outcomeIndex, periodStartUnix, remainingSeconds)
+            if (spotLead != null && spotLead.fresh && spotLead.danger(strategy.scalpSpotLeadFlipDistanceSigma)) {
+                return BarrierEval(false, "SPOT_LEAD_ENTRY_VETO",
+                    "现货领先判危,否决进场: exchange=${spotLead.exchange} spotGap=${spotLead.spotGap.toPlainString()} crossed=${spotLead.crossed} distSigma=${spotLead.distanceToFlipSigma?.toPlainString()} ageMs=${spotLead.ageMs} (outcomeIndex=$outcomeIndex remaining=${remainingSeconds}s)",
+                    orderbookPayload(orderbook, nowMs)
+                        .plus("remainingSeconds" to remainingSeconds)
+                        .plus("spotLeadExchange" to (spotLead.exchange ?: ""))
+                        .plus("spotLeadGap" to spotLead.spotGap.toPlainString())
+                        .plus("spotLeadCrossed" to spotLead.crossed)
+                        .plus("spotLeadDistanceSigma" to (spotLead.distanceToFlipSigma?.toPlainString() ?: ""))
+                        .plus("spotLeadAgeMs" to (spotLead.ageMs ?: ""))
+                        .plus(scalpSignalPayload(entrySignal)).toJson())
             }
         }
 

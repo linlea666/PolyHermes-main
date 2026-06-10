@@ -174,7 +174,12 @@ const SCALP_DEFAULTS = {
   scalpSpotLeadWickVetoEnabled: false,
   scalpSpotLeadEarlyStopSeconds: 0,
   scalpSpotLeadScaleOutRatio: '0',
-  scalpLateScaleOutRequireSpotDanger: false
+  scalpLateScaleOutRequireSpotDanger: false,
+  scalpSpotLeadPushEnabled: false,
+  scalpSpotLeadPushTailSeconds: 20,
+  scalpSpotLeadPushMinIntervalMs: 80,
+  scalpSpotLeadEntryGateEnabled: false,
+  scalpSpotLeadLateStopGateEnabled: false
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -247,7 +252,12 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpSpotLeadWickVetoEnabled: record.scalpSpotLeadWickVetoEnabled ?? SCALP_DEFAULTS.scalpSpotLeadWickVetoEnabled,
   scalpSpotLeadEarlyStopSeconds: record.scalpSpotLeadEarlyStopSeconds ?? SCALP_DEFAULTS.scalpSpotLeadEarlyStopSeconds,
   scalpSpotLeadScaleOutRatio: record.scalpSpotLeadScaleOutRatio ?? SCALP_DEFAULTS.scalpSpotLeadScaleOutRatio,
-  scalpLateScaleOutRequireSpotDanger: record.scalpLateScaleOutRequireSpotDanger ?? SCALP_DEFAULTS.scalpLateScaleOutRequireSpotDanger
+  scalpLateScaleOutRequireSpotDanger: record.scalpLateScaleOutRequireSpotDanger ?? SCALP_DEFAULTS.scalpLateScaleOutRequireSpotDanger,
+  scalpSpotLeadPushEnabled: record.scalpSpotLeadPushEnabled ?? SCALP_DEFAULTS.scalpSpotLeadPushEnabled,
+  scalpSpotLeadPushTailSeconds: record.scalpSpotLeadPushTailSeconds ?? SCALP_DEFAULTS.scalpSpotLeadPushTailSeconds,
+  scalpSpotLeadPushMinIntervalMs: record.scalpSpotLeadPushMinIntervalMs ?? SCALP_DEFAULTS.scalpSpotLeadPushMinIntervalMs,
+  scalpSpotLeadEntryGateEnabled: record.scalpSpotLeadEntryGateEnabled ?? SCALP_DEFAULTS.scalpSpotLeadEntryGateEnabled,
+  scalpSpotLeadLateStopGateEnabled: record.scalpSpotLeadLateStopGateEnabled ?? SCALP_DEFAULTS.scalpSpotLeadLateStopGateEnabled
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -473,7 +483,12 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpSpotLeadWickVetoEnabled: typeof v.scalpSpotLeadWickVetoEnabled === 'boolean' ? v.scalpSpotLeadWickVetoEnabled : undefined,
   scalpSpotLeadEarlyStopSeconds: numOrUndef(v.scalpSpotLeadEarlyStopSeconds),
   scalpSpotLeadScaleOutRatio: strOrUndef(v.scalpSpotLeadScaleOutRatio),
-  scalpLateScaleOutRequireSpotDanger: typeof v.scalpLateScaleOutRequireSpotDanger === 'boolean' ? v.scalpLateScaleOutRequireSpotDanger : undefined
+  scalpLateScaleOutRequireSpotDanger: typeof v.scalpLateScaleOutRequireSpotDanger === 'boolean' ? v.scalpLateScaleOutRequireSpotDanger : undefined,
+  scalpSpotLeadPushEnabled: typeof v.scalpSpotLeadPushEnabled === 'boolean' ? v.scalpSpotLeadPushEnabled : undefined,
+  scalpSpotLeadPushTailSeconds: numOrUndef(v.scalpSpotLeadPushTailSeconds),
+  scalpSpotLeadPushMinIntervalMs: numOrUndef(v.scalpSpotLeadPushMinIntervalMs),
+  scalpSpotLeadEntryGateEnabled: typeof v.scalpSpotLeadEntryGateEnabled === 'boolean' ? v.scalpSpotLeadEntryGateEnabled : undefined,
+  scalpSpotLeadLateStopGateEnabled: typeof v.scalpSpotLeadLateStopGateEnabled === 'boolean' ? v.scalpSpotLeadLateStopGateEnabled : undefined
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -1892,6 +1907,8 @@ const CryptoTailStrategyList: React.FC = () => {
   const sigmaMethod = Form.useWatch('sigmaMethod', form)
   const kellyEnabled = Form.useWatch('kellyEnabled', form)
   const exitManagerEnabled = Form.useWatch('enableExitManager', form)
+  // 现货领先早警主开关：关闭时其下所有子项（价源/门控/推送）禁用，避免误以为单开子项即生效（实际后端以主开关为准）
+  const scalpSpotLeadEnabled = Form.useWatch('scalpSpotLeadEnabled', form) as boolean | undefined
   const intervalSeconds = marketOptions.find((m) => m.slug === selectedMarket)?.intervalSeconds ?? 300
   const maxMinutes = Math.floor(intervalSeconds / 60)
 
@@ -3821,30 +3838,46 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpSpotLeadSource" label={t('cryptoTailStrategy.form.scalpSpotLeadSource')} extra={t('cryptoTailStrategy.form.scalpSpotLeadSourceHint')}>
                 <Select
+                  disabled={!scalpSpotLeadEnabled}
                   options={[
                     { value: 'BINANCE', label: 'Binance' },
-                    { value: 'OKX', label: 'OKX (二期 / Phase 2)', disabled: true },
-                    { value: 'CONSENSUS', label: 'Consensus (二期 / Phase 2)', disabled: true }
+                    { value: 'OKX', label: 'OKX' },
+                    { value: 'CONSENSUS', label: 'Consensus (Binance + OKX)' }
                   ]}
                 />
               </Form.Item>
               <Form.Item name="scalpSpotLeadMaxAgeMs" label={t('cryptoTailStrategy.form.scalpSpotLeadMaxAgeMs')} extra={t('cryptoTailStrategy.form.scalpSpotLeadMaxAgeMsHint')}>
-                <InputNumber min={0} step={500} precision={0} style={{ width: '100%' }} addonAfter="ms" />
+                <InputNumber disabled={!scalpSpotLeadEnabled} min={0} step={500} precision={0} style={{ width: '100%' }} addonAfter="ms" />
               </Form.Item>
               <Form.Item name="scalpSpotLeadFlipDistanceSigma" label={t('cryptoTailStrategy.form.scalpSpotLeadFlipDistanceSigma')} extra={t('cryptoTailStrategy.form.scalpSpotLeadFlipDistanceSigmaHint')}>
-                <InputNumber min={0} step={0.1} style={{ width: '100%' }} stringMode addonAfter="σ" />
+                <InputNumber disabled={!scalpSpotLeadEnabled} min={0} step={0.1} style={{ width: '100%' }} stringMode addonAfter="σ" />
               </Form.Item>
               <Form.Item name="scalpSpotLeadWickVetoEnabled" label={t('cryptoTailStrategy.form.scalpSpotLeadWickVetoEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpSpotLeadWickVetoEnabledHint')}>
-                <Switch />
+                <Switch disabled={!scalpSpotLeadEnabled} />
               </Form.Item>
               <Form.Item name="scalpSpotLeadEarlyStopSeconds" label={t('cryptoTailStrategy.form.scalpSpotLeadEarlyStopSeconds')} extra={t('cryptoTailStrategy.form.scalpSpotLeadEarlyStopSecondsHint')}>
-                <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+                <InputNumber disabled={!scalpSpotLeadEnabled} min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
               </Form.Item>
               <Form.Item name="scalpSpotLeadScaleOutRatio" label={t('cryptoTailStrategy.form.scalpSpotLeadScaleOutRatio')} extra={t('cryptoTailStrategy.form.scalpSpotLeadScaleOutRatioHint')}>
-                <InputNumber min={0} max={1} step={0.1} style={{ width: '100%' }} stringMode />
+                <InputNumber disabled={!scalpSpotLeadEnabled} min={0} max={1} step={0.1} style={{ width: '100%' }} stringMode />
               </Form.Item>
               <Form.Item name="scalpLateScaleOutRequireSpotDanger" label={t('cryptoTailStrategy.form.scalpLateScaleOutRequireSpotDanger')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpLateScaleOutRequireSpotDangerHint')}>
-                <Switch />
+                <Switch disabled={!scalpSpotLeadEnabled} />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadPushEnabled" label={t('cryptoTailStrategy.form.scalpSpotLeadPushEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpSpotLeadPushEnabledHint')}>
+                <Switch disabled={!scalpSpotLeadEnabled} />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadPushTailSeconds" label={t('cryptoTailStrategy.form.scalpSpotLeadPushTailSeconds')} extra={t('cryptoTailStrategy.form.scalpSpotLeadPushTailSecondsHint')}>
+                <InputNumber disabled={!scalpSpotLeadEnabled} min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadPushMinIntervalMs" label={t('cryptoTailStrategy.form.scalpSpotLeadPushMinIntervalMs')} extra={t('cryptoTailStrategy.form.scalpSpotLeadPushMinIntervalMsHint')}>
+                <InputNumber disabled={!scalpSpotLeadEnabled} min={0} step={10} precision={0} style={{ width: '100%' }} addonAfter="ms" />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadEntryGateEnabled" label={t('cryptoTailStrategy.form.scalpSpotLeadEntryGateEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpSpotLeadEntryGateEnabledHint')}>
+                <Switch disabled={!scalpSpotLeadEnabled} />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadLateStopGateEnabled" label={t('cryptoTailStrategy.form.scalpSpotLeadLateStopGateEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpSpotLeadLateStopGateEnabledHint')}>
+                <Switch disabled={!scalpSpotLeadEnabled} />
               </Form.Item>
             </>
           )}

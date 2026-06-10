@@ -79,7 +79,13 @@ data class CryptoTailStrategyScalpRequest(
     val scalpSpotLeadWickVetoEnabled: Boolean? = null,
     val scalpSpotLeadEarlyStopSeconds: Int? = null,
     val scalpSpotLeadScaleOutRatio: String? = null,
-    val scalpLateScaleOutRequireSpotDanger: Boolean? = null
+    val scalpLateScaleOutRequireSpotDanger: Boolean? = null,
+    // ===== 现货领先早警 v2（V94，均可选，null 走默认）=====
+    val scalpSpotLeadPushEnabled: Boolean? = null,
+    val scalpSpotLeadPushTailSeconds: Int? = null,
+    val scalpSpotLeadPushMinIntervalMs: Int? = null,
+    val scalpSpotLeadEntryGateEnabled: Boolean? = null,
+    val scalpSpotLeadLateStopGateEnabled: Boolean? = null
 )
 
 /**
@@ -590,7 +596,13 @@ data class CryptoTailStrategyScalpDto(
     val scalpSpotLeadWickVetoEnabled: Boolean = false,
     val scalpSpotLeadEarlyStopSeconds: Int = 0,
     val scalpSpotLeadScaleOutRatio: String = "0",
-    val scalpLateScaleOutRequireSpotDanger: Boolean = false
+    val scalpLateScaleOutRequireSpotDanger: Boolean = false,
+    // ===== 现货领先早警 v2（V94）=====
+    val scalpSpotLeadPushEnabled: Boolean = false,
+    val scalpSpotLeadPushTailSeconds: Int = 20,
+    val scalpSpotLeadPushMinIntervalMs: Int = 80,
+    val scalpSpotLeadEntryGateEnabled: Boolean = false,
+    val scalpSpotLeadLateStopGateEnabled: Boolean = false
 )
 
 /**

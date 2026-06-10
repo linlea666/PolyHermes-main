@@ -1,5 +1,6 @@
 package com.wrbug.polymarketbot.service.cryptotail
 
+import com.wrbug.polymarketbot.entity.CryptoTailScalpRiskConfig
 import com.wrbug.polymarketbot.entity.CryptoTailStrategy
 import com.wrbug.polymarketbot.entity.CryptoTailStrategyTrigger
 import com.wrbug.polymarketbot.enums.TradingMode
@@ -54,8 +55,10 @@ class CryptoTailRiskServiceTest {
             accountId = 7L,
             marketSlugPrefix = "btc-updown-5m",
             mode = TradingMode.SCALP_FLIP,
-            scalpConsecLossPauseCount = 2,
-            scalpConsecLossStopCount = 3
+            scalpRiskConfig = CryptoTailScalpRiskConfig(
+                scalpConsecLossPauseCount = 2,
+                scalpConsecLossStopCount = 3
+            )
         )
         val now = System.currentTimeMillis()
         val loss = { CryptoTailStrategyTrigger(strategyId = 1L, resolved = true, realizedPnl = BigDecimal("-1"), settledAt = now) }
@@ -78,8 +81,10 @@ class CryptoTailRiskServiceTest {
             accountId = 7L,
             marketSlugPrefix = "btc-updown-5m",
             mode = TradingMode.SCALP_FLIP,
-            scalpConsecLossPauseCount = 2,
-            scalpConsecLossStopCount = 3
+            scalpRiskConfig = CryptoTailScalpRiskConfig(
+                scalpConsecLossPauseCount = 2,
+                scalpConsecLossStopCount = 3
+            )
         )
         val now = System.currentTimeMillis()
         val win = CryptoTailStrategyTrigger(strategyId = 1L, resolved = true, realizedPnl = BigDecimal("1"), settledAt = now)

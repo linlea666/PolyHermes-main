@@ -655,7 +655,7 @@ class CryptoTailBracketExitService(
         // 与 WICK_GUARD 关系：scalpDisableWickGuardOnLateStop=true（默认）→ 在 WICK_GUARD 之前返回，永不被插针豁免；
         // =false → 允许 WICK_GUARD 先豁免、未豁免才在其后兜底退出。深底线(HARD_FLOOR)仍最高优先（decideExit 顶部）。
         val lateStop: Decision? = if (trigger.mode == TradingMode.SCALP_FLIP && strategy.scalpLateStopEnabled) {
-            decideScalpLateStop(strategy, trigger, holding, bestBid, remainingSeconds, tier)
+            decideScalpLateStop(strategy, trigger, holding, bestBid, remainingSeconds, tier, spotLead)
         } else null
         if (lateStop != null && strategy.scalpDisableWickGuardOnLateStop) return lateStop
         // V93 现货价领先早警信号（仅 SCALP_FLIP + scalpSpotLeadEnabled；fail-safe：缺失/不新鲜则 spotDanger=false 回退旧行为）。
@@ -837,7 +837,8 @@ class CryptoTailBracketExitService(
         holding: HoldingState?,
         bestBid: BigDecimal,
         remainingSeconds: Int,
-        tier: TailDiffTier?
+        tier: TailDiffTier?,
+        spotLead: CryptoTailSpotLeadService.SpotLeadState? = null
     ): Decision? {
         if (remainingSeconds > strategy.scalpLateStopSeconds) return null
         if (bestBid <= BigDecimal.ZERO) return null
@@ -850,9 +851,11 @@ class CryptoTailBracketExitService(
 
         if (!lateDrawdownHit && !lateBidFloorHit) return null
 
-        // 模型转弱门控（默认关）：开启时仅当模型不再强挺才放行，避免在模型仍强挺时误杀普通插针。
-        if (strategy.scalpLateStopRequireWeakModel) {
-            val modelStrong = holding != null && CryptoTailHoldToSettlePolicy.evaluateHardStopBypass(
+        // V94 集成点 C：尾盘硬止损现货门控仅在现货新鲜时才计算模型强度；现货门控开 + 现货新鲜 时也需 modelStrong。
+        val spotGateActive = strategy.scalpSpotLeadLateStopGateEnabled && spotLead != null && spotLead.fresh
+        // 模型是否仍强挺：仅当任一门控开启时才计算（省算）；两门控复用同一份判定。
+        val modelStrong = (strategy.scalpLateStopRequireWeakModel || spotGateActive) &&
+            holding != null && CryptoTailHoldToSettlePolicy.evaluateHardStopBypass(
                 enabled = true,
                 priceReady = holding.priceReady(strategy.maxPriceAgeMs),
                 outcomeIndex = trigger.outcomeIndex,
@@ -866,7 +869,26 @@ class CryptoTailBracketExitService(
                 exitSafeRatio = strategy.exitSafeRatio,
                 minSafeRatioFloor = strategy.scalpSmartStopMinSafeRatio
             ).bypass
-            if (modelStrong) return null
+
+        // 模型转弱门控（默认关）：开启时仅当模型不再强挺才放行，避免在模型仍强挺时误杀普通插针。
+        if (strategy.scalpLateStopRequireWeakModel && modelStrong) return null
+
+        // V94 集成点 C：尾盘硬止损现货门控（默认关）。模型仍强挺 + 现货新鲜且"非危险" → 抑制本次硬止损，
+        // 改由下游 WICK_GUARD/尾盘减仓/常规退出处置，减少"正确波动被尾盘止损误伤"。
+        // fail-safe：现货缺失/不新鲜(spotGateActive=false) → 不抑制，硬止损照常执行（不削弱兜底）。
+        // spotGateActive 已保证 spotLead 非空且新鲜，提取局部非空引用避免 !!。
+        val gateSpotLead = spotLead?.takeIf { spotGateActive }
+        if (gateSpotLead != null && modelStrong &&
+            !gateSpotLead.danger(strategy.scalpSpotLeadFlipDistanceSigma)
+        ) {
+            logger.info(
+                "SCALP[${tier?.label ?: "?"}] LATE_STOP_SUPPRESSED_BY_SPOT_GATE: remaining=${remainingSeconds}s " +
+                    "modelStrong=true spotFresh=true spotDanger=false " +
+                    "(exchange=${gateSpotLead.exchange} spotGap=${gateSpotLead.spotGap.toPlainString()} crossed=${gateSpotLead.crossed} " +
+                    "distSigma=${gateSpotLead.distanceToFlipSigma?.toPlainString()} ageMs=${gateSpotLead.ageMs}) " +
+                    "bestBid=${bestBid.toPlainString()} → 抑制尾盘硬止损,改由下游处置 triggerId=${trigger.id}"
+            )
+            return null
         }
 
         val label = tier?.label ?: "?"
@@ -1451,11 +1473,16 @@ class CryptoTailBracketExitService(
         val telemetry: CryptoTailSpotLeadTelemetry.CrossSnapshot? = run {
             val sid = strategy.id
             if (spotLead != null && sid != null) {
-                val binCrossed = spotLead.fresh && spotLead.crossed
+                // 按 exchange 归属把"现货已穿价"拆到对应数据源，供回测分别统计每源领先量（leadMs/okxLeadMs）。
+                // CONSENSUS（双源一致穿价）归属两源；DEGRADED_* 归属其新鲜的单源；其余按单源源名归属。
+                val spotCrossed = spotLead.fresh && spotLead.crossed
+                val ex = spotLead.exchange ?: ""
+                val binCrossed = spotCrossed && (ex == "BINANCE" || ex == "CONSENSUS" || ex == "CONSENSUS_DEGRADED_BINANCE")
+                val okxCrossed = spotCrossed && (ex == "OKX" || ex == "CONSENSUS" || ex == "CONSENSUS_DEGRADED_OKX")
                 val clCrossed = clSupports == false
                 spotLeadTelemetry.observe(
                     sid, trigger.periodStartUnix, trigger.outcomeIndex,
-                    System.currentTimeMillis(), binCrossed, clCrossed
+                    System.currentTimeMillis(), binCrossed, okxCrossed, clCrossed
                 )
                 if (spotEarlyWarningActed) {
                     spotLeadTelemetry.markEarlyWarningActed(sid, trigger.periodStartUnix, trigger.outcomeIndex)
@@ -1511,6 +1538,11 @@ class CryptoTailBracketExitService(
             "scalpSpotLeadScaleOutRatio" to strategy.scalpSpotLeadScaleOutRatio.toPlainString(),
             "scalpSpotLeadFlipDistanceSigma" to strategy.scalpSpotLeadFlipDistanceSigma.toPlainString(),
             "scalpLateScaleOutRequireSpotDanger" to strategy.scalpLateScaleOutRequireSpotDanger,
+            "scalpSpotLeadPushEnabled" to strategy.scalpSpotLeadPushEnabled,
+            "scalpSpotLeadPushTailSeconds" to strategy.scalpSpotLeadPushTailSeconds,
+            "scalpSpotLeadPushMinIntervalMs" to strategy.scalpSpotLeadPushMinIntervalMs,
+            "scalpSpotLeadEntryGateEnabled" to strategy.scalpSpotLeadEntryGateEnabled,
+            "scalpSpotLeadLateStopGateEnabled" to strategy.scalpSpotLeadLateStopGateEnabled,
             "spotLeadFresh" to (spotLead?.fresh ?: ""),
             "spotLeadGap" to (spotLead?.spotGap?.toPlainString() ?: ""),
             "spotLeadSupportsHolding" to (spotLead?.supportsHolding ?: ""),
@@ -1520,12 +1552,15 @@ class CryptoTailBracketExitService(
             "spotLeadDanger" to (spotLead?.danger(strategy.scalpSpotLeadFlipDistanceSigma) ?: ""),
             "spotLeadAheadOfChainlink" to (spotLeadAheadOfChainlink ?: ""),
             "spotLeadSource" to (spotLead?.source?.name ?: ""),
+            "spotLeadExchange" to (spotLead?.exchange ?: ""),
             "spotCurrentAgeMs" to (spotLead?.ageMs ?: ""),
             "advantageState" to advantageState,
             "advantageStrengthSigma" to (advantageStrengthSigma?.toPlainString() ?: ""),
             "binFirstCrossTs" to (telemetry?.binFirstCrossTs ?: ""),
+            "okxFirstCrossTs" to (telemetry?.okxFirstCrossTs ?: ""),
             "clFirstCrossTs" to (telemetry?.clFirstCrossTs ?: ""),
             "leadMs" to (telemetry?.leadMs ?: ""),
+            "okxLeadMs" to (telemetry?.okxLeadMs ?: ""),
             "spotEarlyWarningActed" to (telemetry?.earlyWarningActed ?: ""),
             "remainingSize" to remaining.toPlainString(),
             "realizedPnlIfExit" to realizedIfExit.toPlainString(),

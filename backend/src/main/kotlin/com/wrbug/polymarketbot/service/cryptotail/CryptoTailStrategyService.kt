@@ -513,7 +513,12 @@ class CryptoTailStrategyService(
                     wickVetoEnabled = sc.spotLeadWickVetoEnabled,
                     earlyStopSeconds = sc.spotLeadEarlyStopSeconds,
                     scaleOutRatio = sc.spotLeadScaleOutRatio,
-                    lateScaleOutRequireSpotDanger = sc.lateScaleOutRequireSpotDanger
+                    lateScaleOutRequireSpotDanger = sc.lateScaleOutRequireSpotDanger,
+                    pushEnabled = sc.spotLeadPushEnabled,
+                    pushTailSeconds = sc.spotLeadPushTailSeconds,
+                    pushMinIntervalMs = sc.spotLeadPushMinIntervalMs,
+                    entryGateEnabled = sc.spotLeadEntryGateEnabled,
+                    lateStopGateEnabled = sc.spotLeadLateStopGateEnabled
                 )
             )
             val saved = strategyRepository.save(entity)
@@ -977,7 +982,12 @@ class CryptoTailStrategyService(
                     wickVetoEnabled = sc.spotLeadWickVetoEnabled,
                     earlyStopSeconds = sc.spotLeadEarlyStopSeconds,
                     scaleOutRatio = sc.spotLeadScaleOutRatio,
-                    lateScaleOutRequireSpotDanger = sc.lateScaleOutRequireSpotDanger
+                    lateScaleOutRequireSpotDanger = sc.lateScaleOutRequireSpotDanger,
+                    pushEnabled = sc.spotLeadPushEnabled,
+                    pushTailSeconds = sc.spotLeadPushTailSeconds,
+                    pushMinIntervalMs = sc.spotLeadPushMinIntervalMs,
+                    entryGateEnabled = sc.spotLeadEntryGateEnabled,
+                    lateStopGateEnabled = sc.spotLeadLateStopGateEnabled
                 ),
                 updatedAt = System.currentTimeMillis()
             )
@@ -2259,7 +2269,12 @@ class CryptoTailStrategyService(
         val spotLeadWickVetoEnabled: Boolean,
         val spotLeadEarlyStopSeconds: Int,
         val spotLeadScaleOutRatio: BigDecimal,
-        val lateScaleOutRequireSpotDanger: Boolean
+        val lateScaleOutRequireSpotDanger: Boolean,
+        val spotLeadPushEnabled: Boolean,
+        val spotLeadPushTailSeconds: Int,
+        val spotLeadPushMinIntervalMs: Int,
+        val spotLeadEntryGateEnabled: Boolean,
+        val spotLeadLateStopGateEnabled: Boolean
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -2357,7 +2372,12 @@ class CryptoTailStrategyService(
         spotLeadWickVetoEnabled = r.scalp?.scalpSpotLeadWickVetoEnabled ?: false,
         spotLeadEarlyStopSeconds = r.scalp?.scalpSpotLeadEarlyStopSeconds ?: 0,
         spotLeadScaleOutRatio = r.scalp?.scalpSpotLeadScaleOutRatio?.toSafeBigDecimal() ?: BigDecimal.ZERO,
-        lateScaleOutRequireSpotDanger = r.scalp?.scalpLateScaleOutRequireSpotDanger ?: false
+        lateScaleOutRequireSpotDanger = r.scalp?.scalpLateScaleOutRequireSpotDanger ?: false,
+        spotLeadPushEnabled = r.scalp?.scalpSpotLeadPushEnabled ?: false,
+        spotLeadPushTailSeconds = r.scalp?.scalpSpotLeadPushTailSeconds ?: 20,
+        spotLeadPushMinIntervalMs = r.scalp?.scalpSpotLeadPushMinIntervalMs ?: 80,
+        spotLeadEntryGateEnabled = r.scalp?.scalpSpotLeadEntryGateEnabled ?: false,
+        spotLeadLateStopGateEnabled = r.scalp?.scalpSpotLeadLateStopGateEnabled ?: false
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2430,7 +2450,12 @@ class CryptoTailStrategyService(
         spotLeadWickVetoEnabled = r.scalp?.scalpSpotLeadWickVetoEnabled ?: e.scalpSpotLeadWickVetoEnabled,
         spotLeadEarlyStopSeconds = r.scalp?.scalpSpotLeadEarlyStopSeconds ?: e.scalpSpotLeadEarlyStopSeconds,
         spotLeadScaleOutRatio = r.scalp?.scalpSpotLeadScaleOutRatio?.toSafeBigDecimal() ?: e.scalpSpotLeadScaleOutRatio,
-        lateScaleOutRequireSpotDanger = r.scalp?.scalpLateScaleOutRequireSpotDanger ?: e.scalpLateScaleOutRequireSpotDanger
+        lateScaleOutRequireSpotDanger = r.scalp?.scalpLateScaleOutRequireSpotDanger ?: e.scalpLateScaleOutRequireSpotDanger,
+        spotLeadPushEnabled = r.scalp?.scalpSpotLeadPushEnabled ?: e.scalpSpotLeadPushEnabled,
+        spotLeadPushTailSeconds = r.scalp?.scalpSpotLeadPushTailSeconds ?: e.scalpSpotLeadPushTailSeconds,
+        spotLeadPushMinIntervalMs = r.scalp?.scalpSpotLeadPushMinIntervalMs ?: e.scalpSpotLeadPushMinIntervalMs,
+        spotLeadEntryGateEnabled = r.scalp?.scalpSpotLeadEntryGateEnabled ?: e.scalpSpotLeadEntryGateEnabled,
+        spotLeadLateStopGateEnabled = r.scalp?.scalpSpotLeadLateStopGateEnabled ?: e.scalpSpotLeadLateStopGateEnabled
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2762,7 +2787,12 @@ class CryptoTailStrategyService(
                 scalpSpotLeadWickVetoEnabled = e.scalpSpotLeadWickVetoEnabled,
                 scalpSpotLeadEarlyStopSeconds = e.scalpSpotLeadEarlyStopSeconds,
                 scalpSpotLeadScaleOutRatio = e.scalpSpotLeadScaleOutRatio.toPlainString(),
-                scalpLateScaleOutRequireSpotDanger = e.scalpLateScaleOutRequireSpotDanger
+                scalpLateScaleOutRequireSpotDanger = e.scalpLateScaleOutRequireSpotDanger,
+                scalpSpotLeadPushEnabled = e.scalpSpotLeadPushEnabled,
+                scalpSpotLeadPushTailSeconds = e.scalpSpotLeadPushTailSeconds,
+                scalpSpotLeadPushMinIntervalMs = e.scalpSpotLeadPushMinIntervalMs,
+                scalpSpotLeadEntryGateEnabled = e.scalpSpotLeadEntryGateEnabled,
+                scalpSpotLeadLateStopGateEnabled = e.scalpSpotLeadLateStopGateEnabled
             ),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
