@@ -1746,6 +1746,9 @@ export interface CryptoTailStrategyDto {
   scalpSpotLeadPushMinIntervalMs?: number
   scalpSpotLeadEntryGateEnabled?: boolean
   scalpSpotLeadLateStopGateEnabled?: boolean
+  scalpSpotLeadPrimaryStopEnabled?: boolean
+  scalpSpotLeadPrimaryStopPersistMs?: number
+  scalpSpotLeadPrimaryStopMinGapUsd?: string
   createdAt: number
   updatedAt: number
 }
@@ -1826,6 +1829,9 @@ export interface CryptoTailScalpParams {
   scalpSpotLeadPushMinIntervalMs?: number
   scalpSpotLeadEntryGateEnabled?: boolean
   scalpSpotLeadLateStopGateEnabled?: boolean
+  scalpSpotLeadPrimaryStopEnabled?: boolean
+  scalpSpotLeadPrimaryStopPersistMs?: number
+  scalpSpotLeadPrimaryStopMinGapUsd?: string
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */

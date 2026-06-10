@@ -391,5 +391,21 @@ data class CryptoTailScalpSpotLeadConfig(
      * 抑制硬止损改为减仓（修"尾盘误伤赢单"）；现货判危险则照常硬止损。默认 false（零回归）。
      */
     @Column(name = "scalp_spot_lead_late_stop_gate_enabled", nullable = false)
-    val lateStopGateEnabled: Boolean = false
+    val lateStopGateEnabled: Boolean = false,
+
+    /**
+     * 现货主止损总开关（V95 现货大脑）：true 时持仓全程（不限尾盘窗口），现货共识新鲜且危险
+     * 并持续确认 >= primaryStopPersistMs 后，无视盘口价立即市价全清（SPOT_LEAD_PRIMARY_STOP）。
+     * 砍在盘口塌陷之前；fail-safe：现货缺失/不新鲜不触发，由深底线 HARD_FLOOR 兜底。默认 false（零回归）。
+     */
+    @Column(name = "scalp_spot_lead_primary_stop_enabled", nullable = false)
+    val primaryStopEnabled: Boolean = false,
+
+    /** 危险持续确认毫秒（0=瞬时即砍）：过滤亚秒级现货假穿（插针），danger 中断即重置计时。 */
+    @Column(name = "scalp_spot_lead_primary_stop_persist_ms", nullable = false)
+    val primaryStopPersistMs: Int = 600,
+
+    /** 穿价深度下限（USD，0=不限）：已穿价时要求 |spotGap| >= 此值才触发主止损，二级过滤浅穿。 */
+    @Column(name = "scalp_spot_lead_primary_stop_min_gap_usd", nullable = false, precision = 20, scale = 8)
+    val primaryStopMinGapUsd: BigDecimal = BigDecimal.ZERO
 )

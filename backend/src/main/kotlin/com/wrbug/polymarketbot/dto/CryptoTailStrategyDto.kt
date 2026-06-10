@@ -85,7 +85,11 @@ data class CryptoTailStrategyScalpRequest(
     val scalpSpotLeadPushTailSeconds: Int? = null,
     val scalpSpotLeadPushMinIntervalMs: Int? = null,
     val scalpSpotLeadEntryGateEnabled: Boolean? = null,
-    val scalpSpotLeadLateStopGateEnabled: Boolean? = null
+    val scalpSpotLeadLateStopGateEnabled: Boolean? = null,
+    // ===== 现货主止损（V95，均可选，null 走默认）=====
+    val scalpSpotLeadPrimaryStopEnabled: Boolean? = null,
+    val scalpSpotLeadPrimaryStopPersistMs: Int? = null,
+    val scalpSpotLeadPrimaryStopMinGapUsd: String? = null
 )
 
 /**
@@ -602,7 +606,11 @@ data class CryptoTailStrategyScalpDto(
     val scalpSpotLeadPushTailSeconds: Int = 20,
     val scalpSpotLeadPushMinIntervalMs: Int = 80,
     val scalpSpotLeadEntryGateEnabled: Boolean = false,
-    val scalpSpotLeadLateStopGateEnabled: Boolean = false
+    val scalpSpotLeadLateStopGateEnabled: Boolean = false,
+    // ===== 现货主止损（V95）=====
+    val scalpSpotLeadPrimaryStopEnabled: Boolean = false,
+    val scalpSpotLeadPrimaryStopPersistMs: Int = 600,
+    val scalpSpotLeadPrimaryStopMinGapUsd: String = "0"
 )
 
 /**

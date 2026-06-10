@@ -179,7 +179,10 @@ const SCALP_DEFAULTS = {
   scalpSpotLeadPushTailSeconds: 20,
   scalpSpotLeadPushMinIntervalMs: 80,
   scalpSpotLeadEntryGateEnabled: false,
-  scalpSpotLeadLateStopGateEnabled: false
+  scalpSpotLeadLateStopGateEnabled: false,
+  scalpSpotLeadPrimaryStopEnabled: false,
+  scalpSpotLeadPrimaryStopPersistMs: 600,
+  scalpSpotLeadPrimaryStopMinGapUsd: '0'
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -257,7 +260,10 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpSpotLeadPushTailSeconds: record.scalpSpotLeadPushTailSeconds ?? SCALP_DEFAULTS.scalpSpotLeadPushTailSeconds,
   scalpSpotLeadPushMinIntervalMs: record.scalpSpotLeadPushMinIntervalMs ?? SCALP_DEFAULTS.scalpSpotLeadPushMinIntervalMs,
   scalpSpotLeadEntryGateEnabled: record.scalpSpotLeadEntryGateEnabled ?? SCALP_DEFAULTS.scalpSpotLeadEntryGateEnabled,
-  scalpSpotLeadLateStopGateEnabled: record.scalpSpotLeadLateStopGateEnabled ?? SCALP_DEFAULTS.scalpSpotLeadLateStopGateEnabled
+  scalpSpotLeadLateStopGateEnabled: record.scalpSpotLeadLateStopGateEnabled ?? SCALP_DEFAULTS.scalpSpotLeadLateStopGateEnabled,
+  scalpSpotLeadPrimaryStopEnabled: record.scalpSpotLeadPrimaryStopEnabled ?? SCALP_DEFAULTS.scalpSpotLeadPrimaryStopEnabled,
+  scalpSpotLeadPrimaryStopPersistMs: record.scalpSpotLeadPrimaryStopPersistMs ?? SCALP_DEFAULTS.scalpSpotLeadPrimaryStopPersistMs,
+  scalpSpotLeadPrimaryStopMinGapUsd: record.scalpSpotLeadPrimaryStopMinGapUsd ?? SCALP_DEFAULTS.scalpSpotLeadPrimaryStopMinGapUsd
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -488,7 +494,10 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpSpotLeadPushTailSeconds: numOrUndef(v.scalpSpotLeadPushTailSeconds),
   scalpSpotLeadPushMinIntervalMs: numOrUndef(v.scalpSpotLeadPushMinIntervalMs),
   scalpSpotLeadEntryGateEnabled: typeof v.scalpSpotLeadEntryGateEnabled === 'boolean' ? v.scalpSpotLeadEntryGateEnabled : undefined,
-  scalpSpotLeadLateStopGateEnabled: typeof v.scalpSpotLeadLateStopGateEnabled === 'boolean' ? v.scalpSpotLeadLateStopGateEnabled : undefined
+  scalpSpotLeadLateStopGateEnabled: typeof v.scalpSpotLeadLateStopGateEnabled === 'boolean' ? v.scalpSpotLeadLateStopGateEnabled : undefined,
+  scalpSpotLeadPrimaryStopEnabled: typeof v.scalpSpotLeadPrimaryStopEnabled === 'boolean' ? v.scalpSpotLeadPrimaryStopEnabled : undefined,
+  scalpSpotLeadPrimaryStopPersistMs: numOrUndef(v.scalpSpotLeadPrimaryStopPersistMs),
+  scalpSpotLeadPrimaryStopMinGapUsd: strOrUndef(v.scalpSpotLeadPrimaryStopMinGapUsd)
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -3878,6 +3887,15 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpSpotLeadLateStopGateEnabled" label={t('cryptoTailStrategy.form.scalpSpotLeadLateStopGateEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpSpotLeadLateStopGateEnabledHint')}>
                 <Switch disabled={!scalpSpotLeadEnabled} />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadPrimaryStopEnabled" label={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopEnabledHint')}>
+                <Switch disabled={!scalpSpotLeadEnabled} />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadPrimaryStopPersistMs" label={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopPersistMs')} extra={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopPersistMsHint')}>
+                <InputNumber disabled={!scalpSpotLeadEnabled} min={0} step={100} precision={0} style={{ width: '100%' }} addonAfter="ms" />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadPrimaryStopMinGapUsd" label={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopMinGapUsd')} extra={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopMinGapUsdHint')}>
+                <InputNumber disabled={!scalpSpotLeadEnabled} min={0} step={1} style={{ width: '100%' }} stringMode addonAfter="USD" />
               </Form.Item>
             </>
           )}

@@ -518,7 +518,10 @@ class CryptoTailStrategyService(
                     pushTailSeconds = sc.spotLeadPushTailSeconds,
                     pushMinIntervalMs = sc.spotLeadPushMinIntervalMs,
                     entryGateEnabled = sc.spotLeadEntryGateEnabled,
-                    lateStopGateEnabled = sc.spotLeadLateStopGateEnabled
+                    lateStopGateEnabled = sc.spotLeadLateStopGateEnabled,
+                    primaryStopEnabled = sc.spotLeadPrimaryStopEnabled,
+                    primaryStopPersistMs = sc.spotLeadPrimaryStopPersistMs,
+                    primaryStopMinGapUsd = sc.spotLeadPrimaryStopMinGapUsd
                 )
             )
             val saved = strategyRepository.save(entity)
@@ -987,7 +990,10 @@ class CryptoTailStrategyService(
                     pushTailSeconds = sc.spotLeadPushTailSeconds,
                     pushMinIntervalMs = sc.spotLeadPushMinIntervalMs,
                     entryGateEnabled = sc.spotLeadEntryGateEnabled,
-                    lateStopGateEnabled = sc.spotLeadLateStopGateEnabled
+                    lateStopGateEnabled = sc.spotLeadLateStopGateEnabled,
+                    primaryStopEnabled = sc.spotLeadPrimaryStopEnabled,
+                    primaryStopPersistMs = sc.spotLeadPrimaryStopPersistMs,
+                    primaryStopMinGapUsd = sc.spotLeadPrimaryStopMinGapUsd
                 ),
                 updatedAt = System.currentTimeMillis()
             )
@@ -2274,7 +2280,10 @@ class CryptoTailStrategyService(
         val spotLeadPushTailSeconds: Int,
         val spotLeadPushMinIntervalMs: Int,
         val spotLeadEntryGateEnabled: Boolean,
-        val spotLeadLateStopGateEnabled: Boolean
+        val spotLeadLateStopGateEnabled: Boolean,
+        val spotLeadPrimaryStopEnabled: Boolean,
+        val spotLeadPrimaryStopPersistMs: Int,
+        val spotLeadPrimaryStopMinGapUsd: BigDecimal
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -2377,7 +2386,10 @@ class CryptoTailStrategyService(
         spotLeadPushTailSeconds = r.scalp?.scalpSpotLeadPushTailSeconds ?: 20,
         spotLeadPushMinIntervalMs = r.scalp?.scalpSpotLeadPushMinIntervalMs ?: 80,
         spotLeadEntryGateEnabled = r.scalp?.scalpSpotLeadEntryGateEnabled ?: false,
-        spotLeadLateStopGateEnabled = r.scalp?.scalpSpotLeadLateStopGateEnabled ?: false
+        spotLeadLateStopGateEnabled = r.scalp?.scalpSpotLeadLateStopGateEnabled ?: false,
+        spotLeadPrimaryStopEnabled = r.scalp?.scalpSpotLeadPrimaryStopEnabled ?: false,
+        spotLeadPrimaryStopPersistMs = r.scalp?.scalpSpotLeadPrimaryStopPersistMs ?: 600,
+        spotLeadPrimaryStopMinGapUsd = r.scalp?.scalpSpotLeadPrimaryStopMinGapUsd?.toSafeBigDecimal() ?: BigDecimal.ZERO
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2455,7 +2467,10 @@ class CryptoTailStrategyService(
         spotLeadPushTailSeconds = r.scalp?.scalpSpotLeadPushTailSeconds ?: e.scalpSpotLeadPushTailSeconds,
         spotLeadPushMinIntervalMs = r.scalp?.scalpSpotLeadPushMinIntervalMs ?: e.scalpSpotLeadPushMinIntervalMs,
         spotLeadEntryGateEnabled = r.scalp?.scalpSpotLeadEntryGateEnabled ?: e.scalpSpotLeadEntryGateEnabled,
-        spotLeadLateStopGateEnabled = r.scalp?.scalpSpotLeadLateStopGateEnabled ?: e.scalpSpotLeadLateStopGateEnabled
+        spotLeadLateStopGateEnabled = r.scalp?.scalpSpotLeadLateStopGateEnabled ?: e.scalpSpotLeadLateStopGateEnabled,
+        spotLeadPrimaryStopEnabled = r.scalp?.scalpSpotLeadPrimaryStopEnabled ?: e.scalpSpotLeadPrimaryStopEnabled,
+        spotLeadPrimaryStopPersistMs = r.scalp?.scalpSpotLeadPrimaryStopPersistMs ?: e.scalpSpotLeadPrimaryStopPersistMs,
+        spotLeadPrimaryStopMinGapUsd = r.scalp?.scalpSpotLeadPrimaryStopMinGapUsd?.toSafeBigDecimal() ?: e.scalpSpotLeadPrimaryStopMinGapUsd
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2523,6 +2538,12 @@ class CryptoTailStrategyService(
         if (sc.spotLeadFlipDistanceSigma < zero) return false
         if (sc.spotLeadEarlyStopSeconds < 0) return false
         if (sc.spotLeadScaleOutRatio < zero || sc.spotLeadScaleOutRatio > one) return false
+        // 现货主止损（V95）：持续确认毫秒 >= 0（0=瞬时即砍）；穿价深度下限 >= 0（0=不限）
+        if (sc.spotLeadPrimaryStopPersistMs < 0) return false
+        if (sc.spotLeadPrimaryStopMinGapUsd < zero) return false
+        // 主止损依赖现货领先层信号：主开关(spotLeadEnabled)关时 spotLead 恒空、主止损永不可能触发。
+        // UI 已联动禁用，此处拦截 API 直传的不一致组合，防止"以为有主止损保护"的静默失效。
+        if (sc.spotLeadPrimaryStopEnabled && !sc.spotLeadEnabled) return false
         return true
     }
 
@@ -2792,7 +2813,10 @@ class CryptoTailStrategyService(
                 scalpSpotLeadPushTailSeconds = e.scalpSpotLeadPushTailSeconds,
                 scalpSpotLeadPushMinIntervalMs = e.scalpSpotLeadPushMinIntervalMs,
                 scalpSpotLeadEntryGateEnabled = e.scalpSpotLeadEntryGateEnabled,
-                scalpSpotLeadLateStopGateEnabled = e.scalpSpotLeadLateStopGateEnabled
+                scalpSpotLeadLateStopGateEnabled = e.scalpSpotLeadLateStopGateEnabled,
+                scalpSpotLeadPrimaryStopEnabled = e.scalpSpotLeadPrimaryStopEnabled,
+                scalpSpotLeadPrimaryStopPersistMs = e.scalpSpotLeadPrimaryStopPersistMs,
+                scalpSpotLeadPrimaryStopMinGapUsd = e.scalpSpotLeadPrimaryStopMinGapUsd.toPlainString()
             ),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt

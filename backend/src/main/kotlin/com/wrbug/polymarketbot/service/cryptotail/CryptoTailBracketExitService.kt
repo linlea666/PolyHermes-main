@@ -95,6 +95,17 @@ class CryptoTailBracketExitService(
         .expireAfterWrite(java.time.Duration.ofSeconds(60))
         .build()
 
+    /**
+     * 现货主止损危险持续追踪（V95 现货大脑）：triggerId → 首次满足"合格危险"的时间戳（ms）。
+     * 合格则 putIfAbsent 记录起点，不合格则 invalidate（中断即重置计时）；
+     * 持续 >= scalpSpotLeadPrimaryStopPersistMs 才触发主止损，过滤亚秒级现货假穿。
+     * 10 分钟过期自动清理（SCALP 持仓周期 << 10min），与 decisionLoggedCache 同款模式。
+     */
+    private val spotDangerSinceCache: Cache<Long, Long> = Caffeine.newBuilder()
+        .maximumSize(1000)
+        .expireAfterWrite(java.time.Duration.ofMinutes(10))
+        .build()
+
     private fun mutexFor(triggerId: Long): Mutex =
         triggerMutexMap.getOrPut(triggerId) { Mutex() }
 
@@ -193,6 +204,12 @@ class CryptoTailBracketExitService(
             var intervalMs = strategy.exitPollIntervalMs.coerceAtLeast(500).toLong()
             if (inDangerZone) intervalMs = minOf(intervalMs, DANGER_ZONE_POLL_MS)
             if (lateFastPoll) intervalMs = minOf(intervalMs, strategy.scalpLateFastPollMs.coerceAtLeast(100).toLong())
+            // V95 现货推送提速：SPOT_PUSH 已在推送侧按 scalpSpotLeadPushMinIntervalMs 防抖（onSpotTick），
+            // 不应再被常规 exitPollIntervalMs(默认3000) 二次量化——否则盘中（非危险区/非尾盘）现货主止损的
+            // 持续确认被拖到 3s 粒度，丢掉现货领先量。与危险区/尾盘提速同款 minOf 收紧，保底 20ms 防风暴。
+            if (triggerSource == "SPOT_PUSH") {
+                intervalMs = minOf(intervalMs, strategy.scalpSpotLeadPushMinIntervalMs.coerceAtLeast(20).toLong())
+            }
             if (fresh.lastExitCheckAt != null && nowMs - fresh.lastExitCheckAt < intervalMs) return
 
             // 计算 pWin（与进场同源；持仓方向与模型方向不同时取 1-pWin）
@@ -389,7 +406,8 @@ class CryptoTailBracketExitService(
     }
 
     /** 退出决策结果 */
-    private data class Decision(
+    // internal（原 private）：供单测直接断言 decideSpotLeadPrimaryStop 返回的决策（仅测试可见性放宽，无行为变化）。
+    internal data class Decision(
         /** null = 继续持有；否则触发对应类型的卖出 */
         val kind: ExitKind?,
         /** 卖出比例（占 remainingSize 的比例），仅 kind != null 时有效 */
@@ -426,7 +444,12 @@ class CryptoTailBracketExitService(
          * true = 现货领先早警**真正改变了本次决策**（B2 提前减仓，或现货否决了"判插针续扛"的旁路从而触发了真止损/熔断）。
          * 精确归因（非启发式）：仅在现货实际翻转决策的分支置位，供回测统计早警有效率。仅用于审计/日志。
          */
-        val spotEarlyWarningActed: Boolean = false
+        val spotEarlyWarningActed: Boolean = false,
+        /**
+         * true = 本退出由 V95 现货主止损（SPOT_LEAD_PRIMARY_STOP）触发。专用标志精确归因
+         * （与 [lateDynamicStop] 同款模式，避免日志侧用 reason 字符串匹配的脆弱归因）。仅用于审计/日志。
+         */
+        val spotLeadPrimaryStop: Boolean = false
     )
 
     private fun decideExit(
@@ -650,6 +673,16 @@ class CryptoTailBracketExitService(
         val tier = TailDiffTier.fromLabel(trigger.tier)
         val modeLabel = if (trigger.mode == TradingMode.SCALP_FLIP) "SCALP" else "TAIL_DIFF"
         val preset = resolveTailDiffPresetForTrigger(strategy, trigger, tier)
+        // V93 现货价领先早警信号（仅 SCALP_FLIP + scalpSpotLeadEnabled；fail-safe：缺失/不新鲜则 spotDanger=false 回退旧行为）。
+        // spotLead 由 evaluateAndExit 决策期统一计算后下传（每 tick 仅一次，决策与日志共用同一份）；本方法不再二次求值。
+        // 仅作"领先早警/主止损层"，不进入 pWin/结算口径——绝不放松/延长持有。
+        val spotDanger = spotLead?.danger(strategy.scalpSpotLeadFlipDistanceSigma) == true
+        // V95 现货主止损（现货大脑第 1 层，仅次于深底线 HARD_FLOOR，先于尾盘止损/减仓/WICK_GUARD）：
+        // 持仓全程（不限尾盘窗口），现货共识新鲜且危险并持续确认 >= persistMs → 无视盘口价立即市价全清，
+        // 砍在盘口塌陷之前；瞬时假穿（亚秒收回）由持续确认窗口过滤。fail-safe：现货缺失/不新鲜不触发。
+        if (trigger.mode == TradingMode.SCALP_FLIP && strategy.scalpSpotLeadPrimaryStopEnabled) {
+            decideSpotLeadPrimaryStop(strategy, trigger, spotLead, spotDanger, bestBid, remainingSeconds, tier)?.let { return it }
+        }
         // SCALP 尾盘动态止损（V91）：时间分层风控。仅 SCALP_FLIP + scalpLateStopEnabled 生效。
         // 在尾盘窗口(remaining<=scalpLateStopSeconds)内，若 bid 从持仓峰值大回撤或跌破地板 → 立即 HARD_STOP 退出。
         // 与 WICK_GUARD 关系：scalpDisableWickGuardOnLateStop=true（默认）→ 在 WICK_GUARD 之前返回，永不被插针豁免；
@@ -658,10 +691,6 @@ class CryptoTailBracketExitService(
             decideScalpLateStop(strategy, trigger, holding, bestBid, remainingSeconds, tier, spotLead)
         } else null
         if (lateStop != null && strategy.scalpDisableWickGuardOnLateStop) return lateStop
-        // V93 现货价领先早警信号（仅 SCALP_FLIP + scalpSpotLeadEnabled；fail-safe：缺失/不新鲜则 spotDanger=false 回退旧行为）。
-        // spotLead 由 evaluateAndExit 决策期统一计算后下传（每 tick 仅一次，决策与日志共用同一份）；本方法不再二次求值。
-        // 仅作"领先早警层"，不进入 pWin/结算口径——只用于让出场更早(B1/B2)、给 WICK_GUARD 加否决(A)，绝不放松/延长持有。
-        val spotDanger = spotLead?.danger(strategy.scalpSpotLeadFlipDistanceSigma) == true
         // 集成点 A：现货否决 WICK_GUARD/插针豁免。仅当开关开 + 现货新鲜且危险时为 true → 让"已决定的插针豁免"作废、止损照走（仅增加安全）。
         val spotForceExit = strategy.scalpSpotLeadWickVetoEnabled && spotDanger
         // 机械止损归因：在止损旁路处置位，仅当"模型本会判插针续扛而被现货否决"时为 true（精确归因，非启发式）。
@@ -818,6 +847,57 @@ class CryptoTailBracketExitService(
         // 4) TpLimit
         tpLimitDecision(preset, trigger, bestBid, tier)?.let { return it }
         return Decision(null, BigDecimal.ZERO, "$modeLabel[${tier?.label ?: "?"}] 继续持有 remaining=${remainingSeconds}s", clearTp1HoldStartedAt = true)
+    }
+
+    /**
+     * SCALP 现货主止损（V95 现货大脑·第 1 层主决策）：持仓全程（不限尾盘窗口），现货共识新鲜且危险
+     * 并"持续确认"后，无视盘口价立即市价全清——砍在盘口塌陷之前。
+     * 调用方已保证 trigger.mode==SCALP_FLIP 且 strategy.scalpSpotLeadPrimaryStopEnabled==true。
+     *
+     * 合格危险（必须连续保持 >= scalpSpotLeadPrimaryStopPersistMs）：
+     *  - spotLead 非空且 fresh（双源断/陈旧 → 不合格，fail-safe 回退由深底线 HARD_FLOOR 兜底）；
+     *  - danger=true（已穿价，或近翻转预警，口径与 V93 一致）；
+     *  - 若 minGapUsd>0 且已穿价 → 要求 |spotGap| >= minGapUsd（二级过滤浅穿；近翻转预警无穿价深度可量，不套此滤）。
+     * 持续性追踪：spotDangerSinceCache 记录首次合格时间；任一 tick 不合格立即重置计时（过滤亚秒假穿/插针）。
+     *
+     * @return 命中返回 HARD_STOP 全清（forceImmediate=true → 直通确认、市价扫单 + 紧急重试 + 抢占撤单）；未命中返回 null。
+     */
+    internal fun decideSpotLeadPrimaryStop(
+        strategy: CryptoTailStrategy,
+        trigger: CryptoTailStrategyTrigger,
+        spotLead: CryptoTailSpotLeadService.SpotLeadState?,
+        spotDanger: Boolean,
+        bestBid: BigDecimal,
+        remainingSeconds: Int,
+        tier: TailDiffTier?
+    ): Decision? {
+        val triggerId = trigger.id ?: return null
+        val minGapUsd = strategy.scalpSpotLeadPrimaryStopMinGapUsd
+        val qualified = spotLead != null && spotLead.fresh && spotDanger &&
+            (minGapUsd <= BigDecimal.ZERO || !spotLead.crossed || spotLead.spotGap.abs() >= minGapUsd)
+        if (!qualified || spotLead == null) {
+            spotDangerSinceCache.invalidate(triggerId)
+            return null
+        }
+        val now = System.currentTimeMillis()
+        val since = spotDangerSinceCache.get(triggerId) { now }
+        val persistElapsedMs = now - since
+        val persistMs = strategy.scalpSpotLeadPrimaryStopPersistMs
+        if (persistElapsedMs < persistMs) return null
+        val label = tier?.label ?: "?"
+        return Decision(
+            ExitKind.HARD_STOP,
+            BigDecimal.ONE,
+            "SCALP[$label] SPOT_LEAD_PRIMARY_STOP: 现货共识危险持续${persistElapsedMs}ms>=${persistMs}ms" +
+                " (exchange=${spotLead.exchange ?: spotLead.source?.name ?: "?"}, spotGap=${spotLead.spotGap.toPlainString()}," +
+                " crossed=${spotLead.crossed}, ageMs=${spotLead.ageMs ?: -1}, minGapUsd=${minGapUsd.toPlainString()})" +
+                " bestBid=${bestBid.toPlainString()} remaining=${remainingSeconds}s → 无视盘口价市价全清",
+            clearTp1HoldStartedAt = true,
+            forceImmediate = true,
+            spotLead = spotLead,
+            spotEarlyWarningActed = true,
+            spotLeadPrimaryStop = true
+        )
     }
 
     /**
@@ -1470,6 +1550,12 @@ class CryptoTailBracketExitService(
         val advantageStrengthSigma = spotLead?.distanceToFlipSigma
         // 早警是否真正改变决策：精确归因，直接取决策期置位的标志（B2 减仓 / 旁路被现货否决而触发的真止损/熔断）。
         val spotEarlyWarningActed = decision.spotEarlyWarningActed
+        // V95 现货主止损审计：本次是否由主止损触发（决策期置位的专用标志，精确归因），
+        // 及危险持续确认进度（从 spotDangerSinceCache 读出；当前不在危险态则空）——供回测调 persistMs 分布。
+        val spotLeadPrimaryStopTriggered = decision.spotLeadPrimaryStop
+        val spotDangerPersistElapsedMs = trigger.id
+            ?.let { spotDangerSinceCache.getIfPresent(it) }
+            ?.let { System.currentTimeMillis() - it }
         val telemetry: CryptoTailSpotLeadTelemetry.CrossSnapshot? = run {
             val sid = strategy.id
             if (spotLead != null && sid != null) {
@@ -1543,6 +1629,11 @@ class CryptoTailBracketExitService(
             "scalpSpotLeadPushMinIntervalMs" to strategy.scalpSpotLeadPushMinIntervalMs,
             "scalpSpotLeadEntryGateEnabled" to strategy.scalpSpotLeadEntryGateEnabled,
             "scalpSpotLeadLateStopGateEnabled" to strategy.scalpSpotLeadLateStopGateEnabled,
+            "scalpSpotLeadPrimaryStopEnabled" to strategy.scalpSpotLeadPrimaryStopEnabled,
+            "scalpSpotLeadPrimaryStopPersistMs" to strategy.scalpSpotLeadPrimaryStopPersistMs,
+            "scalpSpotLeadPrimaryStopMinGapUsd" to strategy.scalpSpotLeadPrimaryStopMinGapUsd.toPlainString(),
+            "spotLeadPrimaryStopTriggered" to spotLeadPrimaryStopTriggered,
+            "spotLeadPrimaryStopPersistElapsedMs" to (spotDangerPersistElapsedMs ?: ""),
             "spotLeadFresh" to (spotLead?.fresh ?: ""),
             "spotLeadGap" to (spotLead?.spotGap?.toPlainString() ?: ""),
             "spotLeadSupportsHolding" to (spotLead?.supportsHolding ?: ""),
