@@ -131,7 +131,14 @@ class CryptoTailExitOrderReconciler(
         if (order == null) {
             // 查单失败：仅在已过结算时才放弃
             if (nowSec >= settleAt) {
-                finalizeExit(exit, "failed", null, null, "订单状态查询失败且已过结算", periodStartUnix)
+                // 下单回执已捕获成交份额时按回执结算为 success，避免查单失败把已成交份额误判为 failed 而漏对账。
+                val captured = exit.filledSize ?: BigDecimal.ZERO
+                if (captured > BigDecimal.ZERO) {
+                    val fillAmount = realFillAmount(exit, captured, exit.exitPrice ?: BigDecimal.ZERO)
+                    finalizeExit(exit, "success", captured, fillAmount, "查单失败但下单回执已成交，按回执结算", periodStartUnix)
+                } else {
+                    finalizeExit(exit, "failed", null, null, "订单状态查询失败且已过结算", periodStartUnix)
+                }
                 syncTriggerAfterExitFinalized(trigger.id!!)
             }
             return
@@ -150,9 +157,11 @@ class CryptoTailExitOrderReconciler(
             return
         }
         if (st.contains("CANCEL") || st == "EXPIRED") {
-            if (sizeMatched > BigDecimal.ZERO) {
-                val fillAmount = realFillAmount(exit, sizeMatched, price)
-                finalizeExit(exit, "success", sizeMatched, fillAmount, "已撤/过期，按部分成交结算", periodStartUnix)
+            // FAK fill-and-kill：事后 sizeMatched 可能回报 0，须以下单回执已捕获的成交份额兜底，避免漏记。
+            val effMatched = effectiveFilledSize(exit, sizeMatched)
+            if (effMatched > BigDecimal.ZERO) {
+                val fillAmount = realFillAmount(exit, effMatched, price)
+                finalizeExit(exit, "success", effMatched, fillAmount, "已撤/过期，按部分成交结算(含下单回执成交)", periodStartUnix)
             } else {
                 finalizeExit(exit, "cancelled", null, null, "已撤/过期且零成交", periodStartUnix)
             }
@@ -173,9 +182,10 @@ class CryptoTailExitOrderReconciler(
                 val after = ctx.clobApi.getOrder(orderId)
                 if (after.isSuccessful) after.body()?.sizeMatched?.toSafeBigDecimal() ?: sizeMatched else sizeMatched
             } catch (e: Exception) { sizeMatched }
-            if (afterMatched > BigDecimal.ZERO) {
-                val fillAmount = realFillAmount(exit, afterMatched, price)
-                finalizeExit(exit, "success", afterMatched, fillAmount, "MAKER到期撤单，按部分成交结算", periodStartUnix)
+            val effAfter = effectiveFilledSize(exit, afterMatched)
+            if (effAfter > BigDecimal.ZERO) {
+                val fillAmount = realFillAmount(exit, effAfter, price)
+                finalizeExit(exit, "success", effAfter, fillAmount, "MAKER到期撤单，按部分成交结算", periodStartUnix)
             } else {
                 finalizeExit(exit, "cancelled", null, null, "MAKER到期撤单且零成交", periodStartUnix)
             }
@@ -272,6 +282,19 @@ class CryptoTailExitOrderReconciler(
         return sizeMatched.multiply(proxyPrice).setScale(8, RoundingMode.HALF_UP)
     }
 
+    /**
+     * FAK 成交份额权威性修正：下单回执已捕获的成交份额（exit.filledSize，源自 createOrder 回执 making/takingAmount，
+     * 权威即时成交）优先于事后 getOrder 的 sizeMatched。
+     *
+     * 原因：FAK"成交即撤(fill-and-kill)"订单在订单状态端点常回报 sizeMatched=0（订单不再存活、撮合量不被追踪），
+     * 若仅凭事后 sizeMatched 判定，会把已成交份额误判为零成交、落 cancelled，导致 sumFilledSizeByTriggerId
+     * (仅计 status='success') 漏记该成交 → trigger.remainingSize 不对账 → 同一仓位被反复重报"not enough balance"。
+     *
+     * 取两者较大值：事后查到更多成交（极少）以事后为准；事后回报为 0 时以回执捕获为准，杜绝漏记。
+     */
+    private fun effectiveFilledSize(exit: CryptoTailStrategyExit, onChainMatched: BigDecimal): BigDecimal =
+        onChainMatched.max(exit.filledSize ?: BigDecimal.ZERO)
+
     private fun isStopLossKind(kind: String): Boolean =
         kind == "STOP" ||
             kind == "HARD_STOP" ||
@@ -318,14 +341,16 @@ class CryptoTailExitOrderReconciler(
         } catch (e: Exception) {
             (exit.filledSize ?: BigDecimal.ZERO) to (exit.exitPrice ?: BigDecimal.ZERO)
         }
-        if (matched > BigDecimal.ZERO) {
-            val fillAmount = realFillAmount(exit, matched, price)
-            finalizeExit(exit, "success", matched, fillAmount, "抢占撤单：按部分成交结算", periodStartUnix)
+        // FAK fill-and-kill：撤单后 getOrder 的 sizeMatched 可能回报 0，须以下单回执已捕获的成交份额兜底，避免漏记。
+        val effMatched = effectiveFilledSize(exit, matched)
+        if (effMatched > BigDecimal.ZERO) {
+            val fillAmount = realFillAmount(exit, effMatched, price)
+            finalizeExit(exit, "success", effMatched, fillAmount, "抢占撤单：按部分成交结算(含下单回执成交)", periodStartUnix)
         } else {
             finalizeExit(exit, "cancelled", null, null, "抢占撤单：零成交", periodStartUnix)
         }
         syncTriggerAfterExitFinalized(trigger.id!!)
-        logger.info("急跌止损抢占撤单完成: exitId=${exit.id} triggerId=${trigger.id} orderId=$orderId matched=${matched.toPlainString()}")
+        logger.info("急跌止损抢占撤单完成: exitId=${exit.id} triggerId=${trigger.id} orderId=$orderId matched=${matched.toPlainString()} effectiveFilled=${effMatched.toPlainString()}")
         return true
     }
 
