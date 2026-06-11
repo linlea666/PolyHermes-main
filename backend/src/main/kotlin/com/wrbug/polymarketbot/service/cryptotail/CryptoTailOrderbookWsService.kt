@@ -51,7 +51,9 @@ class CryptoTailOrderbookWsService(
     private val bracketExitService: CryptoTailBracketExitService,
     private val entrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
     private val orderbookCache: CryptoTailOrderbookCache,
-    private val wsDiag: CryptoTailWsDiag
+    private val wsDiag: CryptoTailWsDiag,
+    private val bookInstabilityTracker: CryptoTailBookInstabilityTracker,
+    private val scalpHedgeService: CryptoTailScalpHedgeService
 ) {
 
     private val logger = LoggerFactory.getLogger(CryptoTailOrderbookWsService::class.java)
@@ -475,6 +477,11 @@ class CryptoTailOrderbookWsService(
         if (closedForNoStrategies.get()) return
         val entries = tokenToEntries.get()[tokenId]
         if (entries == null) return
+        // V96 C/F1 盘口不稳定追踪：每条盘口消息喂入分类器（纯内存对比，开销可忽略）；
+        // 仅 SCALP 订阅的 token 才有消费方（入场冷却闸 + 对冲特征 F1），其余模式不喂。
+        if (entries.any { it.strategy.mode == TradingMode.SCALP_FLIP }) {
+            bookInstabilityTracker.observe(orderbook)
+        }
         val nowSeconds = System.currentTimeMillis() / 1000
         for (e in entries) {
             // 入场窗口预过滤：
@@ -527,6 +534,15 @@ class CryptoTailOrderbookWsService(
                             entryGuard.set(false)
                         }
                     }
+                }
+            }
+
+            // V96 B 终场反向对冲布防：仅 SCALP + 开关开 + 布防窗口内（remaining<=armSeconds），
+            // tick 仅作时钟驱动（own/opp 盘口由 hedgeService 从缓存读取），内部有周期级终态/在途守卫与日志去重。
+            if (e.strategy.mode == TradingMode.SCALP_FLIP && e.strategy.scalpHedgeEnabled) {
+                val hedgeRemaining = e.periodStartUnix + e.strategy.intervalSeconds - nowSeconds
+                if (hedgeRemaining in 1..e.strategy.scalpHedgeArmSeconds.toLong()) {
+                    scalpHedgeService.maybeArm(e.strategy, e.periodStartUnix, e.marketTitle, e.tokenIds, nowSeconds)
                 }
             }
 

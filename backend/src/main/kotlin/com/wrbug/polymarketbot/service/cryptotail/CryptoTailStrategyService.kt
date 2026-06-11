@@ -3,6 +3,7 @@ package com.wrbug.polymarketbot.service.cryptotail
 import com.wrbug.polymarketbot.dto.*
 import com.wrbug.polymarketbot.entity.CryptoTailScalpEntryConfig
 import com.wrbug.polymarketbot.entity.CryptoTailScalpExecConfig
+import com.wrbug.polymarketbot.entity.CryptoTailScalpHedgeConfig
 import com.wrbug.polymarketbot.entity.CryptoTailScalpLateExitConfig
 import com.wrbug.polymarketbot.entity.CryptoTailScalpRiskConfig
 import com.wrbug.polymarketbot.entity.CryptoTailScalpSpotLeadConfig
@@ -469,7 +470,8 @@ class CryptoTailStrategyService(
                     scalpMaxDiffRetracePct = sc.maxDiffRetracePct,
                     scalpCatastropheBidFloor = sc.catastropheBidFloor,
                     scalpCatastropheImmediate = sc.catastropheImmediate,
-                    scalpCatastropheFloorRatio = sc.catastropheFloorRatio
+                    scalpCatastropheFloorRatio = sc.catastropheFloorRatio,
+                    scalpTpRestingEnabled = sc.tpRestingEnabled
                 ),
                 scalpExecConfig = CryptoTailScalpExecConfig(
                     scalpWsFreshnessSkipRestMs = sc.wsFreshnessSkipRestMs,
@@ -488,7 +490,9 @@ class CryptoTailStrategyService(
                     scalpMinEntryDiffSigma = sc.minEntryDiffSigma,
                     scalpMinEntryGapAbs = sc.minEntryGapAbs,
                     scalpGapGateRemainingLo = sc.gapGateRemainingLo,
-                    scalpGapGateRemainingHi = sc.gapGateRemainingHi
+                    scalpGapGateRemainingHi = sc.gapGateRemainingHi,
+                    scalpBookInstabilityCooldownSec = sc.bookInstabilityCooldownSec,
+                    scalpBookInstabilityAskJump = sc.bookInstabilityAskJump
                 ),
                 scalpLateExitConfig = CryptoTailScalpLateExitConfig(
                     scalpLateStopEnabled = sc.lateStopEnabled,
@@ -521,7 +525,21 @@ class CryptoTailStrategyService(
                     lateStopGateEnabled = sc.spotLeadLateStopGateEnabled,
                     primaryStopEnabled = sc.spotLeadPrimaryStopEnabled,
                     primaryStopPersistMs = sc.spotLeadPrimaryStopPersistMs,
-                    primaryStopMinGapUsd = sc.spotLeadPrimaryStopMinGapUsd
+                    primaryStopMinGapUsd = sc.spotLeadPrimaryStopMinGapUsd,
+                    primaryStopBookConfirmDrawdown = sc.spotLeadPrimaryStopBookConfirmDrawdown
+                ),
+                scalpHedgeConfig = CryptoTailScalpHedgeConfig(
+                    hedgeEnabled = sc.hedgeEnabled,
+                    hedgeArmSeconds = sc.hedgeArmSeconds,
+                    hedgeMinOwnBid = sc.hedgeMinOwnBid,
+                    hedgeMaxPrice = sc.hedgeMaxPrice,
+                    hedgeBudgetUsdc = sc.hedgeBudgetUsdc,
+                    hedgeMinFeatureScore = sc.hedgeMinFeatureScore,
+                    hedgeFeatureInstabilityLookbackSec = sc.hedgeFeatureInstabilityLookbackSec,
+                    hedgeFeatureSpotCushionUsd = sc.hedgeFeatureSpotCushionUsd,
+                    hedgeFeatureGapShrinkRatio = sc.hedgeFeatureGapShrinkRatio,
+                    hedgeFeatureRecentFlipLookback = sc.hedgeFeatureRecentFlipLookback,
+                    hedgeFeatureOppAskFloor = sc.hedgeFeatureOppAskFloor
                 )
             )
             val saved = strategyRepository.save(entity)
@@ -941,7 +959,8 @@ class CryptoTailStrategyService(
                     scalpMaxDiffRetracePct = sc.maxDiffRetracePct,
                     scalpCatastropheBidFloor = sc.catastropheBidFloor,
                     scalpCatastropheImmediate = sc.catastropheImmediate,
-                    scalpCatastropheFloorRatio = sc.catastropheFloorRatio
+                    scalpCatastropheFloorRatio = sc.catastropheFloorRatio,
+                    scalpTpRestingEnabled = sc.tpRestingEnabled
                 ),
                 scalpExecConfig = CryptoTailScalpExecConfig(
                     scalpWsFreshnessSkipRestMs = sc.wsFreshnessSkipRestMs,
@@ -960,7 +979,9 @@ class CryptoTailStrategyService(
                     scalpMinEntryDiffSigma = sc.minEntryDiffSigma,
                     scalpMinEntryGapAbs = sc.minEntryGapAbs,
                     scalpGapGateRemainingLo = sc.gapGateRemainingLo,
-                    scalpGapGateRemainingHi = sc.gapGateRemainingHi
+                    scalpGapGateRemainingHi = sc.gapGateRemainingHi,
+                    scalpBookInstabilityCooldownSec = sc.bookInstabilityCooldownSec,
+                    scalpBookInstabilityAskJump = sc.bookInstabilityAskJump
                 ),
                 scalpLateExitConfig = CryptoTailScalpLateExitConfig(
                     scalpLateStopEnabled = sc.lateStopEnabled,
@@ -993,7 +1014,21 @@ class CryptoTailStrategyService(
                     lateStopGateEnabled = sc.spotLeadLateStopGateEnabled,
                     primaryStopEnabled = sc.spotLeadPrimaryStopEnabled,
                     primaryStopPersistMs = sc.spotLeadPrimaryStopPersistMs,
-                    primaryStopMinGapUsd = sc.spotLeadPrimaryStopMinGapUsd
+                    primaryStopMinGapUsd = sc.spotLeadPrimaryStopMinGapUsd,
+                    primaryStopBookConfirmDrawdown = sc.spotLeadPrimaryStopBookConfirmDrawdown
+                ),
+                scalpHedgeConfig = CryptoTailScalpHedgeConfig(
+                    hedgeEnabled = sc.hedgeEnabled,
+                    hedgeArmSeconds = sc.hedgeArmSeconds,
+                    hedgeMinOwnBid = sc.hedgeMinOwnBid,
+                    hedgeMaxPrice = sc.hedgeMaxPrice,
+                    hedgeBudgetUsdc = sc.hedgeBudgetUsdc,
+                    hedgeMinFeatureScore = sc.hedgeMinFeatureScore,
+                    hedgeFeatureInstabilityLookbackSec = sc.hedgeFeatureInstabilityLookbackSec,
+                    hedgeFeatureSpotCushionUsd = sc.hedgeFeatureSpotCushionUsd,
+                    hedgeFeatureGapShrinkRatio = sc.hedgeFeatureGapShrinkRatio,
+                    hedgeFeatureRecentFlipLookback = sc.hedgeFeatureRecentFlipLookback,
+                    hedgeFeatureOppAskFloor = sc.hedgeFeatureOppAskFloor
                 ),
                 updatedAt = System.currentTimeMillis()
             )
@@ -2283,7 +2318,22 @@ class CryptoTailStrategyService(
         val spotLeadLateStopGateEnabled: Boolean,
         val spotLeadPrimaryStopEnabled: Boolean,
         val spotLeadPrimaryStopPersistMs: Int,
-        val spotLeadPrimaryStopMinGapUsd: BigDecimal
+        val spotLeadPrimaryStopMinGapUsd: BigDecimal,
+        val tpRestingEnabled: Boolean,
+        val bookInstabilityCooldownSec: Int,
+        val bookInstabilityAskJump: BigDecimal,
+        val spotLeadPrimaryStopBookConfirmDrawdown: BigDecimal,
+        val hedgeEnabled: Boolean,
+        val hedgeArmSeconds: Int,
+        val hedgeMinOwnBid: BigDecimal,
+        val hedgeMaxPrice: BigDecimal,
+        val hedgeBudgetUsdc: BigDecimal,
+        val hedgeMinFeatureScore: Int,
+        val hedgeFeatureInstabilityLookbackSec: Int,
+        val hedgeFeatureSpotCushionUsd: BigDecimal,
+        val hedgeFeatureGapShrinkRatio: BigDecimal,
+        val hedgeFeatureRecentFlipLookback: Int,
+        val hedgeFeatureOppAskFloor: BigDecimal
     )
 
     /** 反转率统计数据源归一化：HYBRID（POLYMARKET 优先回退 BINANCE）/ POLYMARKET / BINANCE */
@@ -2389,7 +2439,22 @@ class CryptoTailStrategyService(
         spotLeadLateStopGateEnabled = r.scalp?.scalpSpotLeadLateStopGateEnabled ?: false,
         spotLeadPrimaryStopEnabled = r.scalp?.scalpSpotLeadPrimaryStopEnabled ?: false,
         spotLeadPrimaryStopPersistMs = r.scalp?.scalpSpotLeadPrimaryStopPersistMs ?: 600,
-        spotLeadPrimaryStopMinGapUsd = r.scalp?.scalpSpotLeadPrimaryStopMinGapUsd?.toSafeBigDecimal() ?: BigDecimal.ZERO
+        spotLeadPrimaryStopMinGapUsd = r.scalp?.scalpSpotLeadPrimaryStopMinGapUsd?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        tpRestingEnabled = r.scalp?.scalpTpRestingEnabled ?: false,
+        bookInstabilityCooldownSec = r.scalp?.scalpBookInstabilityCooldownSec ?: 0,
+        bookInstabilityAskJump = r.scalp?.scalpBookInstabilityAskJump?.toSafeBigDecimal() ?: BigDecimal("0.30"),
+        spotLeadPrimaryStopBookConfirmDrawdown = r.scalp?.scalpSpotLeadPrimaryStopBookConfirmDrawdown?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        hedgeEnabled = r.scalp?.scalpHedgeEnabled ?: false,
+        hedgeArmSeconds = r.scalp?.scalpHedgeArmSeconds ?: 25,
+        hedgeMinOwnBid = r.scalp?.scalpHedgeMinOwnBid?.toSafeBigDecimal() ?: BigDecimal("0.95"),
+        hedgeMaxPrice = r.scalp?.scalpHedgeMaxPrice?.toSafeBigDecimal() ?: BigDecimal("0.05"),
+        hedgeBudgetUsdc = r.scalp?.scalpHedgeBudgetUsdc?.toSafeBigDecimal() ?: BigDecimal.ONE,
+        hedgeMinFeatureScore = r.scalp?.scalpHedgeMinFeatureScore ?: 1,
+        hedgeFeatureInstabilityLookbackSec = r.scalp?.scalpHedgeFeatureInstabilityLookbackSec ?: 120,
+        hedgeFeatureSpotCushionUsd = r.scalp?.scalpHedgeFeatureSpotCushionUsd?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        hedgeFeatureGapShrinkRatio = r.scalp?.scalpHedgeFeatureGapShrinkRatio?.toSafeBigDecimal() ?: BigDecimal.ZERO,
+        hedgeFeatureRecentFlipLookback = r.scalp?.scalpHedgeFeatureRecentFlipLookback ?: 0,
+        hedgeFeatureOppAskFloor = r.scalp?.scalpHedgeFeatureOppAskFloor?.toSafeBigDecimal() ?: BigDecimal.ZERO
     )
 
     /** 更新场景：null 字段保留 existing */
@@ -2470,7 +2535,22 @@ class CryptoTailStrategyService(
         spotLeadLateStopGateEnabled = r.scalp?.scalpSpotLeadLateStopGateEnabled ?: e.scalpSpotLeadLateStopGateEnabled,
         spotLeadPrimaryStopEnabled = r.scalp?.scalpSpotLeadPrimaryStopEnabled ?: e.scalpSpotLeadPrimaryStopEnabled,
         spotLeadPrimaryStopPersistMs = r.scalp?.scalpSpotLeadPrimaryStopPersistMs ?: e.scalpSpotLeadPrimaryStopPersistMs,
-        spotLeadPrimaryStopMinGapUsd = r.scalp?.scalpSpotLeadPrimaryStopMinGapUsd?.toSafeBigDecimal() ?: e.scalpSpotLeadPrimaryStopMinGapUsd
+        spotLeadPrimaryStopMinGapUsd = r.scalp?.scalpSpotLeadPrimaryStopMinGapUsd?.toSafeBigDecimal() ?: e.scalpSpotLeadPrimaryStopMinGapUsd,
+        tpRestingEnabled = r.scalp?.scalpTpRestingEnabled ?: e.scalpTpRestingEnabled,
+        bookInstabilityCooldownSec = r.scalp?.scalpBookInstabilityCooldownSec ?: e.scalpBookInstabilityCooldownSec,
+        bookInstabilityAskJump = r.scalp?.scalpBookInstabilityAskJump?.toSafeBigDecimal() ?: e.scalpBookInstabilityAskJump,
+        spotLeadPrimaryStopBookConfirmDrawdown = r.scalp?.scalpSpotLeadPrimaryStopBookConfirmDrawdown?.toSafeBigDecimal() ?: e.scalpSpotLeadPrimaryStopBookConfirmDrawdown,
+        hedgeEnabled = r.scalp?.scalpHedgeEnabled ?: e.scalpHedgeEnabled,
+        hedgeArmSeconds = r.scalp?.scalpHedgeArmSeconds ?: e.scalpHedgeArmSeconds,
+        hedgeMinOwnBid = r.scalp?.scalpHedgeMinOwnBid?.toSafeBigDecimal() ?: e.scalpHedgeMinOwnBid,
+        hedgeMaxPrice = r.scalp?.scalpHedgeMaxPrice?.toSafeBigDecimal() ?: e.scalpHedgeMaxPrice,
+        hedgeBudgetUsdc = r.scalp?.scalpHedgeBudgetUsdc?.toSafeBigDecimal() ?: e.scalpHedgeBudgetUsdc,
+        hedgeMinFeatureScore = r.scalp?.scalpHedgeMinFeatureScore ?: e.scalpHedgeMinFeatureScore,
+        hedgeFeatureInstabilityLookbackSec = r.scalp?.scalpHedgeFeatureInstabilityLookbackSec ?: e.scalpHedgeFeatureInstabilityLookbackSec,
+        hedgeFeatureSpotCushionUsd = r.scalp?.scalpHedgeFeatureSpotCushionUsd?.toSafeBigDecimal() ?: e.scalpHedgeFeatureSpotCushionUsd,
+        hedgeFeatureGapShrinkRatio = r.scalp?.scalpHedgeFeatureGapShrinkRatio?.toSafeBigDecimal() ?: e.scalpHedgeFeatureGapShrinkRatio,
+        hedgeFeatureRecentFlipLookback = r.scalp?.scalpHedgeFeatureRecentFlipLookback ?: e.scalpHedgeFeatureRecentFlipLookback,
+        hedgeFeatureOppAskFloor = r.scalp?.scalpHedgeFeatureOppAskFloor?.toSafeBigDecimal() ?: e.scalpHedgeFeatureOppAskFloor
     )
 
     /** SCALP_FLIP 参数校验：价格区间、买入封顶、窗口、概率/止损边界等 */
@@ -2544,6 +2624,33 @@ class CryptoTailStrategyService(
         // 主止损依赖现货领先层信号：主开关(spotLeadEnabled)关时 spotLead 恒空、主止损永不可能触发。
         // UI 已联动禁用，此处拦截 API 直传的不一致组合，防止"以为有主止损保护"的静默失效。
         if (sc.spotLeadPrimaryStopEnabled && !sc.spotLeadEnabled) return false
+        // 终场闪针防御（V96）
+        // 预挂止盈：依赖止盈语义，holdWinnerToSettle=true（不挂止盈）时开关无意义 → 拦截不一致组合，防静默失效
+        if (sc.tpRestingEnabled && sc.holdWinnerToSettle) return false
+        // 盘口不稳定熔断：冷却秒 >= 0（0=关）；ask 闪跳阈值 = 0（该维度不过滤）或 ∈ [RECORD_FLOOR, 1]——
+        // 追踪器写入侧有全局记录地板（低于 RECORD_FLOOR 的跳变不入环），配 (0, RECORD_FLOOR) 区间
+        // 的阈值看似生效实则永远查不到事件（静默失效），校验层硬拦截。
+        if (sc.bookInstabilityCooldownSec < 0) return false
+        if (sc.bookInstabilityAskJump < zero || sc.bookInstabilityAskJump > one) return false
+        if (sc.bookInstabilityAskJump > zero && sc.bookInstabilityAskJump < CryptoTailBookInstabilityTracker.RECORD_FLOOR) return false
+        // 主止损盘口确认旁路：回撤比例 ∈ [0,1)（0=关）；开启旁路须先开主止损（防"以为有旁路"的静默失效）
+        if (sc.spotLeadPrimaryStopBookConfirmDrawdown < zero || sc.spotLeadPrimaryStopBookConfirmDrawdown >= one) return false
+        if (sc.spotLeadPrimaryStopBookConfirmDrawdown > zero && !sc.spotLeadPrimaryStopEnabled) return false
+        // 终场反向对冲：布防窗口秒 > 0；门槛/限价 ∈ (0,1)；预算 > 0；特征参数边界
+        if (sc.hedgeEnabled) {
+            if (sc.hedgeArmSeconds <= 0) return false
+            if (sc.hedgeMinOwnBid <= zero || sc.hedgeMinOwnBid > one) return false
+            if (sc.hedgeMaxPrice <= zero || sc.hedgeMaxPrice >= one) return false
+            if (sc.hedgeBudgetUsdc <= zero) return false
+            // 对侧 token 须低于本方门槛互补价，否则"本方已赢"与"对侧还贵"矛盾，永不可能成交
+            if (sc.hedgeMaxPrice >= one.subtract(sc.hedgeMinOwnBid).add(BigDecimal("0.05"))) return false
+        }
+        if (sc.hedgeMinFeatureScore < 0) return false
+        if (sc.hedgeFeatureInstabilityLookbackSec < 0) return false
+        if (sc.hedgeFeatureSpotCushionUsd < zero) return false
+        if (sc.hedgeFeatureGapShrinkRatio < zero || sc.hedgeFeatureGapShrinkRatio > one) return false
+        if (sc.hedgeFeatureRecentFlipLookback < 0) return false
+        if (sc.hedgeFeatureOppAskFloor < zero || sc.hedgeFeatureOppAskFloor > one) return false
         return true
     }
 
@@ -2816,7 +2923,22 @@ class CryptoTailStrategyService(
                 scalpSpotLeadLateStopGateEnabled = e.scalpSpotLeadLateStopGateEnabled,
                 scalpSpotLeadPrimaryStopEnabled = e.scalpSpotLeadPrimaryStopEnabled,
                 scalpSpotLeadPrimaryStopPersistMs = e.scalpSpotLeadPrimaryStopPersistMs,
-                scalpSpotLeadPrimaryStopMinGapUsd = e.scalpSpotLeadPrimaryStopMinGapUsd.toPlainString()
+                scalpSpotLeadPrimaryStopMinGapUsd = e.scalpSpotLeadPrimaryStopMinGapUsd.toPlainString(),
+                scalpTpRestingEnabled = e.scalpTpRestingEnabled,
+                scalpBookInstabilityCooldownSec = e.scalpBookInstabilityCooldownSec,
+                scalpBookInstabilityAskJump = e.scalpBookInstabilityAskJump.toPlainString(),
+                scalpSpotLeadPrimaryStopBookConfirmDrawdown = e.scalpSpotLeadPrimaryStopBookConfirmDrawdown.toPlainString(),
+                scalpHedgeEnabled = e.scalpHedgeEnabled,
+                scalpHedgeArmSeconds = e.scalpHedgeArmSeconds,
+                scalpHedgeMinOwnBid = e.scalpHedgeMinOwnBid.toPlainString(),
+                scalpHedgeMaxPrice = e.scalpHedgeMaxPrice.toPlainString(),
+                scalpHedgeBudgetUsdc = e.scalpHedgeBudgetUsdc.toPlainString(),
+                scalpHedgeMinFeatureScore = e.scalpHedgeMinFeatureScore,
+                scalpHedgeFeatureInstabilityLookbackSec = e.scalpHedgeFeatureInstabilityLookbackSec,
+                scalpHedgeFeatureSpotCushionUsd = e.scalpHedgeFeatureSpotCushionUsd.toPlainString(),
+                scalpHedgeFeatureGapShrinkRatio = e.scalpHedgeFeatureGapShrinkRatio.toPlainString(),
+                scalpHedgeFeatureRecentFlipLookback = e.scalpHedgeFeatureRecentFlipLookback,
+                scalpHedgeFeatureOppAskFloor = e.scalpHedgeFeatureOppAskFloor.toPlainString()
             ),
             createdAt = e.createdAt,
             updatedAt = e.updatedAt
@@ -2844,6 +2966,7 @@ class CryptoTailStrategyService(
         createdAt = t.createdAt,
         mode = t.mode.value,
         remainingSize = t.remainingSize?.toPlainString(),
-        exitStatus = t.exitStatus
+        exitStatus = t.exitStatus,
+        triggerType = t.triggerType
     )
 }

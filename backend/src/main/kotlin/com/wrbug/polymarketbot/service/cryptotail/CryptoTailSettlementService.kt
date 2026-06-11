@@ -218,7 +218,9 @@ class CryptoTailSettlementService(
                 "fillSize" to (resolved?.size?.toPlainString() ?: ""),
                 "settleTs" to now.toString(),
                 "settleSource" to settleSource,
-                "mode" to strategy.mode.name
+                "mode" to strategy.mode.name,
+                // V96 终场反向对冲：HEDGE 行结算复用本事件；triggerType 供回测把"主仓 PnL + 对冲 PnL"按周期聚合
+                "triggerType" to trigger.triggerType
             )
             if (finalOc != null) {
                 val (fOpen, fClose) = finalOc

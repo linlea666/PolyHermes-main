@@ -12,7 +12,26 @@ import java.math.BigDecimal
 
 interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategyTrigger, Long> {
 
-    fun findByStrategyIdAndPeriodStartUnix(strategyId: Long, periodStartUnix: Long): CryptoTailStrategyTrigger?
+    /**
+     * 查找某策略某周期的"主入场" trigger（每周期最多一条，AUTO/MANUAL）。
+     * V96：排除 triggerType=HEDGE——终场反向对冲会在同 (strategyId, period) 写第二条 HEDGE 行，
+     * 不排除会破坏单结果约定（NonUniqueResultException）并污染"本周期已下单"判定。
+     */
+    @Query(
+        "SELECT t FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId " +
+            "AND t.periodStartUnix = :periodStartUnix AND t.triggerType <> 'HEDGE'"
+    )
+    fun findByStrategyIdAndPeriodStartUnix(
+        @Param("strategyId") strategyId: Long,
+        @Param("periodStartUnix") periodStartUnix: Long
+    ): CryptoTailStrategyTrigger?
+
+    /** V96 终场反向对冲：查某策略某周期是否已有指定类型 trigger（HEDGE 布防幂等/重启防重） */
+    fun findFirstByStrategyIdAndPeriodStartUnixAndTriggerType(
+        strategyId: Long,
+        periodStartUnix: Long,
+        triggerType: String
+    ): CryptoTailStrategyTrigger?
     fun findAllByStrategyIdOrderByCreatedAtDesc(strategyId: Long, pageable: Pageable): Page<CryptoTailStrategyTrigger>
     fun findAllByStrategyIdAndStatusOrderByCreatedAtDesc(strategyId: Long, status: String, pageable: Pageable): Page<CryptoTailStrategyTrigger>
     fun countByStrategyIdAndStatus(strategyId: Long, status: String): Long
@@ -20,11 +39,23 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
     fun findAllByStrategyIdAndCreatedAtBetweenOrderByCreatedAtDesc(strategyId: Long, startInclusive: Long, endInclusive: Long, pageable: Pageable): Page<CryptoTailStrategyTrigger>
     fun findAllByStrategyIdAndStatusAndCreatedAtBetweenOrderByCreatedAtDesc(strategyId: Long, status: String, startInclusive: Long, endInclusive: Long, pageable: Pageable): Page<CryptoTailStrategyTrigger>
     fun countByStrategyIdAndCreatedAtBetween(strategyId: Long, startInclusive: Long, endInclusive: Long): Long
-    fun countByStrategyIdAndStatusAndCreatedAtBetween(strategyId: Long, status: String, startInclusive: Long, endInclusive: Long): Long
 
+    /** 风控-日订单上限：指定创建时间范围内成功入场笔数（V96 排除 HEDGE，对冲不占日订单配额） */
+    @Query(
+        "SELECT COUNT(t) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.status = :status " +
+            "AND t.createdAt >= :startInclusive AND t.createdAt <= :endInclusive AND t.triggerType <> 'HEDGE'"
+    )
+    fun countByStrategyIdAndStatusAndCreatedAtBetween(
+        @Param("strategyId") strategyId: Long,
+        @Param("status") status: String,
+        @Param("startInclusive") startInclusive: Long,
+        @Param("endInclusive") endInclusive: Long
+    ): Long
+
+    /** 最近已结算记录（连亏闸/冷却/F4 近期翻转特征共用）。V96：排除 HEDGE——对冲权利金小额亏损不应计入连亏 streak */
     @Query(
         "SELECT t FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true " +
-            "ORDER BY COALESCE(t.settledAt, t.createdAt) DESC"
+            "AND t.triggerType <> 'HEDGE' ORDER BY COALESCE(t.settledAt, t.createdAt) DESC"
     )
     fun findLatestResolvedByStrategyId(
         @Param("strategyId") strategyId: Long,
@@ -60,8 +91,8 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
     @Query("SELECT COALESCE(SUM(t.realizedPnl), 0) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true")
     fun sumRealizedPnlByStrategyId(@Param("strategyId") strategyId: Long): BigDecimal?
 
-    /** 策略已结算订单笔数（用于胜率分母） */
-    @Query("SELECT COUNT(t) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true")
+    /** 策略已结算订单笔数（用于胜率分母）。V96：排除 HEDGE——保险单不进胜率统计，避免稀释主策略胜率 */
+    @Query("SELECT COUNT(t) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true AND t.triggerType <> 'HEDGE'")
     fun countResolvedByStrategyId(@Param("strategyId") strategyId: Long): Long
 
     /** 风控-日亏闸：指定结算时间点之后已结算订单的已实现盈亏之和（settledAt 为毫秒时间戳） */
@@ -75,24 +106,37 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
     )
     fun sumRealizedPnlByAccountIdAndSettledAtAfter(@Param("accountId") accountId: Long, @Param("settledAtAfter") settledAtAfter: Long): BigDecimal?
 
-    /** 风控-并发敞口闸：已成功下单但未结算的笔数 */
-    fun countByStrategyIdAndStatusAndResolvedFalse(strategyId: Long, status: String): Long
+    /** 风控-并发敞口闸：已成功下单但未结算的笔数。V96：排除 HEDGE——小额保险单不占用并发敞口名额 */
+    @Query(
+        "SELECT COUNT(t) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId " +
+            "AND t.status = :status AND t.resolved = false AND t.triggerType <> 'HEDGE'"
+    )
+    fun countByStrategyIdAndStatusAndResolvedFalse(@Param("strategyId") strategyId: Long, @Param("status") status: String): Long
 
-    /** SCALP_FLIP 同方向并发上限闸：同策略同 outcome 方向、已成功下单但未结算的笔数 */
-    fun countByStrategyIdAndOutcomeIndexAndStatusAndResolvedFalse(strategyId: Long, outcomeIndex: Int, status: String): Long
+    /** SCALP_FLIP 同方向并发上限闸：同策略同 outcome 方向、已成功下单但未结算的笔数。V96：排除 HEDGE——对冲买对侧不应阻塞对侧正常进场 */
+    @Query(
+        "SELECT COUNT(t) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId " +
+            "AND t.outcomeIndex = :outcomeIndex AND t.status = :status AND t.resolved = false AND t.triggerType <> 'HEDGE'"
+    )
+    fun countByStrategyIdAndOutcomeIndexAndStatusAndResolvedFalse(
+        @Param("strategyId") strategyId: Long,
+        @Param("outcomeIndex") outcomeIndex: Int,
+        @Param("status") status: String
+    ): Long
 
-    /** 账户级风控-并发敞口闸：同账户所有策略已成功下单但未结算的笔数 */
+    /** 账户级风控-并发敞口闸：同账户所有策略已成功下单但未结算的笔数（V96 排除 HEDGE） */
     @Query(
         "SELECT COUNT(t) FROM CryptoTailStrategyTrigger t, CryptoTailStrategy s " +
-            "WHERE t.strategyId = s.id AND s.accountId = :accountId AND t.status = :status AND t.resolved = false"
+            "WHERE t.strategyId = s.id AND s.accountId = :accountId AND t.status = :status AND t.resolved = false " +
+            "AND t.triggerType <> 'HEDGE'"
     )
     fun countByAccountIdAndStatusAndResolvedFalse(@Param("accountId") accountId: Long, @Param("status") status: String): Long
 
-    /** 账户级风控-日订单上限：同账户所有策略指定创建时间范围内成功入场笔数 */
+    /** 账户级风控-日订单上限：同账户所有策略指定创建时间范围内成功入场笔数（V96 排除 HEDGE，对冲不占日订单配额） */
     @Query(
         "SELECT COUNT(t) FROM CryptoTailStrategyTrigger t, CryptoTailStrategy s " +
             "WHERE t.strategyId = s.id AND s.accountId = :accountId AND t.status = :status " +
-            "AND t.createdAt >= :startInclusive AND t.createdAt <= :endInclusive"
+            "AND t.createdAt >= :startInclusive AND t.createdAt <= :endInclusive AND t.triggerType <> 'HEDGE'"
     )
     fun countByAccountIdAndStatusAndCreatedAtBetween(
         @Param("accountId") accountId: Long,
@@ -122,8 +166,8 @@ interface CryptoTailStrategyTriggerRepository : JpaRepository<CryptoTailStrategy
         @Param("outcomeIndex") outcomeIndex: Int
     ): Long
 
-    /** 策略已结算中赢的笔数（outcome_index = winner_outcome_index） */
-    @Query("SELECT COUNT(t) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true AND t.outcomeIndex = t.winnerOutcomeIndex")
+    /** 策略已结算中赢的笔数（outcome_index = winner_outcome_index）。V96：排除 HEDGE，与胜率分母同口径 */
+    @Query("SELECT COUNT(t) FROM CryptoTailStrategyTrigger t WHERE t.strategyId = :strategyId AND t.resolved = true AND t.outcomeIndex = t.winnerOutcomeIndex AND t.triggerType <> 'HEDGE'")
     fun countWinsByStrategyId(@Param("strategyId") strategyId: Long): Long
 
     /** 收益曲线：已结算记录，按结算时间（无则创建时间）在区间内升序 */

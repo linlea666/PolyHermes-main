@@ -132,6 +132,7 @@ class CryptoTailStrategyExecutionService(
     private val tailDiffEntrySegmentResolver: com.wrbug.polymarketbot.service.cryptotail.taildiff.TailDiffEntrySegmentResolver,
     private val reversalStatsLookup: TailReversalStatsLookup,
     private val spotLeadService: CryptoTailSpotLeadService,
+    private val bookInstabilityTracker: CryptoTailBookInstabilityTracker,
     @Value("\${crypto-tail.scalp.ws-feed-alive-bound-ms:2000}") private val scalpWsFeedAliveBoundMs: Long
 ) {
 
@@ -714,6 +715,29 @@ class CryptoTailStrategyExecutionService(
             return BarrierEval(false, "SCALP_SPREAD_TOO_WIDE",
                 "盘口价差过大: spread=${spread.toPlainString()}>${strategy.maxEntrySpread.toPlainString()}",
                 orderbookPayload(orderbook, nowMs).toJson())
+        }
+
+        // 2.6) 盘口不稳定熔断（V96 终场闪针防御 C，默认关）：冷却窗内出现过盘口异常（ask 闪跳/价差爆宽/ask 消失）
+        // 则拒绝新进场——刚闪过针的盘口短时间内更可能再闪，不在余震里进场。异常由 WS 路径上的
+        // CryptoTailBookInstabilityTracker 持续分类记录（17:40 案例：入场评估时 ask 已闪到 0.26 又恢复）。
+        if (strategy.scalpBookInstabilityCooldownSec > 0) {
+            val anomaly = bookInstabilityTracker.recentAnomaly(
+                tokenId = orderbook.tokenId,
+                lookbackSec = strategy.scalpBookInstabilityCooldownSec,
+                minMagnitude = strategy.scalpBookInstabilityAskJump,
+                nowMs = nowMs
+            )
+            if (anomaly != null) {
+                val anomalyAgeMs = nowMs - anomaly.atMs
+                return BarrierEval(false, "SCALP_BOOK_UNSTABLE",
+                    "盘口不稳定冷却中: ${anomaly.type} ${anomaly.detail} (距今${anomalyAgeMs}ms, 冷却窗=${strategy.scalpBookInstabilityCooldownSec}s, askJump阈值=${strategy.scalpBookInstabilityAskJump.toPlainString()})",
+                    orderbookPayload(orderbook, nowMs)
+                        .plus("anomalyType" to anomaly.type.name)
+                        .plus("anomalyMagnitude" to anomaly.magnitude.toPlainString())
+                        .plus("anomalyAgeMs" to anomalyAgeMs)
+                        .plus("anomalyDetail" to anomaly.detail)
+                        .plus("cooldownSec" to strategy.scalpBookInstabilityCooldownSec).toJson())
+            }
         }
 
         // 3) 价格区间（按 bestAsk 判定买入价，∈[entryMin, entryMax]）

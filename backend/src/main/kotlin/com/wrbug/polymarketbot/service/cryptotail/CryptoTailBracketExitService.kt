@@ -96,6 +96,17 @@ class CryptoTailBracketExitService(
         .build()
 
     /**
+     * V96 预挂止盈"已存在 TP1 痕迹"内存短路：triggerId → true。
+     * [ensureRestingTakeProfit] 在每个 hold tick 都会执行，预挂后若每次都靠 hasExitOfKind 走 DB
+     * 判"已挂过"，热路径多 1 次查询/tick。挂出成功或 DB 确认已有 TP1 痕迹时回填；负结果不缓存。
+     * "任何 TP1 痕迹都不再重挂"语义下 true 终身有效，30 分钟过期（>> 周期长度）仅作内存卫生。
+     */
+    private val tpRestingKnownCache: Cache<Long, Boolean> = Caffeine.newBuilder()
+        .maximumSize(2000)
+        .expireAfterWrite(java.time.Duration.ofMinutes(30))
+        .build()
+
+    /**
      * 现货主止损危险持续追踪（V95 现货大脑）：triggerId → 首次满足"合格危险"的时间戳（ms）。
      * 合格则 putIfAbsent 记录起点，不合格则 invalidate（中断即重置计时）；
      * 持续 >= scalpSpotLeadPrimaryStopPersistMs 才触发主止损，过滤亚秒级现货假穿。
@@ -252,6 +263,9 @@ class CryptoTailBracketExitService(
             if (decision.kind == null || decision.ratio <= BigDecimal.ZERO) {
                 val afterTp1 = persistTp1HoldStateIfNeeded(checked, decision)
                 resetExitConfirmIfNeeded(afterTp1)
+                // V96 A 预挂止盈：持仓平稳（无退出决策）时确保止盈 GTC 单已预挂在簿上。
+                // 放在 hold 路径而非入场回执处：天然覆盖 FAK/maker 两种入场与重启恢复，且急跌时止损决策优先、不会先挂 TP。
+                ensureRestingTakeProfit(strategy, checked, bestBid, remainingSeconds, orderbook)
                 return
             }
             persistTp1HoldStateIfNeeded(checked, decision)
@@ -269,15 +283,21 @@ class CryptoTailBracketExitService(
             //  - 普通退出（TP/TRAILING 等）：不再挂新单，先让 Reconciler 处理（MAKER 的撤改由 Reconciler 负责）。
             //  - 紧急退出（急跌硬止损/模型失效/方向反转）：抢占——先撤掉未成交退出单并按实际成交回写 remaining，
             //    再以最新 remaining 直接发 FAK，避免止损被止盈挂单长时间阻塞而错过卖点。
+            //  - V96 预挂止盈例外：pending 全部为 GTC_TP_REST 时任何主动退出决策都可抢占——
+            //    预挂单是全程驻留簿上的"被动单"（豁免提前撤单、挂到结算），若沿用"非紧急不抢占"，
+            //    FORCE 类退出（forceExitBeforeSettle 尾盘强平 / SPOT_LEAD_EARLY、LATE_SCALE_OUT 减仓）
+            //    会被它静默阻塞整个持仓期，等于开预挂就隐式关掉了尾盘强平安全网。
+            //    非 TP_REST 的短命 pending（FAK 在途/MAKER 限时挂单）保持原"仅紧急抢占"语义，零回归。
             val emergency = isEmergencyExit(decision.kind)
             val pendingExits = exitRepository.findByTriggerIdAndStatus(triggerId, "pending")
             var effectiveRemaining = freshRemaining
             if (pendingExits.isNotEmpty()) {
-                if (!emergency) {
+                val onlyTpRest = pendingExits.all { (it.orderType ?: "").uppercase() == TP_REST_ORDER_TYPE }
+                if (!emergency && !onlyTpRest) {
                     logger.debug("阶梯退出跳过：已有 pending 出场单 triggerId=$triggerId")
                     return
                 }
-                logger.info("急跌止损抢占：撤未成交退出单后再发 ${decision.kind} triggerId=$triggerId pendingCount=${pendingExits.size}")
+                logger.info("退出抢占(${if (emergency) "紧急" else "预挂止盈让位"})：撤未成交退出单后再发 ${decision.kind} triggerId=$triggerId pendingCount=${pendingExits.size}")
                 for (pend in pendingExits) {
                     exitOrderReconciler.cancelPendingExitForPreempt(pend)
                 }
@@ -449,7 +469,12 @@ class CryptoTailBracketExitService(
          * true = 本退出由 V95 现货主止损（SPOT_LEAD_PRIMARY_STOP）触发。专用标志精确归因
          * （与 [lateDynamicStop] 同款模式，避免日志侧用 reason 字符串匹配的脆弱归因）。仅用于审计/日志。
          */
-        val spotLeadPrimaryStop: Boolean = false
+        val spotLeadPrimaryStop: Boolean = false,
+        /**
+         * true = 本次现货主止损经"盘口确认旁路"（V96 D）触发：现货合格危险 + 盘口已大幅塌陷双确认，
+         * 跳过 persistMs 剩余等待立即开火。仅 [spotLeadPrimaryStop]=true 时有意义。仅用于审计/日志。
+         */
+        val bookConfirmBypass: Boolean = false
     )
 
     private fun decideExit(
@@ -883,12 +908,29 @@ class CryptoTailBracketExitService(
         val since = spotDangerSinceCache.get(triggerId) { now }
         val persistElapsedMs = now - since
         val persistMs = strategy.scalpSpotLeadPrimaryStopPersistMs
-        if (persistElapsedMs < persistMs) return null
+        // V96 D 盘口确认旁路：persist 尚未走满时，若盘口同时已大幅塌陷（bestBid<=入场×(1-比例)），
+        // "现货穿价 + 盘口已崩"双源互证下假穿概率趋零 → 跳过剩余等待立即开火；
+        // persistMs 只留给"仅现货报警、盘口未动"的存疑场景。0=关（恒等满 persistMs，零回归）。
+        var bookConfirmBypass = false
+        if (persistElapsedMs < persistMs) {
+            val bypassDrawdown = strategy.scalpSpotLeadPrimaryStopBookConfirmDrawdown
+            val entryFill = resolveEntryFillPrice(trigger)
+            val bookCollapsed = bypassDrawdown > BigDecimal.ZERO && entryFill != null && entryFill > BigDecimal.ZERO &&
+                bestBid <= entryFill.multiply(BigDecimal.ONE.subtract(bypassDrawdown))
+            if (!bookCollapsed) return null
+            bookConfirmBypass = true
+        }
         val label = tier?.label ?: "?"
+        val persistDesc = if (bookConfirmBypass) {
+            "现货共识危险${persistElapsedMs}ms<persistMs=${persistMs}ms 但盘口已塌陷" +
+                "(bestBid=${bestBid.toPlainString()}<=入场×(1-${strategy.scalpSpotLeadPrimaryStopBookConfirmDrawdown.toPlainString()})) → BOOK_CONFIRM_BYPASS 双确认即时开火"
+        } else {
+            "现货共识危险持续${persistElapsedMs}ms>=${persistMs}ms"
+        }
         return Decision(
             ExitKind.HARD_STOP,
             BigDecimal.ONE,
-            "SCALP[$label] SPOT_LEAD_PRIMARY_STOP: 现货共识危险持续${persistElapsedMs}ms>=${persistMs}ms" +
+            "SCALP[$label] SPOT_LEAD_PRIMARY_STOP: $persistDesc" +
                 " (exchange=${spotLead.exchange ?: spotLead.source?.name ?: "?"}, spotGap=${spotLead.spotGap.toPlainString()}," +
                 " crossed=${spotLead.crossed}, ageMs=${spotLead.ageMs ?: -1}, minGapUsd=${minGapUsd.toPlainString()})" +
                 " bestBid=${bestBid.toPlainString()} remaining=${remainingSeconds}s → 无视盘口价市价全清",
@@ -896,7 +938,8 @@ class CryptoTailBracketExitService(
             forceImmediate = true,
             spotLead = spotLead,
             spotEarlyWarningActed = true,
-            spotLeadPrimaryStop = true
+            spotLeadPrimaryStop = true,
+            bookConfirmBypass = bookConfirmBypass
         )
     }
 
@@ -1634,6 +1677,8 @@ class CryptoTailBracketExitService(
             "scalpSpotLeadPrimaryStopMinGapUsd" to strategy.scalpSpotLeadPrimaryStopMinGapUsd.toPlainString(),
             "spotLeadPrimaryStopTriggered" to spotLeadPrimaryStopTriggered,
             "spotLeadPrimaryStopPersistElapsedMs" to (spotDangerPersistElapsedMs ?: ""),
+            "scalpSpotLeadPrimaryStopBookConfirmDrawdown" to strategy.scalpSpotLeadPrimaryStopBookConfirmDrawdown.toPlainString(),
+            "bookConfirmBypass" to decision.bookConfirmBypass,
             "spotLeadFresh" to (spotLead?.fresh ?: ""),
             "spotLeadGap" to (spotLead?.spotGap?.toPlainString() ?: ""),
             "spotLeadSupportsHolding" to (spotLead?.supportsHolding ?: ""),
@@ -1805,6 +1850,153 @@ class CryptoTailBracketExitService(
 
     /** 失败抑制窗 cache key */
     private fun failBackoffKey(triggerId: Long, kind: ExitKind): String = "$triggerId-${kind.name}"
+
+    /**
+     * V96 A 预挂止盈：确保 SCALP 持仓的止盈 GTC 限价单已预挂在簿上（价格=入场冻结 preset 的 tp_limit.price）。
+     *
+     * 动机（decision-log 20260611 终场闪针复盘）：响应式 TP 依赖"看到 bestBid>=tpPrice 才发单"，
+     * 终场闪针时对手盘整层蒸发，看到时已无人可卖；预挂单按价格-时间优先在簿上排队，价格先到先成交，
+     * 闪针发生前止盈已落袋。
+     *
+     * 与现有链路的衔接（全部复用，零新增竞态）：
+     *  - 响应式 TP 去重：exit 行 kind=TP1 → [tpLimitDecision] 的 hasExitOfKind(TP1) 自动判"已触发"不再重复；
+     *  - 退出抢占：预挂单是"被动单"——[evaluateAndExit] 中任何主动退出决策（紧急止损与 FORCE 类强平/减仓）
+     *    都会先 cancelPendingExitForPreempt 撤掉它再下单，预挂不会阻塞任何退出路径；
+     *  - 成交/撤单对账：orderType=GTC_TP_REST 由 [CryptoTailExitOrderReconciler] 按 maker 口径对账（限价=真实成交价），
+     *    且豁免 makerCancelBeforeSettleSeconds 提前撤单——挂到结算时点（闪针恰发生在最后几秒，提前撤等于卸甲）；
+     *  - 失败抑制：复用 failBackoffCache(TP1) 60s 窗，防"挂单被拒→下 tick 又挂"死循环。
+     *
+     * 仅在持仓平稳（无退出决策）的 hold 路径调用（mutex 内）；急跌时止损决策优先返回，不会先挂 TP。
+     */
+    private suspend fun ensureRestingTakeProfit(
+        strategy: CryptoTailStrategy,
+        trigger: CryptoTailStrategyTrigger,
+        bestBid: BigDecimal,
+        remainingSeconds: Int,
+        orderbook: OrderbookQualitySnapshot? = null
+    ) {
+        if (strategy.mode != TradingMode.SCALP_FLIP || !strategy.scalpTpRestingEnabled || strategy.scalpHoldWinnerToSettle) return
+        if (remainingSeconds <= 0) return
+        val triggerId = trigger.id ?: return
+        val tokenId = trigger.tokenId ?: return
+        val remaining = trigger.remainingSize ?: return
+        if (remaining <= DUST_THRESHOLD) return
+        // 廉价检查前移：失败抑制窗（纯内存）先于任何 DB 查询
+        if (failBackoffCache.getIfPresent(failBackoffKey(triggerId, ExitKind.TP1)) != null) return
+        // 内存级"已挂"短路：TP_REST 挂出后本方法在每个 hold tick 都会被调，若每次都靠 hasExitOfKind
+        // 走 DB 才能知道"已挂过"，SPOT_PUSH 提速下热路径多 ~12 次/s 查询。缓存命中即返回；
+        // miss 时回源 DB 一次（覆盖重启恢复），确认存在则回填缓存。负结果不缓存（必须保持精确）。
+        if (tpRestingKnownCache.getIfPresent(triggerId) != null) return
+        val preset = resolveTailDiffPresetForTrigger(strategy, trigger, TailDiffTier.fromLabel(trigger.tier))
+        if (!preset.tpLimit.enabled) return
+        // 任何 TP1 痕迹（pending 预挂中/已成/已撤/被抢占）都不再重挂：撤单通常意味着紧急止损已接管或临近结算
+        if (hasExitOfKind(triggerId, ExitKind.TP1)) {
+            tpRestingKnownCache.put(triggerId, true)
+            return
+        }
+        // 已有其他 pending 退出单（理论上 hold 路径不该有，防御性守卫防超卖）
+        if (exitRepository.findByTriggerIdAndStatus(triggerId, "pending").isNotEmpty()) return
+
+        val ctx = accountContextFactory.build(strategy) ?: run {
+            logger.warn("预挂止盈无法构建账户上下文: strategyId=${strategy.id}, accountId=${strategy.accountId}")
+            return
+        }
+        val tpPrice = preset.tpLimit.price
+            .setScale(PRICE_SCALE, RoundingMode.DOWN)
+            .min(MAX_PRICE)
+            .max(MIN_PRICE)
+        val targetSize = remaining.setScale(sizeDecimalScale, RoundingMode.DOWN)
+        if (targetSize <= BigDecimal.ZERO) return
+        val sizeStr = targetSize.toPlainString()
+        val reason = "TP_RESTING: 预挂止盈 GTC 限价=${tpPrice.toPlainString()} size=$sizeStr" +
+            " (bestBid=${bestBid.toPlainString()} remaining=${remainingSeconds}s)"
+
+        var orderId: String? = null
+        var failReason: String? = null
+        var immediateFilledSize: BigDecimal? = null
+        var immediateFilledAmount: BigDecimal? = null
+        try {
+            // 非 postOnly：若 bestBid 已 >= tpPrice，GTC 立即按对手价成交（taker，更优价），符合止盈语义
+            val signedOrder = orderSigningService.createAndSignOrder(
+                privateKey = ctx.decryptedPrivateKey,
+                makerAddress = ctx.proxyAddress,
+                tokenId = tokenId,
+                side = "SELL",
+                price = tpPrice.toPlainString(),
+                size = sizeStr,
+                signatureType = ctx.signatureType
+            )
+            val resp = ctx.clobApi.createOrder(
+                NewOrderRequest(order = signedOrder, owner = ctx.apiKey, orderType = "GTC", postOnly = false)
+            )
+            if (resp.isSuccessful && resp.body() != null) {
+                val body = resp.body()!!
+                if (body.success && body.orderId != null) {
+                    orderId = body.orderId
+                    val a = body.makingAmount?.toSafeBigDecimal()
+                    val b = body.takingAmount?.toSafeBigDecimal()
+                    if (a != null && b != null && a > BigDecimal.ZERO && b > BigDecimal.ZERO) {
+                        immediateFilledSize = a.max(b)
+                        immediateFilledAmount = a.min(b)
+                    }
+                } else {
+                    failReason = body.errorMsg ?: body.getErrorMessage()
+                }
+            } else {
+                failReason = resp.errorBody()?.string().orEmpty().ifEmpty { "请求失败" }
+            }
+        } catch (e: Exception) {
+            failReason = e.message ?: e.toString()
+            logger.error("预挂止盈下单异常 triggerId=$triggerId, ${e.message}", e)
+        }
+
+        if (orderId != null) {
+            saveExit(
+                strategy, trigger, ExitKind.TP1, targetSize, tpPrice, TP_REST_ORDER_TYPE, "pending",
+                null, bestBid, remainingSeconds, reason, null, orderId,
+                immediateFilledSize, immediateFilledAmount
+            )
+            tpRestingKnownCache.put(triggerId, true)
+            recordEvent(
+                strategy, trigger,
+                eventType = "TP_RESTING_PLACED",
+                gateName = ExitKind.TP1.name,
+                passed = true,
+                reason = "$reason → 已预挂 orderId=$orderId",
+                pwinHolding = null,
+                bestBid = bestBid,
+                remainingSeconds = remainingSeconds,
+                extra = mapOf(
+                    "orderId" to orderId,
+                    "tpPrice" to tpPrice.toPlainString(),
+                    "targetSize" to sizeStr,
+                    "orderType" to TP_REST_ORDER_TYPE,
+                    "immediateFilledSize" to (immediateFilledSize?.toPlainString() ?: ""),
+                    "spread" to (orderbook?.spread?.toPlainString() ?: ""),
+                    "quoteAgeMs" to (orderbook?.quoteAgeMs() ?: "")
+                )
+            )
+            logger.info("预挂止盈已提交 triggerId=$triggerId orderId=$orderId price=${tpPrice.toPlainString()} size=$sizeStr")
+        } else {
+            saveExit(
+                strategy, trigger, ExitKind.TP1, targetSize, tpPrice, TP_REST_ORDER_TYPE, "failed",
+                null, bestBid, remainingSeconds, reason, failReason ?: "unknown", null
+            )
+            failBackoffCache.put(failBackoffKey(triggerId, ExitKind.TP1), true)
+            recordEvent(
+                strategy, trigger,
+                eventType = "TP_RESTING_FAILED",
+                gateName = ExitKind.TP1.name,
+                passed = false,
+                reason = "$reason → 预挂失败:${failReason ?: "unknown"}",
+                pwinHolding = null,
+                bestBid = bestBid,
+                remainingSeconds = remainingSeconds,
+                extra = mapOf("tpPrice" to tpPrice.toPlainString(), "failReason" to (failReason ?: ""))
+            )
+            logger.error("预挂止盈下单失败 triggerId=$triggerId reason=$failReason")
+        }
+    }
 
     /**
      * 提交退出单：签名 → 提交 CLOB → 写 exit 表（pending）。
@@ -2099,6 +2291,13 @@ class CryptoTailBracketExitService(
     }
 
     companion object {
+        /**
+         * V96 预挂止盈专用 orderType 标记：GTC 前缀保证全链路 maker 口径（费用/真实成交价=限价）兼容；
+         * 与普通 "GTC" 的唯一行为差异在 [CryptoTailExitOrderReconciler]——豁免 makerCancelBeforeSettleSeconds
+         * 提前撤单，挂到结算时点（终场闪针恰发生在最后几秒，提前撤等于卸甲）。
+         */
+        const val TP_REST_ORDER_TYPE: String = "GTC_TP_REST"
+
         /** FAK 卖单滑点（与 AccountService.sellPosition 的 SELL_PRICE_ADJUSTMENT 保持一致） */
         private val EXIT_FAK_SLIPPAGE: BigDecimal = BigDecimal("0.02")
         /** MAKER/GTC 卖单价格相对 bestBid 的正向偏移（1 个 tick，避免立即 cross） */

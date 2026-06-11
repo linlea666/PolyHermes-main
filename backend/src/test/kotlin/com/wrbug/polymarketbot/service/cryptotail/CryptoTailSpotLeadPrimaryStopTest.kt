@@ -41,7 +41,11 @@ class CryptoTailSpotLeadPrimaryStopTest {
         Mockito.mock(CryptoTailSpotLeadTelemetry::class.java)
     )
 
-    private fun strategy(persistMs: Int = 0, minGapUsd: BigDecimal = BigDecimal.ZERO) = CryptoTailStrategy(
+    private fun strategy(
+        persistMs: Int = 0,
+        minGapUsd: BigDecimal = BigDecimal.ZERO,
+        bookConfirmDrawdown: BigDecimal = BigDecimal.ZERO
+    ) = CryptoTailStrategy(
         id = 1L,
         accountId = 1L,
         marketSlugPrefix = "btc-updown-5m",
@@ -50,17 +54,19 @@ class CryptoTailSpotLeadPrimaryStopTest {
             enabled = true,
             primaryStopEnabled = true,
             primaryStopPersistMs = persistMs,
-            primaryStopMinGapUsd = minGapUsd
+            primaryStopMinGapUsd = minGapUsd,
+            primaryStopBookConfirmDrawdown = bookConfirmDrawdown
         )
     )
 
-    private fun trigger(id: Long = 100L) = CryptoTailStrategyTrigger(
+    private fun trigger(id: Long = 100L, entryFillPrice: BigDecimal? = null) = CryptoTailStrategyTrigger(
         id = id,
         strategyId = 1L,
         periodStartUnix = 1_700_000_000L,
         outcomeIndex = 0,
         triggerPrice = BigDecimal("0.9"),
-        amountUsdc = BigDecimal("10")
+        amountUsdc = BigDecimal("10"),
+        entryFillPrice = entryFillPrice
     )
 
     private fun lead(
@@ -190,6 +196,72 @@ class CryptoTailSpotLeadPrimaryStopTest {
             bestBid = BigDecimal("0.95"), remainingSeconds = 120, tier = null
         )
         assertNotNull(decision)
+    }
+
+    @Test
+    fun `book confirm bypass fires before persist window when book collapsed`() {
+        val service = newService()
+        // persist=60s 远未走满，但 bookConfirmDrawdown=0.10 且 bestBid=0.85 <= 入场0.97×0.90=0.873 → 双确认即时开火
+        val decision = service.decideSpotLeadPrimaryStop(
+            strategy(persistMs = 60_000, bookConfirmDrawdown = BigDecimal("0.10")),
+            trigger(id = 201L, entryFillPrice = BigDecimal("0.97")), lead(), spotDanger = true,
+            bestBid = BigDecimal("0.85"), remainingSeconds = 120, tier = null
+        )
+        assertNotNull(decision)
+        assertEquals(ExitKind.HARD_STOP, decision!!.kind)
+        assertTrue(decision.bookConfirmBypass)
+        assertTrue(decision.reason.contains("BOOK_CONFIRM_BYPASS"))
+    }
+
+    @Test
+    fun `book confirm bypass does not fire when book has not collapsed`() {
+        val service = newService()
+        // bestBid=0.95 > 0.97×0.90=0.873 → 盘口未实跌，仍等 persist
+        assertNull(
+            service.decideSpotLeadPrimaryStop(
+                strategy(persistMs = 60_000, bookConfirmDrawdown = BigDecimal("0.10")),
+                trigger(id = 202L, entryFillPrice = BigDecimal("0.97")), lead(), spotDanger = true,
+                bestBid = BigDecimal("0.95"), remainingSeconds = 120, tier = null
+            )
+        )
+    }
+
+    @Test
+    fun `book confirm bypass disabled when drawdown is zero`() {
+        val service = newService()
+        // 旁路关闭（=0）：即使盘口已崩也必须等满 persist → 零回归
+        assertNull(
+            service.decideSpotLeadPrimaryStop(
+                strategy(persistMs = 60_000, bookConfirmDrawdown = BigDecimal.ZERO),
+                trigger(id = 203L, entryFillPrice = BigDecimal("0.97")), lead(), spotDanger = true,
+                bestBid = BigDecimal("0.50"), remainingSeconds = 120, tier = null
+            )
+        )
+    }
+
+    @Test
+    fun `book confirm bypass requires entry fill price`() {
+        val service = newService()
+        // 无成交价可比 → 无法判定回撤，不旁路
+        assertNull(
+            service.decideSpotLeadPrimaryStop(
+                strategy(persistMs = 60_000, bookConfirmDrawdown = BigDecimal("0.10")),
+                trigger(id = 204L, entryFillPrice = null), lead(), spotDanger = true,
+                bestBid = BigDecimal("0.50"), remainingSeconds = 120, tier = null
+            )
+        )
+    }
+
+    @Test
+    fun `normal persist path is not flagged as bypass`() {
+        val service = newService()
+        val decision = service.decideSpotLeadPrimaryStop(
+            strategy(persistMs = 0, bookConfirmDrawdown = BigDecimal("0.10")),
+            trigger(id = 205L, entryFillPrice = BigDecimal("0.97")), lead(), spotDanger = true,
+            bestBid = BigDecimal("0.95"), remainingSeconds = 120, tier = null
+        )
+        assertNotNull(decision)
+        assertTrue(!decision!!.bookConfirmBypass)
     }
 
     @Test

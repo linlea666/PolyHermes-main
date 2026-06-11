@@ -182,7 +182,22 @@ const SCALP_DEFAULTS = {
   scalpSpotLeadLateStopGateEnabled: false,
   scalpSpotLeadPrimaryStopEnabled: false,
   scalpSpotLeadPrimaryStopPersistMs: 600,
-  scalpSpotLeadPrimaryStopMinGapUsd: '0'
+  scalpSpotLeadPrimaryStopMinGapUsd: '0',
+  scalpSpotLeadPrimaryStopBookConfirmDrawdown: '0',
+  scalpTpRestingEnabled: false,
+  scalpBookInstabilityCooldownSec: 0,
+  scalpBookInstabilityAskJump: '0.30',
+  scalpHedgeEnabled: false,
+  scalpHedgeArmSeconds: 25,
+  scalpHedgeMinOwnBid: '0.95',
+  scalpHedgeMaxPrice: '0.05',
+  scalpHedgeBudgetUsdc: '1',
+  scalpHedgeMinFeatureScore: 1,
+  scalpHedgeFeatureInstabilityLookbackSec: 120,
+  scalpHedgeFeatureSpotCushionUsd: '0',
+  scalpHedgeFeatureGapShrinkRatio: '0',
+  scalpHedgeFeatureRecentFlipLookback: 0,
+  scalpHedgeFeatureOppAskFloor: '0'
 }
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -263,7 +278,22 @@ const buildScalpFormValues = (record: CryptoTailStrategyDto): typeof SCALP_DEFAU
   scalpSpotLeadLateStopGateEnabled: record.scalpSpotLeadLateStopGateEnabled ?? SCALP_DEFAULTS.scalpSpotLeadLateStopGateEnabled,
   scalpSpotLeadPrimaryStopEnabled: record.scalpSpotLeadPrimaryStopEnabled ?? SCALP_DEFAULTS.scalpSpotLeadPrimaryStopEnabled,
   scalpSpotLeadPrimaryStopPersistMs: record.scalpSpotLeadPrimaryStopPersistMs ?? SCALP_DEFAULTS.scalpSpotLeadPrimaryStopPersistMs,
-  scalpSpotLeadPrimaryStopMinGapUsd: record.scalpSpotLeadPrimaryStopMinGapUsd ?? SCALP_DEFAULTS.scalpSpotLeadPrimaryStopMinGapUsd
+  scalpSpotLeadPrimaryStopMinGapUsd: record.scalpSpotLeadPrimaryStopMinGapUsd ?? SCALP_DEFAULTS.scalpSpotLeadPrimaryStopMinGapUsd,
+  scalpSpotLeadPrimaryStopBookConfirmDrawdown: record.scalpSpotLeadPrimaryStopBookConfirmDrawdown ?? SCALP_DEFAULTS.scalpSpotLeadPrimaryStopBookConfirmDrawdown,
+  scalpTpRestingEnabled: record.scalpTpRestingEnabled ?? SCALP_DEFAULTS.scalpTpRestingEnabled,
+  scalpBookInstabilityCooldownSec: record.scalpBookInstabilityCooldownSec ?? SCALP_DEFAULTS.scalpBookInstabilityCooldownSec,
+  scalpBookInstabilityAskJump: record.scalpBookInstabilityAskJump ?? SCALP_DEFAULTS.scalpBookInstabilityAskJump,
+  scalpHedgeEnabled: record.scalpHedgeEnabled ?? SCALP_DEFAULTS.scalpHedgeEnabled,
+  scalpHedgeArmSeconds: record.scalpHedgeArmSeconds ?? SCALP_DEFAULTS.scalpHedgeArmSeconds,
+  scalpHedgeMinOwnBid: record.scalpHedgeMinOwnBid ?? SCALP_DEFAULTS.scalpHedgeMinOwnBid,
+  scalpHedgeMaxPrice: record.scalpHedgeMaxPrice ?? SCALP_DEFAULTS.scalpHedgeMaxPrice,
+  scalpHedgeBudgetUsdc: record.scalpHedgeBudgetUsdc ?? SCALP_DEFAULTS.scalpHedgeBudgetUsdc,
+  scalpHedgeMinFeatureScore: record.scalpHedgeMinFeatureScore ?? SCALP_DEFAULTS.scalpHedgeMinFeatureScore,
+  scalpHedgeFeatureInstabilityLookbackSec: record.scalpHedgeFeatureInstabilityLookbackSec ?? SCALP_DEFAULTS.scalpHedgeFeatureInstabilityLookbackSec,
+  scalpHedgeFeatureSpotCushionUsd: record.scalpHedgeFeatureSpotCushionUsd ?? SCALP_DEFAULTS.scalpHedgeFeatureSpotCushionUsd,
+  scalpHedgeFeatureGapShrinkRatio: record.scalpHedgeFeatureGapShrinkRatio ?? SCALP_DEFAULTS.scalpHedgeFeatureGapShrinkRatio,
+  scalpHedgeFeatureRecentFlipLookback: record.scalpHedgeFeatureRecentFlipLookback ?? SCALP_DEFAULTS.scalpHedgeFeatureRecentFlipLookback,
+  scalpHedgeFeatureOppAskFloor: record.scalpHedgeFeatureOppAskFloor ?? SCALP_DEFAULTS.scalpHedgeFeatureOppAskFloor
 })
 
 /** 编辑态：用 record 已存值回填表单，缺失走默认值 */
@@ -497,7 +527,22 @@ const buildScalpPayload = (v: Record<string, unknown>): CryptoTailScalpParams =>
   scalpSpotLeadLateStopGateEnabled: typeof v.scalpSpotLeadLateStopGateEnabled === 'boolean' ? v.scalpSpotLeadLateStopGateEnabled : undefined,
   scalpSpotLeadPrimaryStopEnabled: typeof v.scalpSpotLeadPrimaryStopEnabled === 'boolean' ? v.scalpSpotLeadPrimaryStopEnabled : undefined,
   scalpSpotLeadPrimaryStopPersistMs: numOrUndef(v.scalpSpotLeadPrimaryStopPersistMs),
-  scalpSpotLeadPrimaryStopMinGapUsd: strOrUndef(v.scalpSpotLeadPrimaryStopMinGapUsd)
+  scalpSpotLeadPrimaryStopMinGapUsd: strOrUndef(v.scalpSpotLeadPrimaryStopMinGapUsd),
+  scalpSpotLeadPrimaryStopBookConfirmDrawdown: strOrUndef(v.scalpSpotLeadPrimaryStopBookConfirmDrawdown),
+  scalpTpRestingEnabled: typeof v.scalpTpRestingEnabled === 'boolean' ? v.scalpTpRestingEnabled : undefined,
+  scalpBookInstabilityCooldownSec: numOrUndef(v.scalpBookInstabilityCooldownSec),
+  scalpBookInstabilityAskJump: strOrUndef(v.scalpBookInstabilityAskJump),
+  scalpHedgeEnabled: typeof v.scalpHedgeEnabled === 'boolean' ? v.scalpHedgeEnabled : undefined,
+  scalpHedgeArmSeconds: numOrUndef(v.scalpHedgeArmSeconds),
+  scalpHedgeMinOwnBid: strOrUndef(v.scalpHedgeMinOwnBid),
+  scalpHedgeMaxPrice: strOrUndef(v.scalpHedgeMaxPrice),
+  scalpHedgeBudgetUsdc: strOrUndef(v.scalpHedgeBudgetUsdc),
+  scalpHedgeMinFeatureScore: numOrUndef(v.scalpHedgeMinFeatureScore),
+  scalpHedgeFeatureInstabilityLookbackSec: numOrUndef(v.scalpHedgeFeatureInstabilityLookbackSec),
+  scalpHedgeFeatureSpotCushionUsd: strOrUndef(v.scalpHedgeFeatureSpotCushionUsd),
+  scalpHedgeFeatureGapShrinkRatio: strOrUndef(v.scalpHedgeFeatureGapShrinkRatio),
+  scalpHedgeFeatureRecentFlipLookback: numOrUndef(v.scalpHedgeFeatureRecentFlipLookback),
+  scalpHedgeFeatureOppAskFloor: strOrUndef(v.scalpHedgeFeatureOppAskFloor)
 })
 
 /** 从市场 slug 推断币种（与后端 CryptoTailCoinResolver 一致：仅 BTC/ETH 有反转研究数据） */
@@ -1918,6 +1963,12 @@ const CryptoTailStrategyList: React.FC = () => {
   const exitManagerEnabled = Form.useWatch('enableExitManager', form)
   // 现货领先早警主开关：关闭时其下所有子项（价源/门控/推送）禁用，避免误以为单开子项即生效（实际后端以主开关为准）
   const scalpSpotLeadEnabled = Form.useWatch('scalpSpotLeadEnabled', form) as boolean | undefined
+  // 对冲主开关：关闭时其下子项禁用
+  const scalpHedgeEnabled = Form.useWatch('scalpHedgeEnabled', form) as boolean | undefined
+  // 持有到结算开启时无止盈语义：预挂止盈联动禁用（后端校验两者互斥）
+  const scalpHoldWinnerToSettleOn = Form.useWatch('scalpHoldWinnerToSettle', form) as boolean | undefined
+  // 盘口确认旁路依赖现货主止损（后端校验 drawdown>0 须 primaryStopEnabled=true）
+  const scalpSpotLeadPrimaryStopOn = Form.useWatch('scalpSpotLeadPrimaryStopEnabled', form) as boolean | undefined
   const intervalSeconds = marketOptions.find((m) => m.slug === selectedMarket)?.intervalSeconds ?? 300
   const maxMinutes = Math.floor(intervalSeconds / 60)
 
@@ -3677,10 +3728,13 @@ const CryptoTailStrategyList: React.FC = () => {
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpExitModeSubsection')}</Typography.Text>
               </Form.Item>
               <Form.Item name="scalpHoldWinnerToSettle" label={t('cryptoTailStrategy.form.scalpHoldWinnerToSettle')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpHoldWinnerToSettleHint')}>
-                <Switch />
+                <Switch onChange={(checked) => { if (checked) form.setFieldsValue({ scalpTpRestingEnabled: false }) }} />
               </Form.Item>
               <Form.Item name="scalpTpPrice" label={t('cryptoTailStrategy.form.scalpTpPrice')} extra={t('cryptoTailStrategy.form.scalpTpPriceHint')}>
                 <InputNumber min={0} max={1} step={0.005} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpTpRestingEnabled" label={t('cryptoTailStrategy.form.scalpTpRestingEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpTpRestingEnabledHint')}>
+                <Switch disabled={scalpHoldWinnerToSettleOn === true} />
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 8 }}>
@@ -3784,6 +3838,25 @@ const CryptoTailStrategyList: React.FC = () => {
               </Form.Item>
               <Form.Item name="scalpConsecLossStopCount" label={t('cryptoTailStrategy.form.scalpConsecLossStopCount')} extra={t('cryptoTailStrategy.form.scalpConsecLossStopCountHint')}>
                 <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="scalpBookInstabilityCooldownSec" label={t('cryptoTailStrategy.form.scalpBookInstabilityCooldownSec')} extra={t('cryptoTailStrategy.form.scalpBookInstabilityCooldownSecHint')}>
+                <InputNumber min={0} step={5} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item
+                name="scalpBookInstabilityAskJump"
+                label={t('cryptoTailStrategy.form.scalpBookInstabilityAskJump')}
+                extra={t('cryptoTailStrategy.form.scalpBookInstabilityAskJumpHint')}
+                rules={[{
+                  validator: (_, value) => {
+                    // 与后端校验同口径：追踪器记录地板 0.10，(0, 0.10) 区间的阈值永远查不到事件（静默失效）
+                    if (value == null || value === '') return Promise.resolve()
+                    const v = Number(value)
+                    if (!Number.isFinite(v) || v === 0 || v >= 0.1) return Promise.resolve()
+                    return Promise.reject(new Error(t('cryptoTailStrategy.form.scalpBookInstabilityAskJumpInvalid')))
+                  }
+                }]}
+              >
+                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
               </Form.Item>
               <Form.Item style={{ marginBottom: 8 }}>
                 <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpLateStopSubsection')}</Typography.Text>
@@ -3889,13 +3962,73 @@ const CryptoTailStrategyList: React.FC = () => {
                 <Switch disabled={!scalpSpotLeadEnabled} />
               </Form.Item>
               <Form.Item name="scalpSpotLeadPrimaryStopEnabled" label={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopEnabledHint')}>
-                <Switch disabled={!scalpSpotLeadEnabled} />
+                <Switch disabled={!scalpSpotLeadEnabled} onChange={(checked) => { if (!checked) form.setFieldsValue({ scalpSpotLeadPrimaryStopBookConfirmDrawdown: '0' }) }} />
               </Form.Item>
               <Form.Item name="scalpSpotLeadPrimaryStopPersistMs" label={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopPersistMs')} extra={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopPersistMsHint')}>
                 <InputNumber disabled={!scalpSpotLeadEnabled} min={0} step={100} precision={0} style={{ width: '100%' }} addonAfter="ms" />
               </Form.Item>
               <Form.Item name="scalpSpotLeadPrimaryStopMinGapUsd" label={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopMinGapUsd')} extra={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopMinGapUsdHint')}>
                 <InputNumber disabled={!scalpSpotLeadEnabled} min={0} step={1} style={{ width: '100%' }} stringMode addonAfter="USD" />
+              </Form.Item>
+              <Form.Item name="scalpSpotLeadPrimaryStopBookConfirmDrawdown" label={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopBookConfirmDrawdown')} extra={t('cryptoTailStrategy.form.scalpSpotLeadPrimaryStopBookConfirmDrawdownHint')}>
+                <InputNumber disabled={!scalpSpotLeadEnabled || !scalpSpotLeadPrimaryStopOn} min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary">{t('cryptoTailStrategy.form.scalpHedgeSubsection')}</Typography.Text>
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('cryptoTailStrategy.form.scalpHedgeSubsectionHint')}</Typography.Text>
+              </Form.Item>
+              <Form.Item name="scalpHedgeEnabled" label={t('cryptoTailStrategy.form.scalpHedgeEnabled')} valuePropName="checked" extra={t('cryptoTailStrategy.form.scalpHedgeEnabledHint')}>
+                <Switch />
+              </Form.Item>
+              <Form.Item name="scalpHedgeArmSeconds" label={t('cryptoTailStrategy.form.scalpHedgeArmSeconds')} extra={t('cryptoTailStrategy.form.scalpHedgeArmSecondsHint')}>
+                <InputNumber disabled={!scalpHedgeEnabled} min={1} step={1} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpHedgeMinOwnBid" label={t('cryptoTailStrategy.form.scalpHedgeMinOwnBid')} extra={t('cryptoTailStrategy.form.scalpHedgeMinOwnBidHint')}>
+                <InputNumber disabled={!scalpHedgeEnabled} min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item
+                name="scalpHedgeMaxPrice"
+                label={t('cryptoTailStrategy.form.scalpHedgeMaxPrice')}
+                extra={t('cryptoTailStrategy.form.scalpHedgeMaxPriceHint')}
+                dependencies={['scalpHedgeMinOwnBid', 'scalpHedgeEnabled']}
+                rules={[({ getFieldValue }) => ({
+                  validator: (_, value) => {
+                    // 与后端校验同口径：对侧限价须 < 1 - 本方门槛 + 0.05，否则"本方已赢"与"对侧还贵"矛盾，永不可能成交
+                    if (getFieldValue('scalpHedgeEnabled') !== true || value == null || value === '') return Promise.resolve()
+                    const maxPrice = Number(value)
+                    const minOwnBid = Number(getFieldValue('scalpHedgeMinOwnBid') ?? 0)
+                    if (!Number.isFinite(maxPrice) || !Number.isFinite(minOwnBid)) return Promise.resolve()
+                    if (maxPrice >= 1 - minOwnBid + 0.05) {
+                      return Promise.reject(new Error(t('cryptoTailStrategy.form.scalpHedgeMaxPriceConflict')))
+                    }
+                    return Promise.resolve()
+                  }
+                })]}
+              >
+                <InputNumber disabled={!scalpHedgeEnabled} min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpHedgeBudgetUsdc" label={t('cryptoTailStrategy.form.scalpHedgeBudgetUsdc')} extra={t('cryptoTailStrategy.form.scalpHedgeBudgetUsdcHint')}>
+                <InputNumber disabled={!scalpHedgeEnabled} min={0} step={0.5} style={{ width: '100%' }} addonBefore="$" stringMode />
+              </Form.Item>
+              <Form.Item name="scalpHedgeMinFeatureScore" label={t('cryptoTailStrategy.form.scalpHedgeMinFeatureScore')} extra={t('cryptoTailStrategy.form.scalpHedgeMinFeatureScoreHint')}>
+                <InputNumber disabled={!scalpHedgeEnabled} min={0} max={5} step={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="scalpHedgeFeatureInstabilityLookbackSec" label={t('cryptoTailStrategy.form.scalpHedgeFeatureInstabilityLookbackSec')} extra={t('cryptoTailStrategy.form.scalpHedgeFeatureInstabilityLookbackSecHint')}>
+                <InputNumber disabled={!scalpHedgeEnabled} min={0} step={10} precision={0} style={{ width: '100%' }} addonAfter="s" />
+              </Form.Item>
+              <Form.Item name="scalpHedgeFeatureSpotCushionUsd" label={t('cryptoTailStrategy.form.scalpHedgeFeatureSpotCushionUsd')} extra={t('cryptoTailStrategy.form.scalpHedgeFeatureSpotCushionUsdHint')}>
+                <InputNumber disabled={!scalpHedgeEnabled} min={0} step={1} style={{ width: '100%' }} stringMode addonAfter="USD" />
+              </Form.Item>
+              <Form.Item name="scalpHedgeFeatureGapShrinkRatio" label={t('cryptoTailStrategy.form.scalpHedgeFeatureGapShrinkRatio')} extra={t('cryptoTailStrategy.form.scalpHedgeFeatureGapShrinkRatioHint')}>
+                <InputNumber disabled={!scalpHedgeEnabled} min={0} max={1} step={0.05} style={{ width: '100%' }} stringMode />
+              </Form.Item>
+              <Form.Item name="scalpHedgeFeatureRecentFlipLookback" label={t('cryptoTailStrategy.form.scalpHedgeFeatureRecentFlipLookback')} extra={t('cryptoTailStrategy.form.scalpHedgeFeatureRecentFlipLookbackHint')}>
+                <InputNumber disabled={!scalpHedgeEnabled} min={0} step={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="scalpHedgeFeatureOppAskFloor" label={t('cryptoTailStrategy.form.scalpHedgeFeatureOppAskFloor')} extra={t('cryptoTailStrategy.form.scalpHedgeFeatureOppAskFloorHint')}>
+                <InputNumber disabled={!scalpHedgeEnabled} min={0} max={1} step={0.01} style={{ width: '100%' }} stringMode />
               </Form.Item>
             </>
           )}
@@ -4163,12 +4296,16 @@ const CryptoTailStrategyList: React.FC = () => {
                         key: 'outcomeIndex',
                         width: 80,
                         align: 'center',
-                        render: (i: number) =>
-                          i === 0 ? (
-                            <Tag color="green">{t('cryptoTailStrategy.triggerRecords.up')}</Tag>
-                          ) : (
-                            <Tag color="volcano">{t('cryptoTailStrategy.triggerRecords.down')}</Tag>
-                          )
+                        render: (i: number, r: CryptoTailStrategyTriggerDto) => (
+                          <Space size={4} wrap>
+                            {i === 0 ? (
+                              <Tag color="green">{t('cryptoTailStrategy.triggerRecords.up')}</Tag>
+                            ) : (
+                              <Tag color="volcano">{t('cryptoTailStrategy.triggerRecords.down')}</Tag>
+                            )}
+                            {r.triggerType === 'HEDGE' && <Tag color="gold">{t('cryptoTailStrategy.triggerRecords.hedgeTag')}</Tag>}
+                          </Space>
+                        )
                       },
                       {
                         title: t('cryptoTailStrategy.triggerRecords.triggerPrice'),
@@ -4238,12 +4375,16 @@ const CryptoTailStrategyList: React.FC = () => {
                         key: 'outcomeIndex',
                         width: 80,
                         align: 'center',
-                        render: (i: number) =>
-                          i === 0 ? (
-                            <Tag color="green">{t('cryptoTailStrategy.triggerRecords.up')}</Tag>
-                          ) : (
-                            <Tag color="volcano">{t('cryptoTailStrategy.triggerRecords.down')}</Tag>
-                          )
+                        render: (i: number, r: CryptoTailStrategyTriggerDto) => (
+                          <Space size={4} wrap>
+                            {i === 0 ? (
+                              <Tag color="green">{t('cryptoTailStrategy.triggerRecords.up')}</Tag>
+                            ) : (
+                              <Tag color="volcano">{t('cryptoTailStrategy.triggerRecords.down')}</Tag>
+                            )}
+                            {r.triggerType === 'HEDGE' && <Tag color="gold">{t('cryptoTailStrategy.triggerRecords.hedgeTag')}</Tag>}
+                          </Space>
+                        )
                       },
                       {
                         title: t('cryptoTailStrategy.triggerRecords.triggerPrice'),

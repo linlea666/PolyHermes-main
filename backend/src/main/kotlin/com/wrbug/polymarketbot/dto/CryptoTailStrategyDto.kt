@@ -89,7 +89,23 @@ data class CryptoTailStrategyScalpRequest(
     // ===== 现货主止损（V95，均可选，null 走默认）=====
     val scalpSpotLeadPrimaryStopEnabled: Boolean? = null,
     val scalpSpotLeadPrimaryStopPersistMs: Int? = null,
-    val scalpSpotLeadPrimaryStopMinGapUsd: String? = null
+    val scalpSpotLeadPrimaryStopMinGapUsd: String? = null,
+    // ===== 终场闪针防御（V96，均可选，null 走默认）=====
+    val scalpTpRestingEnabled: Boolean? = null,
+    val scalpBookInstabilityCooldownSec: Int? = null,
+    val scalpBookInstabilityAskJump: String? = null,
+    val scalpSpotLeadPrimaryStopBookConfirmDrawdown: String? = null,
+    val scalpHedgeEnabled: Boolean? = null,
+    val scalpHedgeArmSeconds: Int? = null,
+    val scalpHedgeMinOwnBid: String? = null,
+    val scalpHedgeMaxPrice: String? = null,
+    val scalpHedgeBudgetUsdc: String? = null,
+    val scalpHedgeMinFeatureScore: Int? = null,
+    val scalpHedgeFeatureInstabilityLookbackSec: Int? = null,
+    val scalpHedgeFeatureSpotCushionUsd: String? = null,
+    val scalpHedgeFeatureGapShrinkRatio: String? = null,
+    val scalpHedgeFeatureRecentFlipLookback: Int? = null,
+    val scalpHedgeFeatureOppAskFloor: String? = null
 )
 
 /**
@@ -610,7 +626,23 @@ data class CryptoTailStrategyScalpDto(
     // ===== 现货主止损（V95）=====
     val scalpSpotLeadPrimaryStopEnabled: Boolean = false,
     val scalpSpotLeadPrimaryStopPersistMs: Int = 600,
-    val scalpSpotLeadPrimaryStopMinGapUsd: String = "0"
+    val scalpSpotLeadPrimaryStopMinGapUsd: String = "0",
+    // ===== 终场闪针防御（V96）=====
+    val scalpTpRestingEnabled: Boolean = false,
+    val scalpBookInstabilityCooldownSec: Int = 0,
+    val scalpBookInstabilityAskJump: String = "0.30",
+    val scalpSpotLeadPrimaryStopBookConfirmDrawdown: String = "0",
+    val scalpHedgeEnabled: Boolean = false,
+    val scalpHedgeArmSeconds: Int = 25,
+    val scalpHedgeMinOwnBid: String = "0.95",
+    val scalpHedgeMaxPrice: String = "0.05",
+    val scalpHedgeBudgetUsdc: String = "1",
+    val scalpHedgeMinFeatureScore: Int = 1,
+    val scalpHedgeFeatureInstabilityLookbackSec: Int = 120,
+    val scalpHedgeFeatureSpotCushionUsd: String = "0",
+    val scalpHedgeFeatureGapShrinkRatio: String = "0",
+    val scalpHedgeFeatureRecentFlipLookback: Int = 0,
+    val scalpHedgeFeatureOppAskFloor: String = "0"
 )
 
 /**
@@ -897,7 +929,9 @@ data class CryptoTailStrategyTriggerDto(
     /** 阶梯模式剩余仓位（shares），其他模式为 null */
     val remainingSize: String? = null,
     /** 阶梯模式仓位状态: NONE/OPEN/PARTIAL_EXIT/FULLY_EXITED/HELD_TO_SETTLE */
-    val exitStatus: String = "NONE"
+    val exitStatus: String = "NONE",
+    /** 触发类型: AUTO/MANUAL/HEDGE（V96 终场反向对冲保险单，前端据此打标识） */
+    val triggerType: String = "AUTO"
 )
 
 /**

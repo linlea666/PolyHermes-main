@@ -306,11 +306,14 @@ class PolymarketRtdsCryptoPriceService {
                     } else {
                         incoming
                     }
-                // 来的是 snapshot：仅当样本时间确实更新才覆盖（含覆盖已陈旧的 realtime）。
-                // 单调比较(strict >)天然防止旧 snapshot 倒灌；与 realtime 同样本时间则保留 old（realtime 优先）。
-                // 历史 bug：此前用 (now - old.receivedAtMs) < freshnessMs(30s) 阻断 snapshot，导致 realtime
-                //   断流 6-29s 时，4s 补订阅拿回的新鲜 snapshot 被丢弃，priceAge 长期卡在 10-30s（实盘 0 成交根因之一）。
-                sampleTimeMs > old.sampleTimeMs -> incoming
+                // 来的是 snapshot：仅当样本时间确实更新才可能覆盖（单调 strict > 防旧 snapshot 倒灌；
+                // 与 realtime 同样本时间则保留 old，realtime 优先）。
+                // 且若 old 是"样本仍新鲜"的 realtime（样本龄 <= snapshotRefreshIntervalMs，与全局新鲜度口径一致按
+                // sampleTimeMs 计龄），即使 snapshot 样本时间更新也不覆盖——上游批处理/时钟偏移会让 snapshot
+                // 样本时间虚高，权威实时 tick 不能被倒灌；realtime 真断流时（样本龄 >4s，正是补订阅触发线）照常救场。
+                // 历史 bug：此前用 30s freshnessMs 阻断 snapshot，救场窗口被掐死 → 阈值必须对齐补订阅节奏而非 30s。
+                sampleTimeMs > old.sampleTimeMs &&
+                    (old.priceMode != PRICE_MODE_REALTIME_UPDATE || now - old.sampleTimeMs > snapshotRefreshIntervalMs) -> incoming
                 else -> old
             }
         }

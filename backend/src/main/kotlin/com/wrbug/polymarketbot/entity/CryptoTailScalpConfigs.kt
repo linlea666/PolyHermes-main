@@ -99,6 +99,60 @@ data class CryptoTailScalpEntryConfig(
     val scalpHoldWinnerToSettle: Boolean = true
 )
 
+/**
+ * 终场反向对冲配置（V96 终场闪针防御 Phase 2）。
+ * 主仓深度获利且接近结算时，按"风险特征库"评分条件性买入对侧极廉价 token（彩票式保险）：
+ * 翻转发生时对侧结算 $1 对冲主仓归零损失；未翻转仅损失小额权利金。
+ * 对冲单以 triggerType=HEDGE 独立 trigger 行入账（不进退出管理；结算/盈亏走通用链路；
+ * 风控连亏/并发/胜率统计排除 HEDGE 行，日亏合计包含——权利金是真实支出）。
+ */
+@Embeddable
+data class CryptoTailScalpHedgeConfig(
+    /** 反向对冲总开关：默认 false（零回归） */
+    @Column(name = "scalp_hedge_enabled", nullable = false)
+    val hedgeEnabled: Boolean = false,
+
+    /** 布防窗口（距结算剩余秒）：remaining<=此值才评估布防（每周期最多一次，边沿触发） */
+    @Column(name = "scalp_hedge_arm_seconds", nullable = false)
+    val hedgeArmSeconds: Int = 25,
+
+    /** 主仓深度获利门槛：本方 bestBid >= 此值才布防（只给"看似已赢"的仓位买保险） */
+    @Column(name = "scalp_hedge_min_own_bid", nullable = false, precision = 20, scale = 8)
+    val hedgeMinOwnBid: BigDecimal = BigDecimal("0.95"),
+
+    /** 对侧买入最高限价：对侧 bestAsk > 此值放弃布防（保费过贵赔率不足）；FAK 限价=此值 */
+    @Column(name = "scalp_hedge_max_price", nullable = false, precision = 20, scale = 8)
+    val hedgeMaxPrice: BigDecimal = BigDecimal("0.05"),
+
+    /** 对冲预算（USDC）：单笔对冲最大权利金支出；份额 = 预算/最高限价（最坏价口径，保证不超支） */
+    @Column(name = "scalp_hedge_budget_usdc", nullable = false, precision = 20, scale = 8)
+    val hedgeBudgetUsdc: BigDecimal = BigDecimal("1"),
+
+    /** 布防最低风险特征命中数：命中特征数 >= 此值才下单；0=窗口内无条件布防 */
+    @Column(name = "scalp_hedge_min_feature_score", nullable = false)
+    val hedgeMinFeatureScore: Int = 1,
+
+    /** 特征F1·盘口不稳定记忆回看秒数：本周期内最近此秒数内出现过盘口异常(ask 闪跳/价差爆宽/ask 消失)即命中；0=该特征关 */
+    @Column(name = "scalp_hedge_feature_instability_lookback_sec", nullable = false)
+    val hedgeFeatureInstabilityLookbackSec: Int = 120,
+
+    /** 特征F2·现货安全垫薄：现货新鲜且 |spotGap| < 此值(USD)即命中（领先优势随时可被一根针打穿）；0=该特征关 */
+    @Column(name = "scalp_hedge_feature_spot_cushion_usd", nullable = false, precision = 20, scale = 8)
+    val hedgeFeatureSpotCushionUsd: BigDecimal = BigDecimal.ZERO,
+
+    /** 特征F3·领先优势萎缩：当前 |gap| <= 入场 |gap| × 此比例即命中（动能衰减）；0=该特征关 */
+    @Column(name = "scalp_hedge_feature_gap_shrink_ratio", nullable = false, precision = 20, scale = 8)
+    val hedgeFeatureGapShrinkRatio: BigDecimal = BigDecimal.ZERO,
+
+    /** 特征F4·近期翻转记忆回看周期数：该策略最近 N 个周期内出现过"大亏(亏损>成本一半)结算"即命中；0=该特征关 */
+    @Column(name = "scalp_hedge_feature_recent_flip_lookback", nullable = false)
+    val hedgeFeatureRecentFlipLookback: Int = 0,
+
+    /** 特征F5·对侧 ask 抬升：对侧 bestAsk >= 此值即命中（市场仍在给尾部风险定价，对侧没死透）；0=该特征关 */
+    @Column(name = "scalp_hedge_feature_opp_ask_floor", nullable = false, precision = 20, scale = 8)
+    val hedgeFeatureOppAskFloor: BigDecimal = BigDecimal.ZERO
+)
+
 /** 止盈/止损/熔断核心配置（价位止损、标的方向止损、反抽速度、模型衰减、熔断地板）。 */
 @Embeddable
 data class CryptoTailScalpStopConfig(
@@ -164,7 +218,16 @@ data class CryptoTailScalpStopConfig(
      * 0=关闭（沿用绝对线）。配合"熔断模型门控"：模型仍强挺时跌破地板只走短确认，模型翻转才即时砍。
      */
     @Column(name = "scalp_catastrophe_floor_ratio", nullable = false, precision = 20, scale = 8)
-    val scalpCatastropheFloorRatio: BigDecimal = BigDecimal("0.85")
+    val scalpCatastropheFloorRatio: BigDecimal = BigDecimal("0.85"),
+
+    /**
+     * 预挂止盈开关（V96 终场闪针防御 Phase 1）：true 时入场成交后立即以 GTC 限价(scalpTpPrice)预挂止盈卖单，
+     * 价格先到先成交——终场闪针发生前止盈单已在簿上排队，不依赖"看到 bid 才反应"的响应式路径。
+     * 在途预挂单期间响应式 TP 自动去重（hasExitOfKind）；紧急止损照常抢占撤单后市价砍。
+     * 仅 scalpHoldWinnerToSettle=false 时有意义（true 时无止盈语义，开关被校验拦截）。默认 false（零回归）。
+     */
+    @Column(name = "scalp_tp_resting_enabled", nullable = false)
+    val scalpTpRestingEnabled: Boolean = false
 )
 
 /** 执行与智能止损配置（WS 新鲜度、有界重报价、方向确认、智能硬止损旁路、无条件深底线）。 */
@@ -259,7 +322,19 @@ data class CryptoTailScalpRiskConfig(
 
     /** 价差闸生效窗口上限（距结算剩余秒）：hi<=0 表示无上界；与 lo 同为 0 即全周期生效；否则当 remaining ∈ [lo, hi] 生效 */
     @Column(name = "scalp_gap_gate_remaining_hi", nullable = false)
-    val scalpGapGateRemainingHi: Int = 0
+    val scalpGapGateRemainingHi: Int = 0,
+
+    /**
+     * 盘口不稳定熔断冷却秒数（V96 终场闪针防御 Phase 1 之 C）：本周期内最近此秒数内出现过盘口异常
+     * （ask 闪跳 >= scalpBookInstabilityAskJump / 价差爆宽 / ask 消失）则拒绝新进场（SCALP_BOOK_UNSTABLE）。
+     * 闪过针的盘口短时间内更可能再闪——不在余震里进场。0=关（零回归）。仅 SCALP_FLIP 消费。
+     */
+    @Column(name = "scalp_book_instability_cooldown_sec", nullable = false)
+    val scalpBookInstabilityCooldownSec: Int = 0,
+
+    /** 盘口异常·ask 闪跳阈值：相邻两次进场评估间 |bestAsk 变化| >= 此值记一次盘口异常；0=该维度不检查 */
+    @Column(name = "scalp_book_instability_ask_jump", nullable = false, precision = 20, scale = 8)
+    val scalpBookInstabilityAskJump: BigDecimal = BigDecimal("0.30")
 )
 
 /** 尾盘韧性退出配置（V91/V92：尾盘动态止损、提速、紧急重试、忽略地板、主动减仓）。 */
@@ -407,5 +482,14 @@ data class CryptoTailScalpSpotLeadConfig(
 
     /** 穿价深度下限（USD，0=不限）：已穿价时要求 |spotGap| >= 此值才触发主止损，二级过滤浅穿。 */
     @Column(name = "scalp_spot_lead_primary_stop_min_gap_usd", nullable = false, precision = 20, scale = 8)
-    val primaryStopMinGapUsd: BigDecimal = BigDecimal.ZERO
+    val primaryStopMinGapUsd: BigDecimal = BigDecimal.ZERO,
+
+    /**
+     * 主止损盘口确认旁路回撤比例（V96 终场闪针防御 Phase 1 之 D）：现货合格危险持续确认尚未到
+     * persistMs 时，若盘口同时已大幅塌陷（bestBid <= 入场价×(1-此比例)），说明"现货+盘口双确认"
+     * 已成立 → 跳过剩余等待立即市价全清，把 persistMs 留给"仅现货报警、盘口未动"的存疑场景。
+     * 0=关（恒等待满 persistMs，零回归）。仅 primaryStopEnabled=true 时有意义。
+     */
+    @Column(name = "scalp_spot_lead_primary_stop_book_confirm_drawdown", nullable = false, precision = 20, scale = 8)
+    val primaryStopBookConfirmDrawdown: BigDecimal = BigDecimal.ZERO
 )

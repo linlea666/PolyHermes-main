@@ -169,9 +169,13 @@ class CryptoTailExitOrderReconciler(
             return
         }
 
-        // 仍存活（LIVE/DELAYED 等）：MAKER 到期撤单
-        val isMaker = (exit.orderType ?: "").uppercase() == "GTC_POST_ONLY" || (exit.orderType ?: "").uppercase() == "GTC"
-        if (isMaker && nowSec >= makerCancelDeadline) {
+        // 仍存活（LIVE/DELAYED 等）：MAKER 到期撤单。统一 startsWith("GTC") 判定（与 SettlementService 口径一致）。
+        // V96 预挂止盈(GTC_TP_REST) 豁免提前撤单、挂到结算时点——终场闪针恰发生在最后几秒，
+        // 按 makerCancelBeforeSettleSeconds 提前撤等于在最需要防御时卸甲；结算后交易所自动撤单 → 下轮对账落 cancelled。
+        val isMaker = (exit.orderType ?: "").uppercase().startsWith("GTC")
+        val isTpRest = (exit.orderType ?: "").uppercase() == CryptoTailBracketExitService.TP_REST_ORDER_TYPE
+        val cancelDeadline = if (isTpRest) settleAt else makerCancelDeadline
+        if (isMaker && nowSec >= cancelDeadline) {
             try {
                 ctx.clobApi.cancelOrder(orderId)
             } catch (e: Exception) {
@@ -221,10 +225,13 @@ class CryptoTailExitOrderReconciler(
             settledAt = System.currentTimeMillis()
         )
         exitRepository.save(updated)
+        // V96 预挂止盈撤单走专用事件（与 TP_RESTING_PLACED 配对，回测可精确统计预挂存活期/撤单原因），不混入 EXIT_FAILED
+        val isTpRestOrder = (exit.orderType ?: "").uppercase() == CryptoTailBracketExitService.TP_REST_ORDER_TYPE
         val resultType = when {
             status == "success" && (exit.exitKind == "TP1" || exit.exitKind == "TP2") -> "TAKE_PROFIT_RESULT"
             status == "success" && isStopLossKind(exit.exitKind) -> "STOP_LOSS_RESULT"
             status == "success" -> "EXIT_RESULT"
+            status == "cancelled" && isTpRestOrder -> "TP_RESTING_CANCELLED"
             else -> "EXIT_FAILED"
         }
         decisionRecorder.record(
@@ -267,7 +274,7 @@ class CryptoTailExitOrderReconciler(
         sizeMatched: BigDecimal,
         orderLimitPrice: BigDecimal
     ): BigDecimal {
-        val isMaker = (exit.orderType ?: "").uppercase().let { it == "GTC" || it == "GTC_POST_ONLY" }
+        val isMaker = (exit.orderType ?: "").uppercase().startsWith("GTC")
         if (isMaker) {
             return sizeMatched.multiply(orderLimitPrice).setScale(8, RoundingMode.HALF_UP)
         }

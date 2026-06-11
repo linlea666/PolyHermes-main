@@ -729,6 +729,10 @@ data class CryptoTailStrategy(
     @Embedded
     val scalpSpotLeadConfig: CryptoTailScalpSpotLeadConfig = CryptoTailScalpSpotLeadConfig(),
 
+    /** 终场反向对冲配置（V96 终场闪针防御 Phase 2）。字段定义见 CryptoTailScalpHedgeConfig。 */
+    @Embedded
+    val scalpHedgeConfig: CryptoTailScalpHedgeConfig = CryptoTailScalpHedgeConfig(),
+
     @Column(name = "enabled", nullable = false)
     val enabled: Boolean = true,
 
@@ -780,6 +784,7 @@ data class CryptoTailStrategy(
     val scalpCatastropheBidFloor: BigDecimal get() = scalpStopConfig.scalpCatastropheBidFloor
     val scalpCatastropheImmediate: Boolean get() = scalpStopConfig.scalpCatastropheImmediate
     val scalpCatastropheFloorRatio: BigDecimal get() = scalpStopConfig.scalpCatastropheFloorRatio
+    val scalpTpRestingEnabled: Boolean get() = scalpStopConfig.scalpTpRestingEnabled
 
     // --- scalpExecConfig（执行与智能止损）---
     val scalpWsFreshnessSkipRestMs: Int get() = scalpExecConfig.scalpWsFreshnessSkipRestMs
@@ -799,6 +804,8 @@ data class CryptoTailStrategy(
     val scalpMinEntryGapAbs: BigDecimal get() = scalpRiskConfig.scalpMinEntryGapAbs
     val scalpGapGateRemainingLo: Int get() = scalpRiskConfig.scalpGapGateRemainingLo
     val scalpGapGateRemainingHi: Int get() = scalpRiskConfig.scalpGapGateRemainingHi
+    val scalpBookInstabilityCooldownSec: Int get() = scalpRiskConfig.scalpBookInstabilityCooldownSec
+    val scalpBookInstabilityAskJump: BigDecimal get() = scalpRiskConfig.scalpBookInstabilityAskJump
 
     // --- scalpLateExitConfig（尾盘韧性退出 V91/V92）---
     val scalpLateStopEnabled: Boolean get() = scalpLateExitConfig.scalpLateStopEnabled
@@ -832,4 +839,18 @@ data class CryptoTailStrategy(
     val scalpSpotLeadPrimaryStopEnabled: Boolean get() = scalpSpotLeadConfig.primaryStopEnabled
     val scalpSpotLeadPrimaryStopPersistMs: Int get() = scalpSpotLeadConfig.primaryStopPersistMs
     val scalpSpotLeadPrimaryStopMinGapUsd: BigDecimal get() = scalpSpotLeadConfig.primaryStopMinGapUsd
+    val scalpSpotLeadPrimaryStopBookConfirmDrawdown: BigDecimal get() = scalpSpotLeadConfig.primaryStopBookConfirmDrawdown
+
+    // --- scalpHedgeConfig（终场反向对冲 V96）---
+    val scalpHedgeEnabled: Boolean get() = scalpHedgeConfig.hedgeEnabled
+    val scalpHedgeArmSeconds: Int get() = scalpHedgeConfig.hedgeArmSeconds
+    val scalpHedgeMinOwnBid: BigDecimal get() = scalpHedgeConfig.hedgeMinOwnBid
+    val scalpHedgeMaxPrice: BigDecimal get() = scalpHedgeConfig.hedgeMaxPrice
+    val scalpHedgeBudgetUsdc: BigDecimal get() = scalpHedgeConfig.hedgeBudgetUsdc
+    val scalpHedgeMinFeatureScore: Int get() = scalpHedgeConfig.hedgeMinFeatureScore
+    val scalpHedgeFeatureInstabilityLookbackSec: Int get() = scalpHedgeConfig.hedgeFeatureInstabilityLookbackSec
+    val scalpHedgeFeatureSpotCushionUsd: BigDecimal get() = scalpHedgeConfig.hedgeFeatureSpotCushionUsd
+    val scalpHedgeFeatureGapShrinkRatio: BigDecimal get() = scalpHedgeConfig.hedgeFeatureGapShrinkRatio
+    val scalpHedgeFeatureRecentFlipLookback: Int get() = scalpHedgeConfig.hedgeFeatureRecentFlipLookback
+    val scalpHedgeFeatureOppAskFloor: BigDecimal get() = scalpHedgeConfig.hedgeFeatureOppAskFloor
 }

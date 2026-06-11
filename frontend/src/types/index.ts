@@ -1749,6 +1749,21 @@ export interface CryptoTailStrategyDto {
   scalpSpotLeadPrimaryStopEnabled?: boolean
   scalpSpotLeadPrimaryStopPersistMs?: number
   scalpSpotLeadPrimaryStopMinGapUsd?: string
+  scalpSpotLeadPrimaryStopBookConfirmDrawdown?: string
+  scalpTpRestingEnabled?: boolean
+  scalpBookInstabilityCooldownSec?: number
+  scalpBookInstabilityAskJump?: string
+  scalpHedgeEnabled?: boolean
+  scalpHedgeArmSeconds?: number
+  scalpHedgeMinOwnBid?: string
+  scalpHedgeMaxPrice?: string
+  scalpHedgeBudgetUsdc?: string
+  scalpHedgeMinFeatureScore?: number
+  scalpHedgeFeatureInstabilityLookbackSec?: number
+  scalpHedgeFeatureSpotCushionUsd?: string
+  scalpHedgeFeatureGapShrinkRatio?: string
+  scalpHedgeFeatureRecentFlipLookback?: number
+  scalpHedgeFeatureOppAskFloor?: string
   createdAt: number
   updatedAt: number
 }
@@ -1832,6 +1847,21 @@ export interface CryptoTailScalpParams {
   scalpSpotLeadPrimaryStopEnabled?: boolean
   scalpSpotLeadPrimaryStopPersistMs?: number
   scalpSpotLeadPrimaryStopMinGapUsd?: string
+  scalpSpotLeadPrimaryStopBookConfirmDrawdown?: string
+  scalpTpRestingEnabled?: boolean
+  scalpBookInstabilityCooldownSec?: number
+  scalpBookInstabilityAskJump?: string
+  scalpHedgeEnabled?: boolean
+  scalpHedgeArmSeconds?: number
+  scalpHedgeMinOwnBid?: string
+  scalpHedgeMaxPrice?: string
+  scalpHedgeBudgetUsdc?: string
+  scalpHedgeMinFeatureScore?: number
+  scalpHedgeFeatureInstabilityLookbackSec?: number
+  scalpHedgeFeatureSpotCushionUsd?: string
+  scalpHedgeFeatureGapShrinkRatio?: string
+  scalpHedgeFeatureRecentFlipLookback?: number
+  scalpHedgeFeatureOppAskFloor?: string
 }
 
 /** 尾盘价差模式（TAIL_DIFF, V62）参数集合；create/update 共用 */
@@ -2468,6 +2498,8 @@ export interface CryptoTailStrategyTriggerDto {
   remainingSize?: string
   /** 阶梯模式仓位状态: NONE/OPEN/PARTIAL_EXIT/FULLY_EXITED/HELD_TO_SETTLE */
   exitStatus?: string
+  /** 触发类型: AUTO/MANUAL/HEDGE（V96 终场反向对冲保险单） */
+  triggerType?: string
 }
 
 /** 阶梯模式单条退出明细 */
